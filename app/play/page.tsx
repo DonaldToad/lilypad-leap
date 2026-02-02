@@ -22,6 +22,7 @@ export default function PlayPage() {
 
       <section className="mx-auto w-full max-w-5xl px-4 py-10">
         <div className="rounded-3xl border border-neutral-800 bg-neutral-900/30 p-6">
+          {/* Header */}
           <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-bold">Play</h1>
@@ -46,6 +47,7 @@ export default function PlayPage() {
               >
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
+                    {/* Title row */}
                     <div className="flex items-center gap-3">
                       <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
 
@@ -62,19 +64,23 @@ export default function PlayPage() {
                           {c.statusTag}
                         </span>
 
-                        {c.isPrimary ? (
+                        {c.isPrimary && (
                           <span className="rounded-full bg-neutral-800/60 px-2 py-0.5 text-xs text-neutral-200 ring-1 ring-neutral-700">
                             PRIMARY
                           </span>
-                        ) : null}
+                        )}
                       </div>
                     </div>
 
-                    <div className="mt-3 text-sm text-neutral-300">{c.note}</div>
+                    {/* Description */}
+                    <div className="mt-3 text-sm text-neutral-300">
+                      {c.note}
+                    </div>
 
+                    {/* Meta */}
                     <div className="mt-3 text-xs text-neutral-500">
                       Chain ID: {c.chainId}
-                      {c.explorerBaseUrl ? (
+                      {c.explorerBaseUrl && (
                         <>
                           {" "}
                           • Explorer:{" "}
@@ -82,36 +88,28 @@ export default function PlayPage() {
                             {c.explorerBaseUrl.replace("https://", "")}
                           </span>
                         </>
-                      ) : null}
+                      )}
                     </div>
                   </div>
 
+                  {/* Action */}
                   <div className="flex gap-2">
-                    {c.enabled ? (
-                      <button
-                        disabled
-                        className="cursor-not-allowed rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-sm font-semibold text-neutral-500"
-                      >
-                        Play (demo soon)
-                      </button>
-                    ) : (
-                      <button
-                        disabled
-                        className="cursor-not-allowed rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-sm font-semibold text-neutral-500"
-                      >
-                        Play (soon)
-                      </button>
-                    )}
+                    <button
+                      disabled
+                      className="cursor-not-allowed rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-sm font-semibold text-neutral-500"
+                    >
+                      {c.enabled ? "Play (demo soon)" : "Play (soon)"}
+                    </button>
                   </div>
                 </div>
               </div>
             ))}
           </div>
 
-          {/* Next build block */}
+          {/* Next steps */}
           <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 text-sm text-neutral-300">
-            <b>Next:</b> we’ll build the Demo Mode game panel here:
-            route selection (Safe/Wild/Insane), bet amount, hop risk table, and
+            <b>Next:</b> we’ll build the Demo Mode game panel here: route
+            selection (Safe / Wild / Insane), bet amount, per-hop risk table, and
             HOP / CASH OUT controls (static first, then logic).
           </div>
         </div>
