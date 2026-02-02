@@ -1,50 +1,71 @@
+// app/components/TopNav.tsx
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 const NAV = [
-  { label: "Profile", href: "/profile" },
-  { label: "Play", href: "/play" },
-  { label: "Leaderboard", href: "/leaderboard" },
-  { label: "Verify Fairness", href: "/verify" },
-  { label: "Swap", href: "/swap" },
-] as const;
+  { href: "/profile", label: "Profile" },
+  { href: "/play", label: "Play" },
+  { href: "/leaderboard", label: "Leaderboard" },
+  { href: "/verify", label: "Verify Fairness" },
+  { href: "/swap", label: "Swap" },
+];
 
 export default function TopNav() {
+  const pathname = usePathname();
+
   return (
-    <header className="border-b border-neutral-800">
-      <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-4 py-4">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-xl bg-neutral-800 ring-1 ring-neutral-700" />
-          <div className="leading-tight">
-            <Link href="/" className="block text-lg font-semibold">
-              Lilypad Leap
-            </Link>
-            <div className="text-xs text-neutral-400">
-              Product v1 (frozen) • Demo Mode
+    <header className="sticky top-0 z-40 w-full border-b border-neutral-800 bg-neutral-950/80 backdrop-blur">
+      <div className="mx-auto w-full max-w-6xl px-4 py-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="shrink-0">
+              <img
+                src="/logo/logo.png"
+                alt="Lilypad Leap logo"
+                className="h-14 w-14 rounded-xl ring-1 ring-neutral-800 md:h-16 md:w-16"
+                loading="eager"
+              />
             </div>
+
+            <div className="min-w-0">
+              <div className="truncate text-lg font-bold leading-tight text-neutral-50 md:text-xl">
+                Lilypad Leap
+              </div>
+              <div className="truncate text-xs text-neutral-400 md:text-sm">
+                Product v1 (frozen) · Demo Mode
+              </div>
+            </div>
+          </div>
+
+          <div className="shrink-0">
+            <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
+              DEMO
+            </span>
           </div>
         </div>
 
-        <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20">
-          DEMO
-        </span>
+        <nav className="mt-4 flex flex-wrap gap-2">
+          {NAV.map((item) => {
+            const active = pathname === item.href;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={[
+                  "rounded-full border px-4 py-2 text-sm font-semibold transition",
+                  active
+                    ? "border-neutral-700 bg-neutral-800 text-neutral-50"
+                    : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
+                ].join(" ")}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
       </div>
-
-      <nav className="border-t border-neutral-800">
-        <div className="mx-auto w-full max-w-5xl px-4 py-3">
-          <ul className="flex flex-wrap gap-2">
-            {NAV.map((item) => (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className="inline-flex items-center rounded-full border border-neutral-800 bg-neutral-900/60 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-900"
-                >
-                  {item.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </nav>
     </header>
   );
 }

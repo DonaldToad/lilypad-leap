@@ -1,64 +1,38 @@
-export type ChainKey = "linea" | "base";
+// app/lib/chains.ts
+export const BASE_ENABLED = process.env.NEXT_PUBLIC_BASE_ENABLED === "true";
 
-export type ChainConfig = {
-  key: ChainKey;
+export type ChainDef = {
+  key: "linea" | "base";
   name: string;
-  shortName: string;
   chainId: number;
-  enabled: boolean;
-  isPrimary: boolean;
-
-  dtcSymbol: "DTC";
-  dtcAddress?: `0x${string}`;
-  explorerBaseUrl?: string;
-
-  swapLabel: string;
-  swapUrl?: string;
-
+  explorerBaseUrl: string;
   statusTag: "LIVE" | "SOON";
   note: string;
+  isPrimary?: boolean;
+  enabled: boolean;
 };
 
-export const CHAINS: Record<ChainKey, ChainConfig> = {
-  linea: {
-    key: "linea",
-    name: "Linea",
-    shortName: "Linea",
-    chainId: 59144,
-    enabled: true,
-    isPrimary: true,
-
-    dtcSymbol: "DTC",
-    // dtcAddress: "0x...", // optional
-    explorerBaseUrl: "https://lineascan.build",
-
-    swapLabel: "Trade DTC on Linea (Lynex)",
-    // swapUrl: "https://...", // optional later
-
-    statusTag: "LIVE",
-    note: "DTC has been tradable on Linea since 2024. Linea is the primary launch chain for Lilypad Leap.",
-  },
-
-  base: {
-    key: "base",
-    name: "Base",
-    shortName: "Base",
-    chainId: 8453,
-    enabled: false,
-    isPrimary: false,
-
-    dtcSymbol: "DTC",
-    // dtcAddress: "0x...", // optional
-    explorerBaseUrl: "https://basescan.org",
-
-    swapLabel: "Trade DTC on Base (Uniswap) — coming soon",
-    // swapUrl: "https://app.uniswap.org/swap?chain=base&...", // later
-
-    statusTag: "SOON",
-    note: "Base launch will follow Lilypad Leap launch. After Uniswap listing, the game will expand to Base.",
-  },
+export const PRIMARY_CHAIN: ChainDef = {
+  key: "linea",
+  name: "Linea",
+  chainId: 59144,
+  explorerBaseUrl: "https://lineascan.build",
+  statusTag: "LIVE",
+  note: "Live now. Demo today, token play later.",
+  isPrimary: true,
+  enabled: true,
 };
 
-export const PRIMARY_CHAIN: ChainConfig = CHAINS.linea;
+export const BASE_CHAIN: ChainDef = {
+  key: "base",
+  name: "Base",
+  chainId: 8453,
+  explorerBaseUrl: "https://basescan.org",
+  statusTag: BASE_ENABLED ? "LIVE" : "SOON",
+  note: BASE_ENABLED
+    ? "Enabled. Uses DTC OFT on Base."
+    : "Disabled until Uniswap launch (toggle later).",
+  enabled: BASE_ENABLED,
+};
 
-export const CHAIN_LIST: ChainConfig[] = [CHAINS.linea, CHAINS.base];
+export const CHAIN_LIST: ChainDef[] = [PRIMARY_CHAIN, BASE_CHAIN];
