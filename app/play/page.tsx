@@ -1,4 +1,3 @@
-// app/play/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -76,12 +75,6 @@ function fmtX(n: number) {
   return `${n.toFixed(2)}x`;
 }
 
-function shortenHash(s: string, head = 10, tail = 10) {
-  if (!s) return "—";
-  if (s.length <= head + tail + 3) return s;
-  return `${s.slice(0, head)}…${s.slice(-tail)}`;
-}
-
 function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
   const src = `/chains/${chainKey}.png`;
   return (
@@ -96,15 +89,55 @@ function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
   );
 }
 
+// Build a deterministic 32-byte-ish hex "commit hash" from a uint32 state.
+// (UI placeholder only — on-chain version will use keccak256(commit) w/ reveal later.)
+function buildCommitHash(seed: number) {
+  let s = seed >>> 0;
+  const parts: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    s = xorshift32(s);
+    parts.push(s.toString(16).padStart(8, "0"));
+  }
+  return `0x${parts.join("")}`;
+}
+
+function truncateHash(h: string) {
+  if (!h) return "—";
+  if (h.length <= 24) return h;
+  const first = h.slice(0, 12); // includes 0x + 10
+  const last = h.slice(-10);
+  return `${first}…${last}`;
+}
+
+async function copyText(text: string) {
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    // Fallback
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "true");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 type Outcome = "idle" | "success" | "bust" | "cashout";
-type Mode = "DEMO" | "TOKEN";
 
 export default function PlayPage() {
   // Chain selection (demo)
   const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
-
-  // Mode (DEMO now, TOKEN later)
-  const [mode, setMode] = useState<Mode>("DEMO");
 
   // Demo game state
   const [routeKey, setRouteKey] = useState<RouteKey>("safe");
@@ -114,27 +147,26 @@ export default function PlayPage() {
 
   // Run lifecycle
   const [hasStarted, setHasStarted] = useState<boolean>(false);
-
   const [hops, setHops] = useState<number>(0); // completed hops
   const [currentMult, setCurrentMult] = useState<number>(1.0); // multiplier after completed hops
   const [isBusted, setIsBusted] = useState<boolean>(false);
   const [isCashedOut, setIsCashedOut] = useState<boolean>(false);
 
-  // RNG state (demo)
+  // RNG state
   const [rngState, setRngState] = useState<number>(() => (Date.now() ^ 0x6a41f7f5) >>> 0);
-  const seedHex = useMemo(() => `0x${(rngState >>> 0).toString(16).padStart(8, "0")}`, [rngState]);
 
-  // We DO NOT show next roll preview (prevents “preview win/lose” UI leakage)
-  // Still deterministic for demo, but only show last roll.
-  const commitHash = useMemo(() => `commit:${seedHex}`, [seedHex]);
+  // "Commit hash" (UI only). In real version: commit is stored, reveal happens at settle.
+  const commitHash = useMemo(() => buildCommitHash(rngState), [rngState]);
+  const [commitExpanded, setCommitExpanded] = useState(false);
+  const [commitCopied, setCommitCopied] = useState(false);
 
-  // Last attempt info (for clean roll display + messaging)
+  // Last attempt info (clean roll display)
   const [lastRoll, setLastRoll] = useState<number | null>(null);
   const [lastAttemptHop, setLastAttemptHop] = useState<number | null>(null); // 1..10
   const [lastRequired, setLastRequired] = useState<number | null>(null); // success% for that hop
 
   // Animations / FX
-  const [poppedHop, setPoppedHop] = useState<number | null>(null);
+  const [poppedHop, setPoppedHop] = useState<number | null>(null); // pop completed row
   const [bustFlash, setBustFlash] = useState<boolean>(false);
   const [hopPulse, setHopPulse] = useState<boolean>(false);
 
@@ -145,32 +177,30 @@ export default function PlayPage() {
   // Auto-scroll
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
 
-  // Commit UI toggle
-  const [commitExpanded, setCommitExpanded] = useState<boolean>(false);
-
   const maxBetNote = `Max bet: ${fmtInt(MAX_BET)} DTC`;
 
   const nextHopIndex = hops; // 0-based next hop
   const nextHopNo = hops + 1; // 1..10
 
-  const runEnded = isBusted || isCashedOut;
+  const ended = isBusted || isCashedOut || hops >= MAX_HOPS;
 
-  const canStart = !hasStarted && bet > 0;
-  const canHop = hasStarted && !runEnded && bet > 0 && hops < MAX_HOPS;
-  const canCashOut = hasStarted && !runEnded && hops > 0;
+  const canStart = !hasStarted;
+  const canHop = hasStarted && !ended && bet > 0 && hops < MAX_HOPS;
+  const canCashOut = hasStarted && !ended && hops > 0;
 
   const nextHopSuccess = useMemo(() => {
-    if (!hasStarted) return null;
     if (!canHop) return null;
     return route.success[nextHopIndex];
-  }, [hasStarted, canHop, route.success, nextHopIndex]);
+  }, [canHop, route.success, nextHopIndex]);
 
   const potentialPayout = useMemo(() => Math.round(bet * currentMult), [bet, currentMult]);
 
-  function resetRun(newSeed?: number) {
-    // allowed only when NOT running (we call this from “New run”)
-    setHasStarted(false);
+  function hardNewRun() {
+    // New seed + reset everything
+    const newSeed = ((Date.now() ^ 0x9e3779b9) >>> 0) as number;
+    setRngState(newSeed);
 
+    setHasStarted(false);
     setHops(0);
     setCurrentMult(1.0);
     setIsBusted(false);
@@ -188,18 +218,19 @@ export default function PlayPage() {
     setOutcomeText("");
 
     setCommitExpanded(false);
-
-    if (typeof newSeed === "number") setRngState(newSeed >>> 0);
-    else setRngState(((Date.now() ^ 0x9e3779b9) >>> 0) as number);
+    setCommitCopied(false);
   }
 
   function handleBetChange(raw: string) {
+    // Allow overwrite freely before START, locked after START
+    if (hasStarted) return;
     const cleaned = raw.replace(/[^\d]/g, "");
     const n = cleaned.length ? parseInt(cleaned, 10) : 0;
     setBet(clampInt(n, 0, MAX_BET));
   }
 
   function setBetPreset(v: number) {
+    if (hasStarted) return;
     setBet(clampInt(v, 0, MAX_BET));
   }
 
@@ -245,7 +276,7 @@ export default function PlayPage() {
 
     setOutcome("success");
     setOutcomeText(
-      `Hop ${completedHop} cleared. Roll ${roll.toFixed(3)} <= ${successChance.toFixed(2)}%. Cashout now: ${fmtX(
+      `Hop ${completedHop} cleared. Roll ${roll.toFixed(3)} ≤ ${successChance.toFixed(2)}%. Cashout now: ${fmtX(
         newMult
       )}.`
     );
@@ -266,15 +297,7 @@ export default function PlayPage() {
     setOutcomeText(`Cashed out at ${fmtX(currentMult)}. Payout: ${fmtInt(potentialPayout)} DTC (demo).`);
   }
 
-  async function copyText(txt: string) {
-    try {
-      await navigator.clipboard.writeText(txt);
-    } catch {
-      // ignore
-    }
-  }
-
-  // Auto-scroll to active row on mobile (tiny polish)
+  // Auto-scroll to active/last row on mobile
   useEffect(() => {
     const wrap = tableWrapRef.current;
     if (!wrap) return;
@@ -297,35 +320,76 @@ export default function PlayPage() {
   const routeTitle = routeKey === "safe" ? "Safe Swamp" : routeKey === "wild" ? "Wild Swamp" : "Insane Swamp";
   const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
+  const demoTag = "DEMO";
+  const tokenTag = "TOKEN";
+
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
       <style jsx global>{`
         @keyframes rowPop {
-          0% { transform: scale(1); box-shadow: none; }
-          45% { transform: scale(1.02); box-shadow: 0 0 0 1px rgba(16,185,129,0.35), 0 0 24px rgba(16,185,129,0.20); }
-          100% { transform: scale(1); box-shadow: none; }
+          0% {
+            transform: scale(1);
+            box-shadow: none;
+          }
+          45% {
+            transform: scale(1.02);
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.2);
+          }
+          100% {
+            transform: scale(1);
+            box-shadow: none;
+          }
         }
         @keyframes bustShake {
-          0% { transform: translateX(0); }
-          20% { transform: translateX(-6px); }
-          40% { transform: translateX(6px); }
-          60% { transform: translateX(-5px); }
-          80% { transform: translateX(5px); }
-          100% { transform: translateX(0); }
+          0% {
+            transform: translateX(0);
+          }
+          20% {
+            transform: translateX(-6px);
+          }
+          40% {
+            transform: translateX(6px);
+          }
+          60% {
+            transform: translateX(-5px);
+          }
+          80% {
+            transform: translateX(5px);
+          }
+          100% {
+            transform: translateX(0);
+          }
         }
         @keyframes bustFlash {
-          0% { opacity: 0; }
-          25% { opacity: 0.55; }
-          100% { opacity: 0; }
+          0% {
+            opacity: 0;
+          }
+          25% {
+            opacity: 0.55;
+          }
+          100% {
+            opacity: 0;
+          }
         }
         @keyframes hopPulse {
-          0% { transform: scale(1); }
-          50% { transform: scale(1.03); }
-          100% { transform: scale(1); }
+          0% {
+            transform: scale(1);
+          }
+          50% {
+            transform: scale(1.03);
+          }
+          100% {
+            transform: scale(1);
+          }
         }
         @keyframes activeGlow {
-          0%, 100% { box-shadow: 0 0 0 1px rgba(148,163,184,0.12); }
-          50% { box-shadow: 0 0 0 1px rgba(148,163,184,0.18), 0 0 18px rgba(148,163,184,0.10); }
+          0%,
+          100% {
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12);
+          }
+          50% {
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1);
+          }
         }
       `}</style>
 
@@ -347,36 +411,42 @@ export default function PlayPage() {
             <div>
               <h1 className="text-2xl font-bold">Play</h1>
               <p className="mt-2 text-neutral-300">
-                Choose chain + route + bet, then press <b>START</b>. After START, settings lock until you cash out or bust.
+                Choose your route, set a bet, then decide: <b>HOP</b> or <b>CASH OUT</b> — up to <b>10 hops</b>.
               </p>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
+                  {demoTag}: Local simulation
+                </span>
+                <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 font-semibold text-neutral-100 ring-1 ring-neutral-200/20">
+                  {tokenTag}: Coming next (on-chain wagers)
+                </span>
+              </div>
             </div>
 
             <div className="text-sm text-neutral-400">
-              Mode:{" "}
-              <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
-                {mode}
-              </span>
+              Primary: <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
             </div>
           </div>
 
-          {/* Chain selection (same style as home) */}
+          {/* Chain selection */}
           <div className="mt-6 grid gap-3">
             {CHAIN_LIST.map((c) => {
               const isSelected = c.key === selectedChainKey;
-              const disabled = !c.enabled || hasStarted; // lock after START
+              const isDisabled = c.enabled === false;
+
               return (
                 <button
                   key={c.key}
                   type="button"
-                  disabled={disabled}
                   onClick={() => {
-                    if (!c.enabled) return;
-                    if (hasStarted) return;
+                    if (isDisabled) return;
                     setSelectedChainKey(c.key);
                   }}
+                  disabled={isDisabled}
                   className={[
                     "text-left rounded-2xl border bg-neutral-950 p-4 transition",
-                    disabled ? "cursor-not-allowed opacity-60" : "hover:bg-neutral-900/40",
+                    isDisabled ? "opacity-40 cursor-not-allowed" : "",
                     isSelected ? "border-emerald-500/30 ring-1 ring-emerald-500/20" : "border-neutral-800",
                   ].join(" ")}
                 >
@@ -408,8 +478,14 @@ export default function PlayPage() {
                       <div className="mt-3 text-sm text-neutral-300">{c.note}</div>
 
                       <div className="mt-3 text-xs text-neutral-500">
-                        Chain ID: {c.chainId} - Explorer:{" "}
-                        <span className="text-neutral-300">{c.explorerBaseUrl.replace("https://", "")}</span>
+                        Chain ID: {c.chainId}
+                        {c.explorerBaseUrl ? (
+                          <>
+                            {" "}
+                            - Explorer:{" "}
+                            <span className="text-neutral-300">{c.explorerBaseUrl.replace("https://", "")}</span>
+                          </>
+                        ) : null}
                       </div>
                     </div>
 
@@ -422,7 +498,7 @@ export default function PlayPage() {
                             : "border-neutral-800 bg-neutral-900 text-neutral-400",
                         ].join(" ")}
                       >
-                        {isSelected ? "Selected" : "Select"}
+                        {isSelected ? "Selected" : isDisabled ? "Disabled" : "Select"}
                       </span>
                     </div>
                   </div>
@@ -439,74 +515,34 @@ export default function PlayPage() {
               style={isBusted ? { animation: "bustShake 420ms ease-out" } : undefined}
             >
               <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-neutral-100">Controls</div>
-                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20">
-                  {mode === "DEMO" ? "DEMO" : "TOKEN"}
+                <div className="text-sm font-semibold text-neutral-100">Demo Controls</div>
+                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
+                  {demoTag}
                 </span>
               </div>
 
-              {/* Mode selector */}
               <div className="mt-4">
-                <div className="text-xs text-neutral-400">Mode</div>
-                <div className="mt-2 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (hasStarted) return;
-                      setMode("DEMO");
-                    }}
-                    disabled={hasStarted}
-                    className={[
-                      "rounded-xl border px-4 py-2 text-sm font-semibold transition",
-                      mode === "DEMO"
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                        : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
-                      hasStarted ? "cursor-not-allowed opacity-60" : "",
-                    ].join(" ")}
-                  >
-                    DEMO
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // token mode not implemented yet (button shown but disabled)
-                    }}
-                    disabled
-                    className="cursor-not-allowed rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-sm font-semibold text-neutral-500"
-                    title="Token mode will unlock later"
-                  >
-                    TOKEN (soon)
-                  </button>
-                </div>
-                <div className="mt-2 text-xs text-neutral-500">
-                  DEMO is free and uses local RNG. TOKEN mode will be the real wager version (later).
-                </div>
-              </div>
-
-              <div className="mt-5">
                 <div className="text-xs text-neutral-400">Route</div>
                 <div className="mt-2 flex gap-2">
                   {ROUTES.map((r) => {
                     const active = r.key === routeKey;
-                    const disabled = hasStarted; // lock after START
                     return (
                       <button
                         key={r.key}
                         type="button"
-                        disabled={disabled}
                         onClick={() => {
+                          // Route can be changed only before START
                           if (hasStarted) return;
                           setRouteKey(r.key);
-                          resetRun(rngState);
                         }}
                         className={[
                           "rounded-xl border px-4 py-2 text-sm font-semibold transition",
+                          hasStarted ? "opacity-60 cursor-not-allowed" : "",
                           active
                             ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                             : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
-                          disabled ? "cursor-not-allowed opacity-60" : "",
                         ].join(" ")}
+                        disabled={hasStarted}
                       >
                         {r.label}
                       </button>
@@ -525,41 +561,41 @@ export default function PlayPage() {
                   placeholder="0"
                   disabled={hasStarted}
                   className={[
-                    "mt-2 w-full rounded-xl border bg-neutral-900 px-4 py-3 text-sm text-neutral-50 outline-none ring-0 placeholder:text-neutral-600 focus:border-neutral-700",
-                    hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800",
+                    "mt-2 w-full rounded-xl border bg-neutral-900 px-4 py-3 text-sm text-neutral-50 outline-none ring-0 placeholder:text-neutral-600",
+                    hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800 focus:border-neutral-700",
                   ].join(" ")}
                 />
 
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
-                    disabled={hasStarted}
                     onClick={() => setBetPreset(1_000)}
+                    disabled={hasStarted}
                     className={[
-                      "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold hover:bg-neutral-800/60",
-                      hasStarted ? "cursor-not-allowed border-neutral-900 text-neutral-500" : "border-neutral-800 text-neutral-100",
+                      "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
+                      hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
                   >
                     1k
                   </button>
                   <button
                     type="button"
-                    disabled={hasStarted}
                     onClick={() => setBetPreset(10_000)}
+                    disabled={hasStarted}
                     className={[
-                      "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold hover:bg-neutral-800/60",
-                      hasStarted ? "cursor-not-allowed border-neutral-900 text-neutral-500" : "border-neutral-800 text-neutral-100",
+                      "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
+                      hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
                   >
                     10k
                   </button>
                   <button
                     type="button"
-                    disabled={hasStarted}
                     onClick={() => setBetPreset(100_000)}
+                    disabled={hasStarted}
                     className={[
-                      "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold hover:bg-neutral-800/60",
-                      hasStarted ? "cursor-not-allowed border-neutral-900 text-neutral-500" : "border-neutral-800 text-neutral-100",
+                      "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
+                      hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
                   >
                     100k
@@ -568,7 +604,7 @@ export default function PlayPage() {
 
                 <div className="mt-2 text-xs text-neutral-500">{maxBetNote}</div>
                 <div className="mt-1 text-xs text-neutral-600">
-                  {mode === "DEMO" ? "Demo only. No transactions." : "Token mode not live yet."}
+                  {hasStarted ? "Locked after START." : "Set your wager before START."}
                 </div>
               </div>
 
@@ -577,11 +613,18 @@ export default function PlayPage() {
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold">Run status</div>
                   <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20">
-                    {mode}
+                    {demoTag}
                   </span>
                 </div>
 
                 <div className="mt-3 grid gap-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-neutral-300">State</span>
+                    <span className="font-semibold">
+                      {!hasStarted ? "Not started" : isBusted ? "BUSTED" : isCashedOut ? "CASHED OUT" : "In run"}
+                    </span>
+                  </div>
+
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Hops</span>
                     <span className="font-semibold">
@@ -591,9 +634,7 @@ export default function PlayPage() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Next hop success</span>
-                    <span className="font-semibold">
-                      {nextHopSuccess === null ? "—" : `${nextHopSuccess.toFixed(2)}%`}
-                    </span>
+                    <span className="font-semibold">{nextHopSuccess === null ? "—" : `${nextHopSuccess.toFixed(2)}%`}</span>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -612,29 +653,37 @@ export default function PlayPage() {
                   </div>
                 </div>
 
-                {/* Commit (clean display) */}
+                {/* Commit + Last roll box */}
                 <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-xs text-neutral-300">
-                  <div className="flex items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      className="flex min-w-0 items-center gap-2 text-left text-neutral-300 hover:text-neutral-100"
-                      onClick={() => setCommitExpanded((v) => !v)}
-                    >
-                      <span className="text-neutral-500">Commit</span>
-                      <span className="font-mono text-neutral-200">
-                        {commitExpanded ? commitHash : shortenHash(commitHash, 10, 10)}
+                  {/* Commit hash: collapsed by default, expand with caret, copy full always */}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      // Toggle expand AND copy full (user asked: expand on tap + still copy full)
+                      setCommitExpanded((v) => !v);
+                      const ok = await copyText(commitHash);
+                      if (ok) {
+                        setCommitCopied(true);
+                        window.setTimeout(() => setCommitCopied(false), 900);
+                      }
+                    }}
+                    className="w-full text-left"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-neutral-500">Commit hash</span>
+                      <span className="text-neutral-600">
+                        {commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}
                       </span>
-                      <span className="text-neutral-500">{commitExpanded ? "▴" : "▾"}</span>
-                    </button>
+                    </div>
 
-                    <button
-                      type="button"
-                      onClick={() => copyText(commitHash)}
-                      className="shrink-0 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-100 hover:bg-neutral-800/60"
-                    >
-                      Copy
-                    </button>
-                  </div>
+                    <div className="mt-1 font-mono text-neutral-200 break-all">
+                      {commitExpanded ? commitHash : truncateHash(commitHash)}
+                    </div>
+
+                    <div className="mt-1 text-[11px] text-neutral-600">
+                      Demo placeholder. Real mode: commit stored at START, reveal only at settle.
+                    </div>
+                  </button>
 
                   <div className="mt-3 flex items-center justify-between">
                     <span className="text-neutral-500">Last roll</span>
@@ -649,13 +698,7 @@ export default function PlayPage() {
                   <button
                     type="button"
                     onClick={startRun}
-                    disabled={!canStart}
-                    className={[
-                      "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
-                      canStart
-                        ? "bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
-                        : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
-                    ].join(" ")}
+                    className="rounded-xl bg-emerald-500 px-4 py-3 text-sm font-extrabold tracking-wide text-neutral-950 hover:bg-emerald-400 transition"
                   >
                     START
                   </button>
@@ -692,30 +735,37 @@ export default function PlayPage() {
                       </button>
                     </div>
 
-                    {/* New run appears only AFTER run ends (no reset mid-run) */}
-                    {runEnded ? (
+                    {ended ? (
                       <button
                         type="button"
-                        onClick={() => resetRun()}
+                        onClick={hardNewRun}
                         className="rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-3 text-sm font-semibold text-neutral-100 hover:bg-neutral-800/60"
                       >
-                        New run
-                      </button>
-                    ) : null}
-
-                    {/* After demo ends, show “play for real” option (disabled for now) */}
-                    {runEnded ? (
-                      <button
-                        type="button"
-                        disabled
-                        className="cursor-not-allowed rounded-xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-sm font-semibold text-neutral-500"
-                        title="Token mode will unlock later"
-                      >
-                        Play for real (TOKEN mode coming soon)
+                        NEW RUN
                       </button>
                     ) : null}
                   </>
                 )}
+
+                {/* Real mode CTA (future) */}
+                <div className="mt-2 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3 text-xs text-neutral-300">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold">{tokenTag} mode</span>
+                    <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 text-[11px] font-semibold text-neutral-100 ring-1 ring-neutral-200/20">
+                      SOON
+                    </span>
+                  </div>
+                  <div className="mt-2 text-neutral-400">
+                    After demo polish + 3D animations, we’ll enable on-chain wagers (trusted-signer settle once at end).
+                  </div>
+                  <button
+                    type="button"
+                    disabled
+                    className="mt-2 w-full cursor-not-allowed rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-xs font-semibold text-neutral-500"
+                  >
+                    Play for real (coming soon)
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -725,7 +775,7 @@ export default function PlayPage() {
                 <div>
                   <div className="text-sm font-semibold text-neutral-100">Per-hop risk & cashout (demo table)</div>
                   <div className="mt-1 text-xs text-neutral-500">
-                    UI placeholders. Later we wire to real settlement (signer / VRF / etc).
+                    UI placeholders for now. Later we swap to contract-verified math and settle-once reveal.
                   </div>
                 </div>
                 <div className="text-xs text-neutral-400">
@@ -761,14 +811,25 @@ export default function PlayPage() {
                     const hopNo = i + 1;
 
                     const isCompleted = hopNo <= hops && !isBusted;
-                    const isActive = hopNo === hops + 1 && !isBusted && !isCashedOut && hops < MAX_HOPS && hasStarted;
+                    const isActive = hopNo === hops + 1 && !isBusted && !isCashedOut && hasStarted && hops < MAX_HOPS;
 
                     const rowBase = "grid grid-cols-[90px_1fr_140px] px-4 py-3 text-sm";
-                    const rowBg = isCompleted ? "bg-emerald-500/10" : isActive ? "bg-neutral-900/40" : "bg-neutral-950";
+                    const rowBg = isCompleted
+                      ? "bg-emerald-500/10"
+                      : isActive
+                      ? "bg-neutral-900/40"
+                      : "bg-neutral-950";
 
                     const popStyle = poppedHop === hopNo ? { animation: "rowPop 420ms ease-out" as const } : undefined;
 
+                    // show roll ONLY on last attempted hop row
                     const showRoll = lastAttemptHop === hopNo && lastRoll !== null && lastRequired !== null;
+
+                    // Optional chips:
+                    // - hide CLEARED until >=2 hops
+                    // - show CLEARED only on last 3 completed hops
+                    const clearedVisible =
+                      isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
 
                     const showBustedChip = isBusted && lastAttemptHop === hopNo;
                     const showCashedChip = isCashedOut && hopNo === hops && hops > 0;
@@ -777,6 +838,8 @@ export default function PlayPage() {
                       ? { text: "❌ BUSTED", cls: "bg-red-500/10 text-red-200 ring-red-500/20" }
                       : showCashedChip
                       ? { text: "💰 CASHED", cls: "bg-neutral-50/10 text-neutral-100 ring-neutral-200/20" }
+                      : clearedVisible
+                      ? { text: "✅ CLEARED", cls: "bg-emerald-500/10 text-emerald-200 ring-emerald-500/20" }
                       : null;
 
                     return (
@@ -805,6 +868,7 @@ export default function PlayPage() {
 
                         <div className="text-center">
                           <span className="font-semibold text-neutral-100">{p.toFixed(2)}%</span>
+
                           {showRoll ? (
                             <span className="ml-2 text-xs text-neutral-400">
                               (roll {formatRoll(lastRoll)} / need ≤ {lastRequired!.toFixed(2)}%)
@@ -820,12 +884,11 @@ export default function PlayPage() {
               </div>
 
               <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4 text-sm text-neutral-300">
-                <b>Demo behavior:</b> No “next roll preview” is shown (prevents player-side prediction UI).
-                Later we implement end-settle fairness (Intraverse-style signer / VRF, etc).
+                <b>Demo behavior:</b> No “next roll” preview is shown. Rolls are only displayed after the hop attempt.
               </div>
 
               <div className="mt-3 text-xs text-neutral-600">
-                Selected chain: <span className="text-neutral-300">{selectedChain.name}</span> ({selectedChain.enabled ? "enabled" : "disabled"})
+                Selected chain: <span className="text-neutral-300">{selectedChain.name}</span> (UI only)
               </div>
             </div>
           </div>

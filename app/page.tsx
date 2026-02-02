@@ -1,8 +1,8 @@
-// app/page.tsx
 "use client";
 
+import Link from "next/link";
 import TopNav from "./components/TopNav";
-import { CHAIN_LIST, PRIMARY_CHAIN } from "./lib/chains";
+import { CHAIN_LIST } from "./lib/chains";
 
 function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
   const src = `/chains/${chainKey}.png`;
@@ -29,24 +29,41 @@ export default function HomePage() {
             <div>
               <h1 className="text-2xl font-bold">Lilypad Leap</h1>
               <p className="mt-2 text-neutral-300">
-                Demo-first build. We ship the core loop, then add 3D scenes + animations (win/lose).
+                Choose your chain. Demo is available now. Token mode comes soon.
               </p>
             </div>
 
-            <div className="text-sm text-neutral-400">
-              Primary: <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
+            <div className="flex gap-2">
+              <Link
+                href="/play"
+                className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-extrabold text-neutral-950 hover:bg-emerald-400"
+              >
+                Play
+              </Link>
+              <Link
+                href="/leaderboard"
+                className="rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-sm font-semibold text-neutral-100 hover:bg-neutral-800/60"
+              >
+                Leaderboard
+              </Link>
             </div>
           </div>
 
+          {/* Chain selector cards */}
           <div className="mt-6 grid gap-3">
             {CHAIN_LIST.map((c) => {
-              const disabled = !c.enabled;
+              const explorerHost = c.explorerBaseUrl
+                ? c.explorerBaseUrl.replace("https://", "")
+                : null;
+
               return (
                 <div
                   key={c.key}
                   className={[
                     "rounded-2xl border bg-neutral-950 p-4",
-                    disabled ? "border-neutral-900 opacity-60" : "border-neutral-800",
+                    c.enabled
+                      ? "border-emerald-500/20 ring-1 ring-emerald-500/10"
+                      : "border-neutral-800",
                   ].join(" ")}
                 >
                   <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -76,9 +93,16 @@ export default function HomePage() {
 
                       <div className="mt-3 text-sm text-neutral-300">{c.note}</div>
 
+                      {/* ✅ Safe optional explorer rendering */}
                       <div className="mt-3 text-xs text-neutral-500">
-                        Chain ID: {c.chainId} - Explorer:{" "}
-                        <span className="text-neutral-300">{c.explorerBaseUrl.replace("https://", "")}</span>
+                        Chain ID: {c.chainId}
+                        {explorerHost ? (
+                          <>
+                            {" "}
+                            - Explorer:{" "}
+                            <span className="text-neutral-300">{explorerHost}</span>
+                          </>
+                        ) : null}
                       </div>
                     </div>
 
@@ -86,12 +110,12 @@ export default function HomePage() {
                       <span
                         className={[
                           "rounded-xl border px-4 py-2 text-sm font-semibold",
-                          disabled
-                            ? "border-neutral-800 bg-neutral-900 text-neutral-500"
-                            : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+                          c.enabled
+                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                            : "border-neutral-800 bg-neutral-900 text-neutral-400",
                         ].join(" ")}
                       >
-                        {disabled ? "Disabled" : "Enabled"}
+                        {c.enabled ? "Enabled" : "Disabled"}
                       </span>
                     </div>
                   </div>
@@ -100,11 +124,10 @@ export default function HomePage() {
             })}
           </div>
 
-          <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
-            <div className="text-sm font-semibold text-neutral-100">Next</div>
-            <div className="mt-2 text-sm text-neutral-300">
-              Go to <b>/play</b> to run the demo loop. Token mode will unlock later (same UI).
-            </div>
+          <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 text-sm text-neutral-300">
+            <b>Modes:</b> <span className="text-neutral-100">DEMO</span> is live now.
+            <span className="mx-2 text-neutral-600">•</span>
+            <span className="text-neutral-100">TOKEN</span> mode will be activated on launch.
           </div>
         </div>
       </section>
