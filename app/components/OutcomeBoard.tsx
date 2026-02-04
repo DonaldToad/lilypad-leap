@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import React, { useMemo } from "react";
 
 type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
@@ -45,6 +45,15 @@ function hopHue(t: number) {
   const end = 0;
   return Math.round(start + (end - start) * clamp01(t));
 }
+
+function canShare(n: Navigator): n is Navigator & { share: (data: { title?: string; text?: string; url?: string }) => Promise<void> } {
+  return typeof (n as any).share === "function";
+}
+
+type CSSVars = React.CSSProperties & {
+  ["--dx"]?: string;
+  ["--dy"]?: string;
+};
 
 export default function OutcomeBoard(props: {
   outcome: Outcome;
@@ -105,7 +114,6 @@ export default function OutcomeBoard(props: {
 
   const rightSubline = useMemo(() => {
     if (moment === "cashout" || moment === "maxhit") return "Locked";
-
     if (rightMultDisplay === null) return hops >= maxHops ? "Run complete" : "—";
     return `If hop ${Math.min(hops + 1, maxHops)} clears`;
   }, [moment, rightMultDisplay, hops, maxHops]);
@@ -149,7 +157,7 @@ export default function OutcomeBoard(props: {
   // - Starts green, shifts toward red as hops increase
   // - If busted: always red
   // - If cashout or maxhit: always green
-  const barStyle = useMemo(() => {
+  const barStyle = useMemo<React.CSSProperties>(() => {
     if (moment === "bust") return { backgroundColor: "hsl(0 84% 55%)" };
     if (moment === "cashout" || moment === "maxhit") return { backgroundColor: "hsl(145 76% 45%)" };
 
@@ -179,9 +187,7 @@ export default function OutcomeBoard(props: {
     )} DTC\nProgress: ${Math.min(hops, maxHops)}/${maxHops}`;
 
     try {
-      // @ts-expect-error navigator.share exists on many browsers
-      if (navigator?.share) {
-        // @ts-expect-error
+      if (canShare(navigator)) {
         await navigator.share({ title, text });
         return;
       }
@@ -451,19 +457,12 @@ export default function OutcomeBoard(props: {
           <div
             className={[
               "pointer-events-none absolute inset-0 rounded-3xl",
-              moment === "bust"
-                ? "bg-red-500/10"
-                : moment === "cashout"
-                ? "bg-emerald-500/10"
-                : moment === "maxhit"
-                ? "bg-emerald-500/10"
-                : "bg-emerald-500/10",
+              moment === "bust" ? "bg-red-500/10" : "bg-emerald-500/10",
             ].join(" ")}
           />
 
           {/* FX layers */}
           {showBustFlash ? <div className="fx-bustFlash" /> : null}
-
           {showLightning ? <div key={`light-${animNonce}`} className="fx-lightning" /> : null}
 
           {showConfetti ? (
@@ -496,20 +495,14 @@ export default function OutcomeBoard(props: {
                 const dist = 34 + (i % 5) * 14;
                 const dx = Math.round(Math.cos(ang) * dist) * -1;
                 const dy = Math.round(Math.sin(ang) * dist) * -1;
-                return (
-                  <i
-                    key={i}
-                    style={
-                      {
-                        animationDelay: `${(i % 7) * 26}ms`,
-                        // @ts-expect-error custom CSS vars
-                        "--dx": `${dx}px`,
-                        // @ts-expect-error custom CSS vars
-                        "--dy": `${dy}px`,
-                      } as any
-                    }
-                  />
-                );
+
+                const style: CSSVars = {
+                  animationDelay: `${(i % 7) * 26}ms`,
+                  ["--dx"]: `${dx}px`,
+                  ["--dy"]: `${dy}px`,
+                };
+
+                return <i key={i} style={style} />;
               })}
             </div>
           ) : null}
@@ -520,20 +513,10 @@ export default function OutcomeBoard(props: {
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2">
               <div className="text-[11px] font-semibold text-neutral-400">CURRENT</div>
               <div className="mt-0.5 flex items-baseline justify-between gap-3">
-                <div
-                  className={[
-                    "text-sm font-extrabold",
-                    moment === "bust" ? "text-red-200" : "text-neutral-100",
-                  ].join(" ")}
-                >
+                <div className={["text-sm font-extrabold", moment === "bust" ? "text-red-200" : "text-neutral-100"].join(" ")}>
                   {currentMultDisplay.toFixed(2)}x
                 </div>
-                <div
-                  className={[
-                    "text-sm font-extrabold",
-                    moment === "bust" ? "text-red-300" : "text-emerald-200",
-                  ].join(" ")}
-                >
+                <div className={["text-sm font-extrabold", moment === "bust" ? "text-red-300" : "text-emerald-200"].join(" ")}>
                   {fmtInt(currentReturnDisplay)} DTC
                 </div>
               </div>
@@ -567,9 +550,9 @@ export default function OutcomeBoard(props: {
             <img
               src={toadSrc}
               alt="toad"
-              width={220}
-              height={220}
-              className="h-[175px] w-[175px] md:h-[210px] md:w-[210px]"
+              width={240}
+              height={240}
+              className="h-[185px] w-[185px] md:h-[220px] md:w-[220px]"
               style={{ animation: "floaty 1.9s ease-in-out infinite" }}
               draggable={false}
             />
@@ -600,10 +583,7 @@ export default function OutcomeBoard(props: {
               </div>
 
               <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full rounded-full"
-                  style={{ width: `${progressPct}%`, transition: "width 240ms ease-out", ...barStyle }}
-                />
+                <div className="h-full rounded-full" style={{ width: `${progressPct}%`, transition: "width 240ms ease-out", ...barStyle }} />
               </div>
             </div>
 
