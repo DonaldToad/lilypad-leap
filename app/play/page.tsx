@@ -10,7 +10,7 @@ type ModeKey = "safe" | "wild" | "insane";
 const MAX_HOPS = 10;
 
 // IMPORTANT: Liquidity protection
-const MAX_AMOUNT = 10_000;
+const MAX_AMOUNT = 12_000; // CHANGED from 10,000
 const MIN_AMOUNT = 1;
 
 // Fixed per-hop success + fixed payout tables (approved)
@@ -102,6 +102,24 @@ function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
   );
 }
 
+// DTC icon (served from your assets repo via jsdelivr)
+const DTC_ICON_SRC =
+  "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
+
+function DtcIcon({ size = 14 }: { size?: number }) {
+  return (
+    <img
+      src={DTC_ICON_SRC}
+      alt="DTC"
+      width={size}
+      height={size}
+      className="inline-block align-[-2px]"
+      loading="lazy"
+      decoding="async"
+    />
+  );
+}
+
 // Build a deterministic 32-byte-ish hex "commit hash" from a uint32 state.
 // UI placeholder only — real version: keccak256(commit) stored at START, reveal at settle.
 function buildCommitHash(seed: number) {
@@ -153,7 +171,9 @@ type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
 
 export default function PlayPage() {
   // Chain selection (UI-only demo)
-  const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
+  const [selectedChainKey, setSelectedChainKey] = useState<string>(
+    PRIMARY_CHAIN.key
+  );
 
   // Mode selection
   const [modeKey, setModeKey] = useState<ModeKey>("safe");
@@ -172,7 +192,9 @@ export default function PlayPage() {
   const [isCashedOut, setIsCashedOut] = useState<boolean>(false);
 
   // RNG state
-  const [rngState, setRngState] = useState<number>(() => (Date.now() ^ 0x6a41f7f5) >>> 0);
+  const [rngState, setRngState] = useState<number>(
+    () => (Date.now() ^ 0x6a41f7f5) >>> 0
+  );
 
   // Commit hash
   const commitHash = useMemo(() => buildCommitHash(rngState), [rngState]);
@@ -207,6 +229,12 @@ export default function PlayPage() {
   // Scroll helper
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
 
+  // Primary CTA ref (mobile scroll target)
+  const hopCtaRef = useRef<HTMLButtonElement | null>(null);
+
+  // NEW: remember last amount used at START, so PLAY AGAIN can reuse it
+  const lastStartedAmountRef = useRef<number>(1000);
+
   // Derived tables for this mode (fixed)
   const multTable = useMemo(() => mode.mults, [modeKey]);
 
@@ -221,12 +249,21 @@ export default function PlayPage() {
 
   // IMPORTANT: allow Cash Out at hop 10 (bug fix)
   const canStart = !hasStarted && amount >= MIN_AMOUNT;
-  const canHop = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops < MAX_HOPS;
-  const canCashOut = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops > 0; // includes hops==10
+  const canHop =
+    hasStarted && !isFailed && !isCashedOut && !actionLocked && hops < MAX_HOPS;
+  const canCashOut =
+    hasStarted &&
+    !isFailed &&
+    !isCashedOut &&
+    !actionLocked &&
+    hops > 0; // includes hops==10
 
   const ended = isFailed || isCashedOut;
 
-  const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
+  const currentReturn = useMemo(
+    () => Math.floor(amount * currentMult),
+    [amount, currentMult]
+  );
 
   // “Next hop success” UI
   const nextHopSuccessExact = useMemo(() => {
@@ -238,6 +275,36 @@ export default function PlayPage() {
     if (!canHop) return null;
     return multTable[nextHopIndex];
   }, [canHop, multTable, nextHopIndex]);
+
+  // NEW: values for the top strip (current + next)
+  const currentPrize = useMemo(() => {
+    if (!hasStarted) return 0;
+    return Math.floor(amount * (hops === 0 ? 1.0 : currentMult));
+  }, [hasStarted, amount, hops, currentMult]);
+
+  const nextMult = useMemo(() => {
+    if (!hasStarted) return null;
+    if (hops >= MAX_HOPS) return null;
+    return multTable[nextHopIndex];
+  }, [hasStarted, hops, multTable, nextHopIndex]);
+
+  const nextPrize = useMemo(() => {
+    if (nextMult === null) return null;
+    return Math.floor(amount * nextMult);
+  }, [amount, nextMult]);
+
+  // NEW: busted display for top CURRENT strip
+  const topCurrentMult = useMemo(() => {
+    if (!hasStarted) return null;
+    if (isFailed) return 0;
+    return hops === 0 ? 1.0 : currentMult;
+  }, [hasStarted, isFailed, hops, currentMult]);
+
+  const topCurrentPrize = useMemo(() => {
+    if (!hasStarted) return null;
+    if (isFailed) return 0;
+    return currentPrize;
+  }, [hasStarted, isFailed, currentPrize]);
 
   // Default table behavior: show all on desktop, collapsed on mobile
   useEffect(() => {
@@ -269,13 +336,30 @@ export default function PlayPage() {
     }, ms);
   }
 
+  // Mobile scroll to the primary CTA (MetaMask-friendly)
+  function scrollToHopCta() {
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
+    if (!isMobile) return;
+    const el = hopCtaRef.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+  }
+
   function triggerAnim(ev: AnimEvent) {
     setAnimEvent(ev);
     setAnimNonce((n) => n + 1);
 
     // Dopamine beat: lock buttons until the “moment” finishes
     const ms =
-      ev === "hop_ok" ? 260 : ev === "hop_fail" ? 520 : ev === "cash_out" ? 520 : ev === "max_hit" ? 680 : 0;
+      ev === "hop_ok"
+        ? 260
+        : ev === "hop_fail"
+        ? 520
+        : ev === "cash_out"
+        ? 520
+        : ev === "max_hit"
+        ? 680
+        : 0;
 
     lockActions(ms);
   }
@@ -308,6 +392,27 @@ export default function PlayPage() {
     setAnimNonce((n) => n + 1);
 
     lockActions(0);
+  }
+
+  // NEW: "PLAY AGAIN" uses previous started amount, and starts immediately
+  function playAgainSameAmount() {
+    const v = clampInt(
+      lastStartedAmountRef.current || amount,
+      MIN_AMOUNT,
+      MAX_AMOUNT
+    );
+    setAmount(v);
+    setAmountRaw(String(v));
+    resetRunNewSeed();
+    window.setTimeout(() => {
+      startRun();
+    }, 0);
+  }
+
+  // NEW: "CHANGE AMOUNT" ends the run but preserves the last used amount in input for editing
+  function changeAmountFlow() {
+    resetRunNewSeed();
+    window.setTimeout(() => scrollToHopCta(), 50);
   }
 
   function sanitizeAndSetAmount(nextRaw: string) {
@@ -350,9 +455,15 @@ export default function PlayPage() {
     setAmount(clamped);
     setAmountRaw(String(clamped));
 
+    // Remember this amount for PLAY AGAIN
+    lastStartedAmountRef.current = clamped;
+
     setHasStarted(true);
     setOutcome("idle");
     setOutcomeText("");
+
+    // Mobile: bring primary CTA into view
+    window.setTimeout(() => scrollToHopCta(), 50);
   }
 
   function hopOnce() {
@@ -376,12 +487,18 @@ export default function PlayPage() {
     if (!passed) {
       setIsFailed(true);
       setOutcome("bust");
-      setOutcomeText(`Failed on hop ${nextHopNo}. Roll ${roll.toFixed(3)} > ${successPct.toFixed(6)}%.`);
+      setOutcomeText(
+        `Failed on hop ${nextHopNo}. Roll ${roll.toFixed(
+          3
+        )} > ${successPct.toFixed(6)}%.`
+      );
 
       setFailFlash(true);
       window.setTimeout(() => setFailFlash(false), 380);
 
       triggerAnim("hop_fail");
+
+      window.setTimeout(() => scrollToHopCta(), 80);
       return;
     }
 
@@ -394,7 +511,9 @@ export default function PlayPage() {
 
     setOutcome("success");
     setOutcomeText(
-      `Hop ${completedHop} cleared. Roll ${roll.toFixed(3)} ≤ ${successPct.toFixed(6)}%. Cash Out now: ${fmtX(newMult)}.`
+      `Hop ${completedHop} cleared. Roll ${roll.toFixed(
+        3
+      )} ≤ ${successPct.toFixed(6)}%. Cash Out now: ${fmtX(newMult)}.`
     );
 
     setPoppedHop(completedHop);
@@ -405,9 +524,15 @@ export default function PlayPage() {
     // MAX HIT reached
     if (completedHop >= MAX_HOPS) {
       setOutcome("maxhit");
-      setOutcomeText(`MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`);
+      setOutcomeText(
+        `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(
+          newMult
+        )}.`
+      );
       triggerAnim("max_hit");
     }
+
+    window.setTimeout(() => scrollToHopCta(), 120);
   }
 
   function cashOut() {
@@ -415,12 +540,18 @@ export default function PlayPage() {
 
     setIsCashedOut(true);
     setOutcome("cashout");
-    setOutcomeText(`Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`);
+    setOutcomeText(
+      `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(
+        currentReturn
+      )} DTC (demo).`
+    );
 
     triggerAnim("cash_out");
+
+    window.setTimeout(() => scrollToHopCta(), 100);
   }
 
-  // Auto-scroll to relevant row on mobile
+  // Auto-scroll to relevant row on mobile (table)
   useEffect(() => {
     const wrap = tableWrapRef.current;
     if (!wrap) return;
@@ -440,13 +571,21 @@ export default function PlayPage() {
     el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   }, [hops, isFailed, isCashedOut, lastAttemptHop]);
 
-  const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
+  // Ensure mobile scroll prefers the primary CTA on key state changes
+  useEffect(() => {
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
+    if (!isMobile) return;
+    window.setTimeout(() => scrollToHopCta(), 60);
+  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked]);
+
+  const selectedChain =
+    CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   // Visible hop rows (mobile-friendly collapse)
   const visibleHopSet = useMemo(() => {
-    if (showAllSteps) return new Set<number>(Array.from({ length: MAX_HOPS }, (_, i) => i + 1));
+    if (showAllSteps)
+      return new Set<number>(Array.from({ length: MAX_HOPS }, (_, i) => i + 1));
 
-    // Collapsed view
     const s = new Set<number>();
 
     if (!hasStarted) {
@@ -463,7 +602,6 @@ export default function PlayPage() {
       return s;
     }
 
-    // In run or max hit
     if (hops <= 0) {
       s.add(1);
       s.add(2);
@@ -476,15 +614,11 @@ export default function PlayPage() {
       return s;
     }
 
-    // Show current hop, next hop, and previous hop for context
     s.add(Math.max(1, hops - 1));
     s.add(hops);
     s.add(hops + 1);
     return s;
   }, [showAllSteps, hasStarted, isFailed, lastAttemptHop, hops]);
-
-  const demoTag = "DEMO";
-  const tokenTag = "TOKEN";
 
   // 2 lilypads “no assets” look classes
   const padFxClass =
@@ -498,7 +632,8 @@ export default function PlayPage() {
       ? "padFxMax"
       : "";
 
-  const modeToneClass = modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
+  const modeToneClass =
+    modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -510,7 +645,8 @@ export default function PlayPage() {
           }
           45% {
             transform: scale(1.02);
-            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.2);
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35),
+              0 0 24px rgba(16, 185, 129, 0.2);
           }
           100% {
             transform: scale(1);
@@ -565,7 +701,8 @@ export default function PlayPage() {
             box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12);
           }
           50% {
-            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1);
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18),
+              0 0 18px rgba(148, 163, 184, 0.1);
           }
         }
 
@@ -640,21 +777,57 @@ export default function PlayPage() {
           }
         }
 
-        /* Tone backgrounds for the 16:9 canvas container */
+        /* Tone backgrounds for the canvas container */
         .toneSafe {
-          background: radial-gradient(circle at 50% 15%, rgba(56, 189, 248, 0.14), transparent 55%),
-            radial-gradient(circle at 25% 85%, rgba(34, 197, 94, 0.12), transparent 55%),
-            linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.25));
+          background: radial-gradient(
+              circle at 50% 15%,
+              rgba(56, 189, 248, 0.14),
+              transparent 55%
+            ),
+            radial-gradient(
+              circle at 25% 85%,
+              rgba(34, 197, 94, 0.12),
+              transparent 55%
+            ),
+            linear-gradient(
+              180deg,
+              rgba(2, 6, 23, 0.55),
+              rgba(2, 6, 23, 0.25)
+            );
         }
         .toneWild {
-          background: radial-gradient(circle at 50% 15%, rgba(168, 85, 247, 0.16), transparent 55%),
-            radial-gradient(circle at 25% 85%, rgba(34, 197, 94, 0.1), transparent 55%),
-            linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.25));
+          background: radial-gradient(
+              circle at 50% 15%,
+              rgba(168, 85, 247, 0.16),
+              transparent 55%
+            ),
+            radial-gradient(
+              circle at 25% 85%,
+              rgba(34, 197, 94, 0.1),
+              transparent 55%
+            ),
+            linear-gradient(
+              180deg,
+              rgba(2, 6, 23, 0.55),
+              rgba(2, 6, 23, 0.25)
+            );
         }
         .toneInsane {
-          background: radial-gradient(circle at 50% 15%, rgba(244, 63, 94, 0.16), transparent 55%),
-            radial-gradient(circle at 25% 85%, rgba(250, 204, 21, 0.12), transparent 55%),
-            linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.25));
+          background: radial-gradient(
+              circle at 50% 15%,
+              rgba(244, 63, 94, 0.16),
+              transparent 55%
+            ),
+            radial-gradient(
+              circle at 25% 85%,
+              rgba(250, 204, 21, 0.12),
+              transparent 55%
+            ),
+            linear-gradient(
+              180deg,
+              rgba(2, 6, 23, 0.55),
+              rgba(2, 6, 23, 0.25)
+            );
         }
 
         /* Event FX class applied to pad wrapper divs */
@@ -690,7 +863,8 @@ export default function PlayPage() {
             <div>
               <h1 className="text-2xl font-bold">Play</h1>
               <p className="mt-2 text-neutral-300">
-                Choose a route, set an amount, then decide: <b>HOP</b> or <b>CASH OUT</b> — up to <b>10 hops</b>.
+                Choose a route, set an amount, then decide: <b>HOP</b> or{" "}
+                <b>CASH OUT</b> — up to <b>10 hops</b>.
               </p>
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -708,81 +882,69 @@ export default function PlayPage() {
             </div>
           </div>
 
-          {/* Chain selection */}
-          <div className="mt-6 grid gap-3">
-            {CHAIN_LIST.map((c) => {
-              const isSelected = c.key === selectedChainKey;
-              const isDisabled = c.enabled === false;
+          {/* Chain selection (compact switch) */}
+          <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div className="text-sm font-semibold text-neutral-100">Network</div>
 
-              return (
-                <button
-                  key={c.key}
-                  type="button"
-                  onClick={() => {
-                    if (isDisabled) return;
-                    setSelectedChainKey(c.key);
-                  }}
-                  disabled={isDisabled}
-                  className={[
-                    "text-left rounded-2xl border bg-neutral-950 p-4 transition",
-                    isDisabled ? "opacity-40 cursor-not-allowed" : "",
-                    isSelected ? "border-emerald-500/30 ring-1 ring-emerald-500/20" : "border-neutral-800",
-                  ].join(" ")}
-                >
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <div className="flex items-center gap-3">
+              <div className="flex w-full max-w-xl items-center justify-between rounded-2xl border border-neutral-800 bg-neutral-900/40 p-1">
+                {CHAIN_LIST.map((c) => {
+                  const isSelected = c.key === selectedChainKey;
+                  const isDisabled = c.enabled === false;
+
+                  return (
+                    <button
+                      key={c.key}
+                      type="button"
+                      onClick={() => {
+                        if (isDisabled) return;
+                        setSelectedChainKey(c.key);
+                      }}
+                      disabled={isDisabled}
+                      className={[
+                        "flex flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
+                        isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-neutral-800/40",
+                        isSelected
+                          ? "bg-neutral-950 ring-1 ring-emerald-500/20 border border-emerald-500/20"
+                          : "border border-transparent",
+                      ].join(" ")}
+                    >
+                      <div className="flex items-center gap-2">
                         <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
-                        <div className="flex items-center gap-2">
-                          <div className="text-lg font-semibold">{c.name}</div>
-
-                          <span
-                            className={
-                              c.statusTag === "LIVE"
-                                ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20"
-                                : "rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/20"
-                            }
-                          >
-                            {c.statusTag}
-                          </span>
-
-                          {c.isPrimary ? (
-                            <span className="rounded-full bg-neutral-800/60 px-2 py-0.5 text-xs text-neutral-200 ring-1 ring-neutral-700">
-                              PRIMARY
-                            </span>
-                          ) : null}
+                        <div className="leading-tight">
+                          <div className="text-sm font-semibold text-neutral-100">{c.name}</div>
+                          <div className="text-[11px] text-neutral-500">
+                            Chain ID: {c.chainId}
+                          </div>
                         </div>
                       </div>
 
-                      <div className="mt-3 text-sm text-neutral-300">{c.note}</div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={
+                            c.statusTag === "LIVE"
+                              ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-200 ring-1 ring-emerald-500/20"
+                              : "rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-200 ring-1 ring-amber-500/20"
+                          }
+                        >
+                          {c.statusTag}
+                        </span>
 
-                      <div className="mt-3 text-xs text-neutral-500">
-                        Chain ID: {c.chainId}
-                        {c.explorerBaseUrl ? (
-                          <>
-                            {" "}
-                            - Explorer: <span className="text-neutral-300">{c.explorerBaseUrl.replace("https://", "")}</span>
-                          </>
+                        {c.isPrimary ? (
+                          <span className="hidden rounded-full bg-neutral-800/60 px-2 py-0.5 text-[11px] font-semibold text-neutral-200 ring-1 ring-neutral-700 md:inline">
+                            PRIMARY
+                          </span>
                         ) : null}
                       </div>
-                    </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
-                    <div className="flex gap-2">
-                      <span
-                        className={[
-                          "rounded-xl border px-4 py-2 text-sm font-semibold",
-                          isSelected
-                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                            : "border-neutral-800 bg-neutral-900 text-neutral-400",
-                        ].join(" ")}
-                      >
-                        {isSelected ? "Selected" : isDisabled ? "Disabled" : "Select"}
-                      </span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
+            <div className="mt-2 text-xs text-neutral-500">
+              {selectedChain.note}
+            </div>
           </div>
 
           {/* Main play UI */}
@@ -842,7 +1004,9 @@ export default function PlayPage() {
                   disabled={hasStarted}
                   className={[
                     "mt-2 w-full rounded-xl border bg-neutral-900 px-4 py-3 text-sm text-neutral-50 outline-none ring-0 placeholder:text-neutral-600",
-                    hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800 focus:border-neutral-700",
+                    hasStarted
+                      ? "cursor-not-allowed border-neutral-900 opacity-60"
+                      : "border-neutral-800 focus:border-neutral-700",
                   ].join(" ")}
                 />
 
@@ -853,10 +1017,12 @@ export default function PlayPage() {
                     disabled={hasStarted}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
-                      hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800 hover:bg-neutral-800/60",
+                      hasStarted
+                        ? "cursor-not-allowed border-neutral-900 opacity-60"
+                        : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
                   >
-                    1,000
+                    1,000 <DtcIcon />
                   </button>
                   <button
                     type="button"
@@ -864,30 +1030,38 @@ export default function PlayPage() {
                     disabled={hasStarted}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
-                      hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800 hover:bg-neutral-800/60",
+                      hasStarted
+                        ? "cursor-not-allowed border-neutral-900 opacity-60"
+                        : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
                   >
-                    5,000
+                    5,000 <DtcIcon />
                   </button>
                   <button
                     type="button"
-                    onClick={() => setAmountPreset(10_000)}
+                    onClick={() => setAmountPreset(12_000)}
                     disabled={hasStarted}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
-                      hasStarted ? "cursor-not-allowed border-neutral-900 opacity-60" : "border-neutral-800 hover:bg-neutral-800/60",
+                      hasStarted
+                        ? "cursor-not-allowed border-neutral-900 opacity-60"
+                        : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
                   >
-                    10,000
+                    12,000 <DtcIcon />
                   </button>
                 </div>
 
-                <div className="mt-2 text-xs text-neutral-500">Max game = {fmtInt(MAX_AMOUNT)} DTC</div>
-                <div className="mt-1 text-xs text-neutral-600">{hasStarted ? "Locked after START." : "Set before START."}</div>
+                <div className="mt-2 text-xs text-neutral-500">
+                  Max game = {fmtInt(MAX_AMOUNT)} <DtcIcon size={12} />
+                </div>
+                <div className="mt-1 text-xs text-neutral-600">
+                  {hasStarted ? "Locked after START." : "Set before START."}
+                </div>
 
                 {maxClampNotice ? (
                   <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                    Max game = {fmtInt(MAX_AMOUNT)} DTC
+                    Max game = {fmtInt(MAX_AMOUNT)} <DtcIcon size={12} />
                   </div>
                 ) : null}
               </div>
@@ -929,23 +1103,34 @@ export default function PlayPage() {
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Next hop success</span>
                     <span className="font-semibold">
-                      {nextHopSuccessExact === null ? "—" : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(6)}%)`}
+                      {nextHopSuccessExact === null
+                        ? "—"
+                        : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(6)}%)`}
                     </span>
                   </div>
 
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Amount</span>
-                    <span className="font-semibold">{fmtInt(amount)} DTC</span>
+                    <span className="font-semibold">
+                      {fmtInt(amount)}{" "}
+                      <span className="ml-1">
+                        <DtcIcon size={12} />
+                      </span>
+                    </span>
                   </div>
 
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Cash Out now</span>
-                    <span className="font-semibold">{hops === 0 ? "—" : fmtX(currentMult)}</span>
+                    <span className="font-semibold">
+                      {hops === 0 ? "—" : fmtX(currentMult)}
+                    </span>
                   </div>
 
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Estimated return</span>
-                    <span className="font-semibold">{hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}</span>
+                    <span className="font-semibold">
+                      {hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}
+                    </span>
                   </div>
                 </div>
 
@@ -965,10 +1150,12 @@ export default function PlayPage() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-neutral-500">Commit hash</span>
-                      <span className="text-neutral-600">{commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}</span>
+                      <span className="text-neutral-600">
+                        {commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}
+                      </span>
                     </div>
 
-                    <div className="mt-1 font-mono text-neutral-200 break-all">
+                    <div className="mt-1 break-all font-mono text-neutral-200">
                       {commitExpanded ? commitHash : truncateHashFirstLast(commitHash)}
                     </div>
 
@@ -1024,7 +1211,9 @@ export default function PlayPage() {
                         disabled={!canCashOut}
                         className={[
                           "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
-                          canCashOut ? "bg-neutral-50 text-neutral-950 hover:bg-white" : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
+                          canCashOut
+                            ? "bg-neutral-50 text-neutral-950 hover:bg-white"
+                            : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
                         ].join(" ")}
                       >
                         CASH OUT
@@ -1071,8 +1260,12 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">Animation Canvas</div>
-                    <div className="mt-1 text-xs text-neutral-500">Two lilypads only • event-driven FX</div>
+                    <div className="text-sm font-semibold text-neutral-100">
+                      Animation Canvas
+                    </div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      Two lilypads only • event-driven FX
+                    </div>
                   </div>
                   <div className="text-xs text-neutral-400">
                     Chain: <span className="text-neutral-200">{selectedChain.name}</span> (UI)
@@ -1080,7 +1273,13 @@ export default function PlayPage() {
                 </div>
 
                 <div className="mt-4 overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/30">
-                  <div className={`relative w-full ${modeToneClass}`} style={{ paddingTop: "56.25%" }}>
+                  <div
+                    className={`relative w-full ${modeToneClass}`}
+                    style={{
+                      paddingTop: "64%",
+                      minHeight: 420,
+                    }}
+                  >
                     {/* Water + lilypads (no assets) */}
                     <div className="absolute inset-0">
                       <div className="absolute inset-0 bg-gradient-to-b from-neutral-950/20 via-neutral-950/10 to-neutral-950/30" />
@@ -1100,7 +1299,8 @@ export default function PlayPage() {
                           style={{
                             background:
                               "radial-gradient(circle at 35% 35%, rgba(34,197,94,0.22), rgba(34,197,94,0.10) 45%, rgba(16,185,129,0.05) 70%, rgba(0,0,0,0) 100%)",
-                            boxShadow: "inset 0 0 0 1px rgba(16,185,129,0.08), 0 10px 30px rgba(0,0,0,0.35)",
+                            boxShadow:
+                              "inset 0 0 0 1px rgba(16,185,129,0.08), 0 10px 30px rgba(0,0,0,0.35)",
                             animation: "padBob 1.8s ease-in-out infinite",
                           }}
                         />
@@ -1115,7 +1315,10 @@ export default function PlayPage() {
                           className="absolute left-1/2 top-1/2 h-[120%] w-[120%] rounded-[999px] border border-neutral-50/10"
                           style={{
                             transform: "translate(-50%, -50%)",
-                            animation: animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
+                            animation:
+                              animEvent === "hop_ok" || animEvent === "hop_fail"
+                                ? "padRipple 520ms ease-out"
+                                : "none",
                           }}
                         />
                       </div>
@@ -1127,7 +1330,8 @@ export default function PlayPage() {
                           style={{
                             background:
                               "radial-gradient(circle at 40% 40%, rgba(34,197,94,0.18), rgba(34,197,94,0.08) 50%, rgba(16,185,129,0.03) 75%, rgba(0,0,0,0) 100%)",
-                            boxShadow: "inset 0 0 0 1px rgba(16,185,129,0.06), 0 8px 24px rgba(0,0,0,0.32)",
+                            boxShadow:
+                              "inset 0 0 0 1px rgba(16,185,129,0.06), 0 8px 24px rgba(0,0,0,0.32)",
                             animation: "padBob 2.1s ease-in-out infinite",
                           }}
                         />
@@ -1145,6 +1349,62 @@ export default function PlayPage() {
                       </div>
                     </div>
 
+                    {/* Top hop strip (current + next: multiplier + payout) */}
+                    <div className="absolute left-0 right-0 top-0 z-20 p-3">
+                      <div className="mx-auto flex w-full max-w-md items-center justify-between gap-2 rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 backdrop-blur">
+                        <div className="min-w-0 flex-1 rounded-xl bg-neutral-50/5 px-3 py-2 ring-1 ring-neutral-200/10">
+                          <div className="text-[11px] font-semibold text-neutral-400">CURRENT</div>
+                          <div className="mt-0.5 flex items-baseline justify-between gap-2">
+                            <div
+                              className={[
+                                "text-sm font-extrabold",
+                                isFailed ? "text-red-200" : "text-neutral-100",
+                              ].join(" ")}
+                            >
+                              {topCurrentMult === null
+                                ? "—"
+                                : topCurrentMult === 0
+                                ? "0.00x"
+                                : fmtX(topCurrentMult)}
+                            </div>
+
+                            <div
+                              className={[
+                                "text-sm font-extrabold",
+                                isFailed ? "text-red-300" : "text-emerald-200",
+                              ].join(" ")}
+                            >
+                              {topCurrentPrize === null
+                                ? "—"
+                                : `${fmtInt(topCurrentPrize)} DTC`}
+                            </div>
+                          </div>
+                          <div className="mt-1 text-[11px] text-neutral-500">
+                            {hasStarted ? `Hop ${Math.min(hops, MAX_HOPS)}/${MAX_HOPS}` : "Not started"}
+                          </div>
+                        </div>
+
+                        <div className="min-w-0 flex-1 rounded-xl bg-neutral-50/5 px-3 py-2 ring-1 ring-neutral-200/10">
+                          <div className="text-[11px] font-semibold text-neutral-400">NEXT</div>
+                          <div className="mt-0.5 flex items-baseline justify-between gap-2">
+                            <div className="text-sm font-extrabold text-neutral-100">
+                              {nextMult === null ? "—" : fmtX(nextMult)}
+                            </div>
+                            <div className="text-sm font-extrabold text-emerald-200">
+                              {nextPrize === null ? "—" : `${fmtInt(nextPrize)} DTC`}
+                            </div>
+                          </div>
+                          <div className="mt-1 text-[11px] text-neutral-500">
+                            {nextMult === null
+                              ? hops >= MAX_HOPS
+                                ? "MAX HIT reached"
+                                : "—"
+                              : `If hop ${Math.min(hops + 1, MAX_HOPS)} clears`}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
                     {/* Board layer */}
                     <div key={`${animEvent}-${animNonce}`} className="absolute inset-0 z-10">
                       <OutcomeBoard
@@ -1159,6 +1419,78 @@ export default function PlayPage() {
                       />
                     </div>
                   </div>
+                </div>
+              </div>
+
+              {/* Primary CTA under Canvas (mobile-friendly) */}
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+                {!hasStarted ? (
+                  <button
+                    type="button"
+                    onClick={startRun}
+                    disabled={!canStart}
+                    className={[
+                      "w-full rounded-2xl px-5 py-4 text-base font-extrabold tracking-wide transition",
+                      canStart
+                        ? "bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
+                        : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
+                    ].join(" ")}
+                  >
+                    START
+                  </button>
+                ) : isFailed ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      ref={hopCtaRef}
+                      type="button"
+                      onClick={playAgainSameAmount}
+                      className="rounded-2xl bg-emerald-500 px-4 py-4 text-base font-extrabold tracking-wide text-neutral-950 hover:bg-emerald-400"
+                    >
+                      PLAY AGAIN
+                    </button>
+                    <button
+                      type="button"
+                      onClick={changeAmountFlow}
+                      className="rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-4 text-base font-extrabold tracking-wide text-neutral-100 hover:bg-neutral-800/60"
+                    >
+                      CHANGE AMOUNT
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    ref={hopCtaRef}
+                    type="button"
+                    onClick={() => {
+                      if (hops >= MAX_HOPS) {
+                        if (canCashOut) cashOut();
+                      } else {
+                        hopOnce();
+                      }
+                      window.setTimeout(() => scrollToHopCta(), 50);
+                    }}
+                    disabled={hops >= MAX_HOPS ? !canCashOut : !canHop}
+                    className={[
+                      "w-full rounded-2xl px-5 py-5 text-lg font-extrabold tracking-wide transition",
+                      hops >= MAX_HOPS
+                        ? canCashOut
+                          ? "bg-neutral-50 text-neutral-950 hover:bg-white"
+                          : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500"
+                        : canHop
+                        ? "bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
+                        : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
+                    ].join(" ")}
+                    style={hopPulse ? { animation: "hopPulse 160ms ease-out" } : undefined}
+                  >
+                    {hops >= MAX_HOPS ? "CASH OUT (MAX HIT)" : actionLocked ? "..." : "HOP"}
+                  </button>
+                )}
+
+                <div className="mt-2 text-center text-[11px] text-neutral-500">
+                  {isFailed
+                    ? "Busted — revenge run?"
+                    : hops >= MAX_HOPS
+                    ? "MAX HIT reached — cash out now."
+                    : "Primary action (easier reach on mobile)."}
                 </div>
               </div>
 
@@ -1184,7 +1516,9 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">Steps (demo math table)</div>
+                    <div className="text-sm font-semibold text-neutral-100">
+                      Steps (demo math table)
+                    </div>
                     <div className="mt-1 text-xs text-neutral-500">
                       Success is fixed per mode; UI shows rounded-up whole %, but math uses exact precision.
                     </div>
@@ -1214,14 +1548,27 @@ export default function PlayPage() {
                       if (!visibleHopSet.has(hopNo)) return null;
 
                       const isCompleted = hopNo <= hops && !isFailed;
-                      const isActive = hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
+                      const isActive =
+                        hopNo === hops + 1 &&
+                        !isFailed &&
+                        !isCashedOut &&
+                        hasStarted &&
+                        hops < MAX_HOPS;
 
                       const rowBase = "grid grid-cols-[90px_1fr_140px] px-4 py-3 text-sm";
-                      const rowBg = isCompleted ? "bg-emerald-500/10" : isActive ? "bg-neutral-900/40" : "bg-neutral-950";
+                      const rowBg = isCompleted
+                        ? "bg-emerald-500/10"
+                        : isActive
+                        ? "bg-neutral-900/40"
+                        : "bg-neutral-950";
 
-                      const popStyle = poppedHop === hopNo ? { animation: "rowPop 420ms ease-out" as const } : undefined;
+                      const popStyle =
+                        poppedHop === hopNo
+                          ? { animation: "rowPop 420ms ease-out" as const }
+                          : undefined;
 
-                      const showRoll = lastAttemptHop === hopNo && lastRoll !== null && lastRequiredPct !== null;
+                      const showRoll =
+                        lastAttemptHop === hopNo && lastRoll !== null && lastRequiredPct !== null;
 
                       const clearedVisible = isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
 
@@ -1246,7 +1593,9 @@ export default function PlayPage() {
                           className={`${rowBase} ${rowBg}`}
                           style={{
                             ...(popStyle ?? {}),
-                            ...(isActive ? ({ animation: "activeGlow 1.1s ease-in-out infinite" } as const) : {}),
+                            ...(isActive
+                              ? ({ animation: "activeGlow 1.1s ease-in-out infinite" } as const)
+                              : {}),
                           }}
                         >
                           <div className="font-semibold text-neutral-100">
@@ -1264,7 +1613,9 @@ export default function PlayPage() {
                           </div>
 
                           <div className="text-center">
-                            <span className="font-semibold text-neutral-100">{ceilPercent(stepSuccessPctExact)}</span>
+                            <span className="font-semibold text-neutral-100">
+                              {ceilPercent(stepSuccessPctExact)}
+                            </span>
 
                             {showRoll ? (
                               <span className="ml-2 text-xs text-neutral-400">
@@ -1273,7 +1624,9 @@ export default function PlayPage() {
                             ) : null}
                           </div>
 
-                          <div className="text-right font-semibold text-neutral-100">{fmtX(multTable[idx])}</div>
+                          <div className="text-right font-semibold text-neutral-100">
+                            {fmtX(multTable[idx])}
+                          </div>
                         </div>
                       );
                     })}
