@@ -46,7 +46,9 @@ function hopHue(t: number) {
   return Math.round(start + (end - start) * clamp01(t));
 }
 
-function canShare(n: Navigator): n is Navigator & { share: (data: { title?: string; text?: string; url?: string }) => Promise<void> } {
+function canShare(
+  n: Navigator
+): n is Navigator & { share: (data: { title?: string; text?: string; url?: string }) => Promise<void> } {
   return typeof (n as any).share === "function";
 }
 
@@ -371,8 +373,18 @@ export default function OutcomeBoard(props: {
           mix-blend-mode: screen;
           background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 55%),
             radial-gradient(circle at 70% 25%, rgba(250, 204, 21, 0.35), rgba(250, 204, 21, 0) 60%),
-            linear-gradient(135deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.16) 25%, rgba(255, 255, 255, 0) 55%),
-            linear-gradient(45deg, rgba(255, 255, 255, 0) 0%, rgba(250, 204, 21, 0.14) 30%, rgba(255, 255, 255, 0) 62%);
+            linear-gradient(
+              135deg,
+              rgba(255, 255, 255, 0) 0%,
+              rgba(255, 255, 255, 0.16) 25%,
+              rgba(255, 255, 255, 0) 55%
+            ),
+            linear-gradient(
+              45deg,
+              rgba(255, 255, 255, 0) 0%,
+              rgba(250, 204, 21, 0.14) 30%,
+              rgba(255, 255, 255, 0) 62%
+            );
           animation: lightningFlicker 900ms ease-out 1;
         }
 
@@ -416,7 +428,12 @@ export default function OutcomeBoard(props: {
           width: 10px;
           height: 10px;
           border-radius: 999px;
-          background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.85), rgba(250, 204, 21, 0.9) 45%, rgba(250, 204, 21, 0.35) 75%);
+          background: radial-gradient(
+            circle at 30% 30%,
+            rgba(255, 255, 255, 0.85),
+            rgba(250, 204, 21, 0.9) 45%,
+            rgba(250, 204, 21, 0.35) 75%
+          );
           box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.22);
           opacity: 0;
           animation: coinBurst 650ms ease-out 1;
@@ -508,7 +525,7 @@ export default function OutcomeBoard(props: {
           ) : null}
 
           {/* TOP BOXES: CURRENT | NEXT CHANCE | PROGRESS */}
-          <div className="relative grid grid-cols-3 gap-2 md:gap-3">
+          <div className="relative grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-3">
             {/* CURRENT */}
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2">
               <div className="text-[11px] font-semibold text-neutral-400">CURRENT</div>
@@ -536,8 +553,8 @@ export default function OutcomeBoard(props: {
               <div className="mt-0.5 text-sm font-extrabold text-emerald-200">{nextChancePct}</div>
             </div>
 
-            {/* PROGRESS */}
-            <div className="rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 text-right">
+            {/* PROGRESS (desktop only) */}
+            <div className="hidden md:block rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 text-right">
               <div className="text-[11px] font-semibold text-neutral-400">PROGRESS</div>
               <div className="mt-0.5 text-sm font-extrabold text-neutral-100">
                 {Math.min(hops, maxHops)}/{maxHops}
@@ -546,19 +563,19 @@ export default function OutcomeBoard(props: {
           </div>
 
           {/* MAIN: TOAD + MESSAGE */}
-          <div className="relative mt-4 flex items-center gap-4 md:mt-5">
+          <div className="relative mt-4 flex items-center gap-3 md:gap-4 md:mt-5">
             <img
               src={toadSrc}
               alt="toad"
               width={240}
               height={240}
-              className="h-[185px] w-[185px] md:h-[220px] md:w-[220px]"
+              className="h-[140px] w-[140px] sm:h-[165px] sm:w-[165px] md:h-[220px] md:w-[220px]"
               style={{ animation: "floaty 1.9s ease-in-out infinite" }}
               draggable={false}
             />
 
-            <div className="min-w-0">
-              <div className="text-4xl font-extrabold tracking-tight text-neutral-50 md:text-6xl">{headline}</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-3xl sm:text-4xl font-extrabold tracking-tight text-neutral-50 md:text-6xl">{headline}</div>
               <div className="mt-1 text-sm font-semibold text-neutral-200 md:text-base">{subline}</div>
 
               {showShare ? (
@@ -576,7 +593,7 @@ export default function OutcomeBoard(props: {
           {/* BOTTOM ROW: Progress (left) + NEXT/PRIZE (right) */}
           <div className="relative mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_260px] md:items-stretch md:gap-4">
             {/* Progress bar card (narrower height) */}
-            <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
+            <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 sm:px-4 sm:py-3">
               <div className="flex items-center justify-between text-xs font-semibold text-neutral-300">
                 <span>Progress</span>
                 <span className={pctTextClass}>{Math.round(progressPct)}%</span>
@@ -588,7 +605,7 @@ export default function OutcomeBoard(props: {
             </div>
 
             {/* NEXT / PRIZE box */}
-            <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/55 px-4 py-3">
+            <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 sm:px-4 sm:py-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[11px] font-semibold text-neutral-400">{rightBoxTitle}</div>
                 <div className="text-[11px] font-semibold text-neutral-500">{rightSubline}</div>
