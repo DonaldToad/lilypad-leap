@@ -166,7 +166,6 @@ async function copyText(text: string) {
 }
 
 type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
-
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
 
 export default function PlayPage() {
@@ -215,7 +214,7 @@ export default function PlayPage() {
   const [outcome, setOutcome] = useState<Outcome>("idle");
   const [outcomeText, setOutcomeText] = useState<string>("");
 
-  // Animation placeholder hooks
+  // Animation hooks
   const [animEvent, setAnimEvent] = useState<AnimEvent>("idle");
   const [animNonce, setAnimNonce] = useState<number>(0); // bump to “trigger” effects
 
@@ -229,10 +228,10 @@ export default function PlayPage() {
   // Scroll helper
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
 
-  // Primary CTA ref (mobile scroll target)
-  const hopCtaRef = useRef<HTMLButtonElement | null>(null);
+  // NEW: scroll target = Outcome board / canvas (where the toad is)
+  const boardScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // NEW: remember last amount used at START, so PLAY AGAIN can reuse it
+  // Remember last amount used at START, so PLAY AGAIN can reuse it
   const lastStartedAmountRef = useRef<number>(1000);
 
   // Derived tables for this mode (fixed)
@@ -247,16 +246,12 @@ export default function PlayPage() {
 
   const maxHit = hasStarted && !isFailed && hops >= MAX_HOPS;
 
-  // IMPORTANT: allow Cash Out at hop 10 (bug fix)
+  // IMPORTANT: allow Cash Out at hop 10
   const canStart = !hasStarted && amount >= MIN_AMOUNT;
   const canHop =
     hasStarted && !isFailed && !isCashedOut && !actionLocked && hops < MAX_HOPS;
   const canCashOut =
-    hasStarted &&
-    !isFailed &&
-    !isCashedOut &&
-    !actionLocked &&
-    hops > 0; // includes hops==10
+    hasStarted && !isFailed && !isCashedOut && !actionLocked && hops > 0; // includes hops==10
 
   const ended = isFailed || isCashedOut;
 
@@ -265,18 +260,12 @@ export default function PlayPage() {
     [amount, currentMult]
   );
 
-  // “Next hop success” UI
   const nextHopSuccessExact = useMemo(() => {
     if (!canHop) return null;
     return stepSuccessPctExact;
   }, [canHop, stepSuccessPctExact]);
 
-  const nextCashOutIfCleared = useMemo(() => {
-    if (!canHop) return null;
-    return multTable[nextHopIndex];
-  }, [canHop, multTable, nextHopIndex]);
-
-  // NEW: values for the top strip (current + next)
+  // Values for the top strip (current + next)
   const currentPrize = useMemo(() => {
     if (!hasStarted) return 0;
     return Math.floor(amount * (hops === 0 ? 1.0 : currentMult));
@@ -293,7 +282,7 @@ export default function PlayPage() {
     return Math.floor(amount * nextMult);
   }, [amount, nextMult]);
 
-  // NEW: busted display for top CURRENT strip
+  // Busted display for top CURRENT strip
   const topCurrentMult = useMemo(() => {
     if (!hasStarted) return null;
     if (isFailed) return 0;
@@ -336,12 +325,14 @@ export default function PlayPage() {
     }, ms);
   }
 
-  // Mobile scroll to the primary CTA (MetaMask-friendly)
-  function scrollToHopCta() {
+  // Mobile scroll to Outcome Board (MetaMask-friendly)
+  function scrollToBoard() {
     const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
     if (!isMobile) return;
-    const el = hopCtaRef.current;
+
+    const el = boardScrollRef.current;
     if (!el) return;
+
     el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   }
 
@@ -394,7 +385,7 @@ export default function PlayPage() {
     lockActions(0);
   }
 
-  // NEW: "PLAY AGAIN" uses previous started amount, and starts immediately
+  // "PLAY AGAIN" uses previous started amount, and starts immediately
   function playAgainSameAmount() {
     const v = clampInt(
       lastStartedAmountRef.current || amount,
@@ -409,10 +400,10 @@ export default function PlayPage() {
     }, 0);
   }
 
-  // NEW: "CHANGE AMOUNT" ends the run but preserves the last used amount in input for editing
+  // "CHANGE AMOUNT" ends the run but preserves the last used amount in input for editing
   function changeAmountFlow() {
     resetRunNewSeed();
-    window.setTimeout(() => scrollToHopCta(), 50);
+    window.setTimeout(() => scrollToBoard(), 60);
   }
 
   function sanitizeAndSetAmount(nextRaw: string) {
@@ -462,8 +453,8 @@ export default function PlayPage() {
     setOutcome("idle");
     setOutcomeText("");
 
-    // Mobile: bring primary CTA into view
-    window.setTimeout(() => scrollToHopCta(), 50);
+    // Mobile: bring the board into view (not the buttons)
+    window.setTimeout(() => scrollToBoard(), 60);
   }
 
   function hopOnce() {
@@ -498,7 +489,7 @@ export default function PlayPage() {
 
       triggerAnim("hop_fail");
 
-      window.setTimeout(() => scrollToHopCta(), 80);
+      window.setTimeout(() => scrollToBoard(), 80);
       return;
     }
 
@@ -532,7 +523,7 @@ export default function PlayPage() {
       triggerAnim("max_hit");
     }
 
-    window.setTimeout(() => scrollToHopCta(), 120);
+    window.setTimeout(() => scrollToBoard(), 90);
   }
 
   function cashOut() {
@@ -548,7 +539,7 @@ export default function PlayPage() {
 
     triggerAnim("cash_out");
 
-    window.setTimeout(() => scrollToHopCta(), 100);
+    window.setTimeout(() => scrollToBoard(), 90);
   }
 
   // Auto-scroll to relevant row on mobile (table)
@@ -571,12 +562,12 @@ export default function PlayPage() {
     el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   }, [hops, isFailed, isCashedOut, lastAttemptHop]);
 
-  // Ensure mobile scroll prefers the primary CTA on key state changes
+  // Ensure mobile scroll prefers the OUTCOME BOARD (toad) on key state changes
   useEffect(() => {
     const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
     if (!isMobile) return;
-    window.setTimeout(() => scrollToHopCta(), 60);
-  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked]);
+    window.setTimeout(() => scrollToBoard(), 80);
+  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce]);
 
   const selectedChain =
     CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
@@ -634,6 +625,48 @@ export default function PlayPage() {
 
   const modeToneClass =
     modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
+
+  // --- Bottom CTA behavior: ALWAYS show PLAY AGAIN + CHANGE AMOUNT ---
+  const playAgainDisabled = useMemo(() => {
+    if (!hasStarted) return !canStart;
+    if (ended) return false;
+    if (hops >= MAX_HOPS) return !canCashOut;
+    return !canHop;
+  }, [hasStarted, canStart, ended, hops, canCashOut, canHop]);
+
+  function onPlayAgainButton() {
+    // Not started -> START
+    if (!hasStarted) {
+      startRun();
+      return;
+    }
+
+    // Ended -> immediate new run with same amount
+    if (ended) {
+      playAgainSameAmount();
+      return;
+    }
+
+    // In run -> continue (HOP) OR (MAX HIT) cash out
+    if (hops >= MAX_HOPS) {
+      if (canCashOut) cashOut();
+      return;
+    }
+
+    hopOnce();
+  }
+
+  function onChangeAmountButton() {
+    // Always take them back to amount entry, same interface
+    changeAmountFlow();
+  }
+
+  const bottomHint = useMemo(() => {
+    if (!hasStarted) return "Start a run — then keep smashing PLAY AGAIN.";
+    if (ended) return "Busted or cashed — PLAY AGAIN keeps the same amount.";
+    if (hops >= MAX_HOPS) return "MAX HIT reached — PLAY AGAIN will cash out.";
+    return actionLocked ? "…" : "PLAY AGAIN continues the run (HOP).";
+  }, [hasStarted, ended, hops, actionLocked]);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -878,7 +911,8 @@ export default function PlayPage() {
             </div>
 
             <div className="text-sm text-neutral-400">
-              Primary: <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
+              Primary:{" "}
+              <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
             </div>
           </div>
 
@@ -903,7 +937,9 @@ export default function PlayPage() {
                       disabled={isDisabled}
                       className={[
                         "flex flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
-                        isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-neutral-800/40",
+                        isDisabled
+                          ? "opacity-40 cursor-not-allowed"
+                          : "hover:bg-neutral-800/40",
                         isSelected
                           ? "bg-neutral-950 ring-1 ring-emerald-500/20 border border-emerald-500/20"
                           : "border border-transparent",
@@ -912,7 +948,9 @@ export default function PlayPage() {
                       <div className="flex items-center gap-2">
                         <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
                         <div className="leading-tight">
-                          <div className="text-sm font-semibold text-neutral-100">{c.name}</div>
+                          <div className="text-sm font-semibold text-neutral-100">
+                            {c.name}
+                          </div>
                           <div className="text-[11px] text-neutral-500">
                             Chain ID: {c.chainId}
                           </div>
@@ -942,9 +980,7 @@ export default function PlayPage() {
               </div>
             </div>
 
-            <div className="mt-2 text-xs text-neutral-500">
-              {selectedChain.note}
-            </div>
+            <div className="mt-2 text-xs text-neutral-500">{selectedChain.note}</div>
           </div>
 
           {/* Main play UI */}
@@ -1105,7 +1141,9 @@ export default function PlayPage() {
                     <span className="font-semibold">
                       {nextHopSuccessExact === null
                         ? "—"
-                        : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(6)}%)`}
+                        : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(
+                            6
+                          )}%)`}
                     </span>
                   </div>
 
@@ -1156,7 +1194,9 @@ export default function PlayPage() {
                     </div>
 
                     <div className="mt-1 break-all font-mono text-neutral-200">
-                      {commitExpanded ? commitHash : truncateHashFirstLast(commitHash)}
+                      {commitExpanded
+                        ? commitHash
+                        : truncateHashFirstLast(commitHash)}
                     </div>
 
                     <div className="mt-1 text-[11px] text-neutral-600">
@@ -1268,12 +1308,14 @@ export default function PlayPage() {
                     </div>
                   </div>
                   <div className="text-xs text-neutral-400">
-                    Chain: <span className="text-neutral-200">{selectedChain.name}</span> (UI)
+                    Chain:{" "}
+                    <span className="text-neutral-200">{selectedChain.name}</span> (UI)
                   </div>
                 </div>
 
                 <div className="mt-4 overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/30">
                   <div
+                    ref={boardScrollRef}
                     className={`relative w-full ${modeToneClass}`}
                     style={{
                       paddingTop: "64%",
@@ -1293,7 +1335,9 @@ export default function PlayPage() {
                       />
 
                       {/* Pad A (current) */}
-                      <div className={`absolute left-[14%] bottom-[14%] h-[32%] w-[44%] ${padFxClass}`}>
+                      <div
+                        className={`absolute left-[14%] bottom-[14%] h-[32%] w-[44%] ${padFxClass}`}
+                      >
                         <div
                           className="absolute inset-0 rounded-[999px] border border-emerald-300/10"
                           style={{
@@ -1324,7 +1368,9 @@ export default function PlayPage() {
                       </div>
 
                       {/* Pad B (next) */}
-                      <div className={`absolute right-[12%] bottom-[22%] h-[24%] w-[34%] ${padFxClass}`}>
+                      <div
+                        className={`absolute right-[12%] bottom-[22%] h-[24%] w-[34%] ${padFxClass}`}
+                      >
                         <div
                           className="absolute inset-0 rounded-[999px] border border-emerald-300/10"
                           style={{
@@ -1353,7 +1399,9 @@ export default function PlayPage() {
                     <div className="absolute left-0 right-0 top-0 z-20 p-3">
                       <div className="mx-auto flex w-full max-w-md items-center justify-between gap-2 rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 backdrop-blur">
                         <div className="min-w-0 flex-1 rounded-xl bg-neutral-50/5 px-3 py-2 ring-1 ring-neutral-200/10">
-                          <div className="text-[11px] font-semibold text-neutral-400">CURRENT</div>
+                          <div className="text-[11px] font-semibold text-neutral-400">
+                            CURRENT
+                          </div>
                           <div className="mt-0.5 flex items-baseline justify-between gap-2">
                             <div
                               className={[
@@ -1380,12 +1428,16 @@ export default function PlayPage() {
                             </div>
                           </div>
                           <div className="mt-1 text-[11px] text-neutral-500">
-                            {hasStarted ? `Hop ${Math.min(hops, MAX_HOPS)}/${MAX_HOPS}` : "Not started"}
+                            {hasStarted
+                              ? `Hop ${Math.min(hops, MAX_HOPS)}/${MAX_HOPS}`
+                              : "Not started"}
                           </div>
                         </div>
 
                         <div className="min-w-0 flex-1 rounded-xl bg-neutral-50/5 px-3 py-2 ring-1 ring-neutral-200/10">
-                          <div className="text-[11px] font-semibold text-neutral-400">NEXT</div>
+                          <div className="text-[11px] font-semibold text-neutral-400">
+                            NEXT
+                          </div>
                           <div className="mt-0.5 flex items-baseline justify-between gap-2">
                             <div className="text-sm font-extrabold text-neutral-100">
                               {nextMult === null ? "—" : fmtX(nextMult)}
@@ -1422,75 +1474,35 @@ export default function PlayPage() {
                 </div>
               </div>
 
-              {/* Primary CTA under Canvas (mobile-friendly) */}
+              {/* PRIMARY CTA under Canvas: ALWAYS PLAY AGAIN + CHANGE AMOUNT */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-                {!hasStarted ? (
+                <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
-                    onClick={startRun}
-                    disabled={!canStart}
+                    onClick={onPlayAgainButton}
+                    disabled={playAgainDisabled}
                     className={[
-                      "w-full rounded-2xl px-5 py-4 text-base font-extrabold tracking-wide transition",
-                      canStart
-                        ? "bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
-                        : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
-                    ].join(" ")}
-                  >
-                    START
-                  </button>
-                ) : isFailed ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      ref={hopCtaRef}
-                      type="button"
-                      onClick={playAgainSameAmount}
-                      className="rounded-2xl bg-emerald-500 px-4 py-4 text-base font-extrabold tracking-wide text-neutral-950 hover:bg-emerald-400"
-                    >
-                      PLAY AGAIN
-                    </button>
-                    <button
-                      type="button"
-                      onClick={changeAmountFlow}
-                      className="rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-4 text-base font-extrabold tracking-wide text-neutral-100 hover:bg-neutral-800/60"
-                    >
-                      CHANGE AMOUNT
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    ref={hopCtaRef}
-                    type="button"
-                    onClick={() => {
-                      if (hops >= MAX_HOPS) {
-                        if (canCashOut) cashOut();
-                      } else {
-                        hopOnce();
-                      }
-                      window.setTimeout(() => scrollToHopCta(), 50);
-                    }}
-                    disabled={hops >= MAX_HOPS ? !canCashOut : !canHop}
-                    className={[
-                      "w-full rounded-2xl px-5 py-5 text-lg font-extrabold tracking-wide transition",
-                      hops >= MAX_HOPS
-                        ? canCashOut
-                          ? "bg-neutral-50 text-neutral-950 hover:bg-white"
-                          : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500"
-                        : canHop
-                        ? "bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
-                        : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
+                      "rounded-2xl px-4 py-4 text-base font-extrabold tracking-wide transition",
+                      playAgainDisabled
+                        ? "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500"
+                        : "bg-emerald-500 text-neutral-950 hover:bg-emerald-400",
                     ].join(" ")}
                     style={hopPulse ? { animation: "hopPulse 160ms ease-out" } : undefined}
                   >
-                    {hops >= MAX_HOPS ? "CASH OUT (MAX HIT)" : actionLocked ? "..." : "HOP"}
+                    PLAY AGAIN
                   </button>
-                )}
+
+                  <button
+                    type="button"
+                    onClick={onChangeAmountButton}
+                    className="rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-4 text-base font-extrabold tracking-wide text-neutral-100 hover:bg-neutral-800/60"
+                  >
+                    CHANGE AMOUNT
+                  </button>
+                </div>
 
                 <div className="mt-2 text-center text-[11px] text-neutral-500">
-                  {isFailed
-                    ? "Busted — revenge run?"
-                    : hops >= MAX_HOPS
-                    ? "MAX HIT reached — cash out now."
-                    : "Primary action (easier reach on mobile)."}
+                  {bottomHint}
                 </div>
               </div>
 
@@ -1568,9 +1580,12 @@ export default function PlayPage() {
                           : undefined;
 
                       const showRoll =
-                        lastAttemptHop === hopNo && lastRoll !== null && lastRequiredPct !== null;
+                        lastAttemptHop === hopNo &&
+                        lastRoll !== null &&
+                        lastRequiredPct !== null;
 
-                      const clearedVisible = isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
+                      const clearedVisible =
+                        isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
 
                       const showFailedChip = isFailed && lastAttemptHop === hopNo;
                       const showCashedChip = isCashedOut && hopNo === hops && hops > 0;
@@ -1619,7 +1634,8 @@ export default function PlayPage() {
 
                             {showRoll ? (
                               <span className="ml-2 text-xs text-neutral-400">
-                                (roll {formatRoll(lastRoll)} / need ≤ {lastRequiredPct!.toFixed(6)}%)
+                                (roll {formatRoll(lastRoll)} / need ≤{" "}
+                                {lastRequiredPct!.toFixed(6)}%)
                               </span>
                             ) : null}
                           </div>
@@ -1641,7 +1657,8 @@ export default function PlayPage() {
           </div>
 
           <div className="mt-3 text-xs text-neutral-600">
-            Selected chain: <span className="text-neutral-300">{selectedChain.name}</span> (UI only)
+            Selected chain:{" "}
+            <span className="text-neutral-300">{selectedChain.name}</span> (UI only)
           </div>
         </div>
       </section>
