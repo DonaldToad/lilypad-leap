@@ -1,9 +1,50 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
+
+// modeKey values come from the Play page
+type ModeKey = "safe" | "wild" | "insane";
+
+// Keep in sync with Play page MODE config (mult tables + pStep)
+const MODE_META: Record<ModeKey, { emoji: string; name: string; pStep: number; mults: number[] }> = {
+  safe: {
+    emoji: "🛡️",
+    name: "SAFE",
+    pStep: 0.9,
+    mults: [1.04, 1.16, 1.28, 1.43, 1.59, 1.76, 1.96, 2.18, 2.42, 2.69],
+  },
+  wild: {
+    emoji: "😎",
+    name: "WILD",
+    pStep: 0.82,
+    mults: [1.11, 1.35, 1.65, 2.01, 2.45, 2.99, 3.64, 4.44, 5.41, 6.0],
+  },
+  insane: {
+    emoji: "🐸",
+    name: "DEGEN",
+    pStep: 0.69,
+    mults: [1.2, 1.64, 2.24, 3.06, 4.19, 5.73, 7.83, 10.7, 14.63, 20.0],
+  },
+};
+
+function fmtInt(n: number) {
+  return Math.floor(n).toLocaleString("en-US");
+}
+
+function clamp01(x: number) {
+  return Math.max(0, Math.min(1, x));
+}
+
+// Smoothly shift from green->red as hops increase (UI only)
+function hopHue(t: number) {
+  // 145° (emerald-ish) down to 0° (red)
+  const start = 145;
+  const end = 0;
+  return Math.round(start + (end - start) * clamp01(t));
+}
 
 export default function OutcomeBoard(props: {
   outcome: Outcome;
@@ -13,10 +54,13 @@ export default function OutcomeBoard(props: {
   maxHops: number;
   currentMult: number;
   currentReturn: number;
-  modeKey: "safe" | "wild" | "insane";
+  modeKey: ModeKey;
 }) {
   const { outcome, animEvent, animNonce, hops, maxHops, currentMult, currentReturn, modeKey } = props;
 
+  const modeMeta = useMemo(() => MODE_META[modeKey], [modeKey]);
+
+  // Which “moment” to render (prioritize anim event so the board matches the exact click)
   const moment: Outcome = useMemo(() => {
     if (animEvent === "hop_fail") return "bust";
     if (animEvent === "cash_out") return "cashout";
@@ -25,7 +69,71 @@ export default function OutcomeBoard(props: {
     return outcome;
   }, [animEvent, outcome]);
 
-  const src = useMemo(() => {
+  const nextChancePct = useMemo(() => `${Math.ceil(modeMeta.pStep * 100)}%`, [modeMeta]);
+
+  // CURRENT display: turns to 0 on busted
+  const currentMultDisplay = useMemo(() => (moment === "bust" ? 0 : currentMult), [moment, currentMult]);
+  const currentReturnDisplay = useMemo(() => (moment === "bust" ? 0 : currentReturn), [moment, currentReturn]);
+
+  // Estimate base amount so we can compute NEXT payout locally (since we only receive currentReturn/currentMult)
+  const estAmount = useMemo(() => {
+    if (!Number.isFinite(currentMult) || currentMult <= 0) return 0;
+    return Math.max(0, Math.round(currentReturn / currentMult));
+  }, [currentReturn, currentMult]);
+
+  const nextMult = useMemo(() => {
+    if (hops >= maxHops) return null;
+    return modeMeta.mults[hops] ?? null;
+  }, [hops, maxHops, modeMeta]);
+
+  const nextReturn = useMemo(() => {
+    if (nextMult === null) return null;
+    return Math.floor(estAmount * nextMult);
+  }, [estAmount, nextMult]);
+
+  const rightBoxTitle = moment === "cashout" || moment === "maxhit" ? "🏆 PRIZE" : "NEXT";
+
+  const rightMultDisplay = useMemo(() => {
+    if (moment === "cashout" || moment === "maxhit") return currentMult;
+    return nextMult ?? null;
+  }, [moment, currentMult, nextMult]);
+
+  const rightReturnDisplay = useMemo(() => {
+    if (moment === "cashout" || moment === "maxhit") return currentReturn;
+    return nextReturn ?? null;
+  }, [moment, currentReturn, nextReturn]);
+
+  const rightSubline = useMemo(() => {
+    if (moment === "cashout" || moment === "maxhit") return "Locked";
+
+    if (rightMultDisplay === null) return hops >= maxHops ? "Run complete" : "—";
+    return `If hop ${Math.min(hops + 1, maxHops)} clears`;
+  }, [moment, rightMultDisplay, hops, maxHops]);
+
+  // Headline / subline
+  const headline =
+    moment === "success"
+      ? "HOP!"
+      : moment === "cashout"
+      ? "CASHED OUT"
+      : moment === "maxhit"
+      ? "MAX HIT!"
+      : moment === "bust"
+      ? "BUSTED"
+      : "READY";
+
+  const subline =
+    moment === "success"
+      ? `Cleared hop ${Math.min(hops, maxHops)}/${maxHops}`
+      : moment === "cashout"
+      ? `Locked at ${currentMult.toFixed(2)}x`
+      : moment === "maxhit"
+      ? `Cleared ${maxHops}/${maxHops}`
+      : moment === "bust"
+      ? `Failed on hop ${Math.min(hops + 1, maxHops)}/${maxHops}`
+      : `Start when you're ready`;
+
+  const toadSrc = useMemo(() => {
     const base = "/lilypad-leap/toad/";
     if (moment === "bust") return base + "busted.png";
     if (moment === "cashout") return base + "cashout.png";
@@ -34,390 +142,494 @@ export default function OutcomeBoard(props: {
     return base + "idle.png";
   }, [moment]);
 
-  const tone = modeKey === "safe" ? "tone-safe" : modeKey === "wild" ? "tone-wild" : "tone-degen";
+  // Progress bar % (0..100)
+  const progressPct = useMemo(() => Math.max(0, Math.min(100, (hops / maxHops) * 100)), [hops, maxHops]);
 
-  const title =
-    moment === "maxhit"
-      ? "MAX HIT"
-      : moment === "cashout"
-      ? "CASH OUT"
-      : moment === "bust"
-      ? "BUSTED"
-      : moment === "success"
-      ? "HOP!"
-      : "READY";
+  // ✅ Color rules:
+  // - Starts green, shifts toward red as hops increase
+  // - If busted: always red
+  // - If cashout or maxhit: always green
+  const barStyle = useMemo(() => {
+    if (moment === "bust") return { backgroundColor: "hsl(0 84% 55%)" };
+    if (moment === "cashout" || moment === "maxhit") return { backgroundColor: "hsl(145 76% 45%)" };
 
-  const hopShown = useMemo(() => {
-    // When busted, you failed the *next* hop attempt
-    if (moment === "bust") return Math.min(hops + 1, maxHops);
-    return Math.min(hops, maxHops);
+    const t = maxHops <= 0 ? 0 : hops / maxHops; // 0..1
+    const hue = hopHue(t);
+    return { backgroundColor: `hsl(${hue} 78% 50%)` };
   }, [moment, hops, maxHops]);
 
-  const subtitle =
-    title === "MAX HIT"
-      ? `${maxHops}/${maxHops} • ${currentMult.toFixed(2)}x`
-      : title === "CASH OUT"
-      ? `${currentMult.toFixed(2)}x • ~${currentReturn.toLocaleString("en-US")} DTC`
-      : title === "BUSTED"
-      ? `Hop ${hopShown} didn’t land. Try again 🐸`
-      : title === "HOP!"
-      ? `Cleared hop ${hopShown}/${maxHops}`
-      : `Press HOP or CASH OUT`;
-
-  const modeChipText = modeKey === "insane" ? "DEGEN" : modeKey.toUpperCase();
-
-  // Progress
-  const pct = useMemo(() => {
-    const raw = maxHops > 0 ? (Math.min(Math.max(hops, 0), maxHops) / maxHops) * 100 : 0;
-    // For BUSTED, you usually want to show progress up to the last cleared hop (hops)
-    return Math.max(0, Math.min(100, raw));
-  }, [hops, maxHops]);
-
-  // Bar color logic:
-  // - cashout/maxhit => green
-  // - bust => red
-  // - otherwise shifts toward red as pct increases (risk vibe)
-  const barColor = useMemo(() => {
-    if (moment === "maxhit" || moment === "cashout") return "rgb(16,185,129)"; // emerald-500
-    if (moment === "bust") return "rgb(239,68,68)"; // red-500
-
-    // shift green -> red based on progress
-    const t = Math.max(0, Math.min(1, pct / 100));
-    const r = Math.round(16 + (239 - 16) * t);
-    const g = Math.round(185 + (68 - 185) * t);
-    const b = Math.round(129 + (68 - 129) * t);
-    return `rgb(${r},${g},${b})`;
-  }, [moment, pct]);
+  const pctTextClass =
+    moment === "bust"
+      ? "text-red-200"
+      : moment === "cashout" || moment === "maxhit"
+      ? "text-emerald-200"
+      : "text-neutral-300";
 
   const showShare = moment === "cashout" || moment === "maxhit";
+  const showConfetti = moment === "maxhit";
+  const showLightning = moment === "maxhit";
+  const showCoinSplash = moment === "cashout";
+  const showBustFlash = moment === "bust";
 
-  const shareText = useMemo(() => {
-    const amt = currentReturn.toLocaleString("en-US");
-    const m = currentMult.toFixed(2);
-    const modeLabel = modeKey === "insane" ? "DEGEN" : modeKey.toUpperCase();
-    return `🐸 Lilypad Leap\n✅ ${modeLabel} • ${hops}/${maxHops}\n💰 Cash Out: ${m}x (~${amt} DTC)\n#DonaldToadCoin #LilypadLeap`;
-  }, [currentReturn, currentMult, modeKey, hops, maxHops]);
+  async function shareResult() {
+    const modeLabel = `${modeMeta.emoji} ${modeMeta.name}`;
+    const title = "Lilypad Leap";
+    const text = `${title} — ${modeLabel}\n${headline}: ${currentMult.toFixed(2)}x = ${fmtInt(
+      currentReturn
+    )} DTC\nProgress: ${Math.min(hops, maxHops)}/${maxHops}`;
 
-  const [shareToast, setShareToast] = useState<string>("");
-
-  async function doShare() {
     try {
-      if (navigator.share) {
-        await navigator.share({
-          title: "Lilypad Leap",
-          text: shareText,
-        });
+      // @ts-expect-error navigator.share exists on many browsers
+      if (navigator?.share) {
+        // @ts-expect-error
+        await navigator.share({ title, text });
         return;
       }
     } catch {
-      // ignore and fallback to clipboard
+      // fallthrough to clipboard
     }
 
     try {
-      await navigator.clipboard.writeText(shareText);
-      setShareToast("Copied!");
-      window.setTimeout(() => setShareToast(""), 900);
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
     } catch {
-      setShareToast("Copy failed");
-      window.setTimeout(() => setShareToast(""), 900);
+      // ignore
+    }
+
+    // last-resort fallback
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "true");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch {
+      // ignore
     }
   }
 
-  // FX classes (no setState-in-effect; animNonce is used to retrigger via key)
-  const cardFx =
-    moment === "maxhit"
-      ? "fx-max"
-      : moment === "cashout"
-      ? "fx-cash"
-      : moment === "bust"
-      ? "fx-bust"
-      : moment === "success"
-      ? "fx-hop"
-      : "fx-idle";
-
-  const showBustFlash = moment === "bust";
-  const showConfetti = moment === "maxhit";
-  const showSparkles = moment === "cashout";
-
   return (
-    <div className={`relative h-full w-full ${tone}`}>
-      {/* BUST flash overlay */}
-      {showBustFlash ? <div key={`flash-${animNonce}`} className="abs fx-bust-flash" /> : null}
-
-      {/* background glow */}
-      <div className="absolute inset-0 opacity-70 blur-2xl">
-        <div className="mx-auto mt-10 h-40 w-40 rounded-full bg-white/10" />
-      </div>
-
-      {/* board (moved DOWN so top strip never covers it) */}
-      <div className="absolute inset-0 flex items-start justify-center px-4 pt-20 md:pt-24">
-        <div key={`card-${animNonce}`} className={`relative w-full max-w-2xl rounded-3xl border border-neutral-800 bg-neutral-950/60 p-5 md:p-6 ${cardFx}`}>
-          {/* confetti / sparkles overlays */}
-          {showConfetti ? <div key={`conf-${animNonce}`} className="abs fx-confetti" /> : null}
-          {showSparkles ? <div key={`sp-${animNonce}`} className="abs fx-sparkles" /> : null}
-
-          <div className="flex items-center gap-4 md:gap-6">
-            {/* Bigger toad */}
-            <img
-              src={src}
-              alt="toad"
-              width={260}
-              height={260}
-              className="pixel h-36 w-36 md:h-44 md:w-44 lg:h-48 lg:w-48 select-none"
-              draggable={false}
-            />
-
-            <div className="min-w-0 flex-1">
-              <div className="text-3xl md:text-4xl font-extrabold tracking-wide text-neutral-50">{title}</div>
-              <div className="mt-2 text-sm md:text-base text-neutral-300">{subtitle}</div>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
-                <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 ring-1 ring-neutral-200/15">{modeChipText}</span>
-                <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 ring-1 ring-neutral-200/15">
-                  {Math.min(hops, maxHops)}/{maxHops}
-                </span>
-
-                {moment === "maxhit" ? (
-                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
-                    🏆 FULL CLEAR
-                  </span>
-                ) : null}
-              </div>
-
-              {/* SHARE (wins only, green) */}
-              {showShare ? (
-                <div className="mt-4">
-                  <button
-                    type="button"
-                    onClick={doShare}
-                    className="w-full rounded-2xl bg-emerald-500 px-4 py-4 text-base font-extrabold tracking-wide text-neutral-950 hover:bg-emerald-400"
-                  >
-                    SHARE
-                  </button>
-                  {shareToast ? <div className="mt-2 text-center text-xs text-neutral-400">{shareToast}</div> : null}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          {/* Progress */}
-          <div className="mt-5">
-            <div className="flex items-center justify-between text-xs text-neutral-400">
-              <span>Progress</span>
-              <span className={moment === "bust" ? "text-red-200 font-semibold" : moment === "cashout" || moment === "maxhit" ? "text-emerald-200 font-semibold" : ""}>
-                {Math.round(pct)}%
-              </span>
-            </div>
-
-            <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-neutral-800">
-              <div
-                className="h-full rounded-full"
-                style={{
-                  width: `${pct}%`,
-                  background: barColor,
-                  boxShadow:
-                    moment === "maxhit" || moment === "cashout"
-                      ? "0 0 22px rgba(16,185,129,0.18)"
-                      : moment === "bust"
-                      ? "0 0 22px rgba(239,68,68,0.18)"
-                      : "0 0 16px rgba(148,163,184,0.10)",
-                  transition: "width 240ms ease-out, background 240ms ease-out",
-                }}
-              />
-            </div>
-
-            <div className="mt-2 text-xs text-neutral-500">
-              {moment === "maxhit"
-                ? "Max win achieved — fully safe (green)."
-                : moment === "cashout"
-                ? "Cashed out — locked in (green)."
-                : moment === "bust"
-                ? "Busted — run ended (red)."
-                : "Gets riskier as you go (shifts toward red)."}
-            </div>
-          </div>
-        </div>
-      </div>
-
+    <div className="relative h-full w-full">
       <style jsx>{`
-        .abs {
-          position: absolute;
-          inset: 0;
-          pointer-events: none;
-        }
-
-        .pixel {
-          image-rendering: pixelated;
-          image-rendering: crisp-edges;
-          -ms-interpolation-mode: nearest-neighbor;
-        }
-
-        .tone-safe {
-          background: radial-gradient(circle at 50% 30%, rgba(56, 189, 248, 0.14), transparent 55%),
-            radial-gradient(circle at 30% 80%, rgba(34, 197, 94, 0.1), transparent 55%);
-        }
-        .tone-wild {
-          background: radial-gradient(circle at 50% 30%, rgba(168, 85, 247, 0.16), transparent 55%),
-            radial-gradient(circle at 30% 80%, rgba(34, 197, 94, 0.1), transparent 55%);
-        }
-        .tone-degen {
-          background: radial-gradient(circle at 50% 30%, rgba(244, 63, 94, 0.16), transparent 55%),
-            radial-gradient(circle at 30% 80%, rgba(250, 204, 21, 0.1), transparent 55%);
-        }
-
-        /* Card FX */
-        .fx-idle {
-          animation: idleBob 1.6s ease-in-out infinite;
-        }
-        .fx-hop {
-          animation: hopPop 240ms ease-out;
-        }
-        .fx-cash {
-          animation: cashStamp 360ms cubic-bezier(0.2, 1.2, 0.2, 1);
-        }
-        .fx-max {
-          animation: maxGlow 520ms ease-out;
-        }
-        .fx-bust {
-          animation: bustShake 420ms ease-out;
-          border-color: rgba(239, 68, 68, 0.25);
-        }
-
-        @keyframes idleBob {
+        @keyframes floaty {
           0%,
           100% {
             transform: translateY(0);
           }
           50% {
-            transform: translateY(-2px);
-          }
-        }
-        @keyframes hopPop {
-          0% {
-            transform: scale(0.985);
-          }
-          60% {
-            transform: scale(1.02);
-          }
-          100% {
-            transform: scale(1);
-          }
-        }
-        @keyframes cashStamp {
-          0% {
-            transform: scale(0.94);
-            opacity: 0.75;
-          }
-          70% {
-            transform: scale(1.05);
-            opacity: 1;
-          }
-          100% {
-            transform: scale(1);
-          }
-        }
-        @keyframes maxGlow {
-          0% {
-            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.15), 0 0 0 rgba(16, 185, 129, 0);
-          }
-          45% {
-            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.28), 0 0 40px rgba(16, 185, 129, 0.18);
-          }
-          100% {
-            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.15), 0 0 0 rgba(16, 185, 129, 0);
-          }
-        }
-        @keyframes bustShake {
-          0% {
-            transform: translateX(0);
-          }
-          20% {
-            transform: translateX(-8px);
-          }
-          40% {
-            transform: translateX(8px);
-          }
-          60% {
-            transform: translateX(-6px);
-          }
-          80% {
-            transform: translateX(6px);
-          }
-          100% {
-            transform: translateX(0);
+            transform: translateY(-3px);
           }
         }
 
-        /* BUST flash overlay */
-        .fx-bust-flash {
-          background: rgba(239, 68, 68, 0.28);
-          animation: bustFlash 420ms ease-out forwards;
+        @keyframes popIn {
+          0% {
+            transform: translateY(8px) scale(0.99);
+            opacity: 0;
+          }
+          100% {
+            transform: translateY(0) scale(1);
+            opacity: 1;
+          }
         }
+
+        /* Max hit: small screen shake */
+        @keyframes maxShake {
+          0%,
+          100% {
+            transform: translate3d(0, 0, 0);
+          }
+          10% {
+            transform: translate3d(-1px, 0, 0);
+          }
+          20% {
+            transform: translate3d(2px, -1px, 0);
+          }
+          30% {
+            transform: translate3d(-2px, 1px, 0);
+          }
+          40% {
+            transform: translate3d(1px, 0, 0);
+          }
+          50% {
+            transform: translate3d(-1px, -1px, 0);
+          }
+          60% {
+            transform: translate3d(2px, 1px, 0);
+          }
+          70% {
+            transform: translate3d(-2px, 0, 0);
+          }
+          80% {
+            transform: translate3d(1px, 1px, 0);
+          }
+          90% {
+            transform: translate3d(-1px, 0, 0);
+          }
+        }
+
+        /* Lightning flicker overlay */
+        @keyframes lightningFlicker {
+          0%,
+          100% {
+            opacity: 0;
+            transform: scale(1);
+          }
+          6% {
+            opacity: 0.95;
+          }
+          12% {
+            opacity: 0.15;
+          }
+          18% {
+            opacity: 0.85;
+            transform: scale(1.01);
+          }
+          28% {
+            opacity: 0.25;
+          }
+          38% {
+            opacity: 0.7;
+          }
+          50% {
+            opacity: 0.05;
+          }
+          60% {
+            opacity: 0.55;
+          }
+          72% {
+            opacity: 0.12;
+          }
+        }
+
+        /* Confetti (simple + light) */
+        @keyframes confettiFall {
+          0% {
+            transform: translateY(-18px) rotate(0deg);
+            opacity: 0;
+          }
+          10% {
+            opacity: 1;
+          }
+          100% {
+            transform: translateY(140px) rotate(220deg);
+            opacity: 0;
+          }
+        }
+
+        /* Cashout: coins splash */
+        @keyframes coinBurst {
+          0% {
+            transform: translate3d(0, 0, 0) scale(0.6);
+            opacity: 0;
+          }
+          10% {
+            opacity: 1;
+          }
+          100% {
+            transform: translate3d(var(--dx), var(--dy), 0) scale(1);
+            opacity: 0;
+          }
+        }
+
+        /* Busted: quick red flash */
         @keyframes bustFlash {
           0% {
             opacity: 0;
           }
-          20% {
-            opacity: 0.7;
+          15% {
+            opacity: 0.55;
           }
           100% {
             opacity: 0;
           }
         }
 
-        /* Sparkles overlay (cash out) */
-        .fx-sparkles {
-          background-image: radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.25) 0 2px, transparent 3px),
-            radial-gradient(circle at 70% 40%, rgba(255, 255, 255, 0.18) 0 2px, transparent 3px),
-            radial-gradient(circle at 40% 75%, rgba(255, 255, 255, 0.22) 0 2px, transparent 3px),
-            radial-gradient(circle at 85% 70%, rgba(255, 255, 255, 0.16) 0 2px, transparent 3px);
-          opacity: 0;
-          animation: sparkles 700ms ease-out forwards;
-          filter: blur(0.2px);
+        .fx-card {
+          animation: popIn 180ms ease-out;
         }
-        @keyframes sparkles {
-          0% {
-            opacity: 0;
-            transform: scale(0.98);
-          }
-          20% {
-            opacity: 0.75;
-          }
-          100% {
-            opacity: 0;
-            transform: scale(1.02);
-          }
+        .fx-max {
+          animation: popIn 180ms ease-out, maxShake 480ms ease-out;
         }
 
-        /* Confetti overlay (max hit) */
+        .fx-lightning {
+          position: absolute;
+          inset: 0;
+          border-radius: 24px;
+          pointer-events: none;
+          mix-blend-mode: screen;
+          background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 55%),
+            radial-gradient(circle at 70% 25%, rgba(250, 204, 21, 0.35), rgba(250, 204, 21, 0) 60%),
+            linear-gradient(135deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.16) 25%, rgba(255, 255, 255, 0) 55%),
+            linear-gradient(45deg, rgba(255, 255, 255, 0) 0%, rgba(250, 204, 21, 0.14) 30%, rgba(255, 255, 255, 0) 62%);
+          animation: lightningFlicker 900ms ease-out 1;
+        }
+
+        .fx-bustFlash {
+          position: absolute;
+          inset: -2px;
+          border-radius: 28px;
+          pointer-events: none;
+          background: rgba(239, 68, 68, 0.35);
+          animation: bustFlash 380ms ease-out 1;
+        }
+
         .fx-confetti {
-          opacity: 0;
-          animation: confetti 900ms ease-out forwards;
-          background-image: radial-gradient(circle at 12% 10%, rgba(250, 204, 21, 0.8) 0 2px, transparent 3px),
-            radial-gradient(circle at 25% 22%, rgba(34, 197, 94, 0.8) 0 2px, transparent 3px),
-            radial-gradient(circle at 45% 12%, rgba(56, 189, 248, 0.8) 0 2px, transparent 3px),
-            radial-gradient(circle at 65% 18%, rgba(168, 85, 247, 0.8) 0 2px, transparent 3px),
-            radial-gradient(circle at 80% 8%, rgba(239, 68, 68, 0.75) 0 2px, transparent 3px),
-            radial-gradient(circle at 18% 40%, rgba(250, 204, 21, 0.7) 0 2px, transparent 3px),
-            radial-gradient(circle at 62% 38%, rgba(34, 197, 94, 0.65) 0 2px, transparent 3px),
-            radial-gradient(circle at 86% 44%, rgba(56, 189, 248, 0.7) 0 2px, transparent 3px);
-          background-size: 100% 100%;
-          filter: blur(0.1px);
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          overflow: hidden;
+          border-radius: 28px;
         }
-        @keyframes confetti {
-          0% {
-            opacity: 0;
-            transform: translateY(-8px);
-          }
-          20% {
-            opacity: 0.9;
-          }
-          100% {
-            opacity: 0;
-            transform: translateY(10px);
+        .fx-confetti span {
+          position: absolute;
+          top: -10px;
+          width: 8px;
+          height: 14px;
+          border-radius: 3px;
+          opacity: 0;
+          animation: confettiFall 980ms ease-out 1;
+        }
+
+        .fx-coins {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          overflow: hidden;
+          border-radius: 28px;
+        }
+        .fx-coins i {
+          position: absolute;
+          right: 26px;
+          bottom: 26px;
+          width: 10px;
+          height: 10px;
+          border-radius: 999px;
+          background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.85), rgba(250, 204, 21, 0.9) 45%, rgba(250, 204, 21, 0.35) 75%);
+          box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.22);
+          opacity: 0;
+          animation: coinBurst 650ms ease-out 1;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .fx-card,
+          .fx-max,
+          .fx-lightning,
+          .fx-confetti span,
+          .fx-coins i,
+          .fx-bustFlash {
+            animation: none !important;
           }
         }
       `}</style>
+
+      {/* Big board: occupies the canvas area */}
+      <div className="absolute inset-0 flex items-center justify-center px-4 py-4 md:px-6 md:py-6">
+        <div
+          key={`card-${animNonce}`}
+          className={[
+            "relative w-full max-w-3xl rounded-3xl border border-neutral-800 bg-neutral-950/60",
+            "p-4 md:p-6",
+            moment === "maxhit"
+              ? "ring-1 ring-emerald-500/25"
+              : moment === "cashout"
+              ? "ring-1 ring-neutral-200/15"
+              : moment === "bust"
+              ? "ring-1 ring-red-500/25"
+              : moment === "success"
+              ? "ring-1 ring-emerald-500/20"
+              : "",
+            moment === "maxhit" ? "fx-max" : "fx-card",
+          ].join(" ")}
+        >
+          {/* soft tint */}
+          <div
+            className={[
+              "pointer-events-none absolute inset-0 rounded-3xl",
+              moment === "bust"
+                ? "bg-red-500/10"
+                : moment === "cashout"
+                ? "bg-emerald-500/10"
+                : moment === "maxhit"
+                ? "bg-emerald-500/10"
+                : "bg-emerald-500/10",
+            ].join(" ")}
+          />
+
+          {/* FX layers */}
+          {showBustFlash ? <div className="fx-bustFlash" /> : null}
+
+          {showLightning ? <div key={`light-${animNonce}`} className="fx-lightning" /> : null}
+
+          {showConfetti ? (
+            <div key={`conf-${animNonce}`} className="fx-confetti">
+              {Array.from({ length: 22 }).map((_, i) => (
+                <span
+                  key={i}
+                  style={{
+                    left: `${(i * 4.5) % 100}%`,
+                    animationDelay: `${(i % 6) * 40}ms`,
+                    background:
+                      i % 4 === 0
+                        ? "rgba(250,204,21,0.9)"
+                        : i % 4 === 1
+                        ? "rgba(16,185,129,0.9)"
+                        : i % 4 === 2
+                        ? "rgba(244,63,94,0.9)"
+                        : "rgba(59,130,246,0.9)",
+                    transform: `rotate(${(i * 19) % 180}deg)`,
+                  }}
+                />
+              ))}
+            </div>
+          ) : null}
+
+          {showCoinSplash ? (
+            <div key={`coin-${animNonce}`} className="fx-coins">
+              {Array.from({ length: 14 }).map((_, i) => {
+                const ang = (i / 14) * Math.PI * 1.15 + 0.2; // mostly upward/left
+                const dist = 34 + (i % 5) * 14;
+                const dx = Math.round(Math.cos(ang) * dist) * -1;
+                const dy = Math.round(Math.sin(ang) * dist) * -1;
+                return (
+                  <i
+                    key={i}
+                    style={
+                      {
+                        animationDelay: `${(i % 7) * 26}ms`,
+                        // @ts-expect-error custom CSS vars
+                        "--dx": `${dx}px`,
+                        // @ts-expect-error custom CSS vars
+                        "--dy": `${dy}px`,
+                      } as any
+                    }
+                  />
+                );
+              })}
+            </div>
+          ) : null}
+
+          {/* TOP BOXES: CURRENT | NEXT CHANCE | PROGRESS */}
+          <div className="relative grid grid-cols-3 gap-2 md:gap-3">
+            {/* CURRENT */}
+            <div className="rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2">
+              <div className="text-[11px] font-semibold text-neutral-400">CURRENT</div>
+              <div className="mt-0.5 flex items-baseline justify-between gap-3">
+                <div
+                  className={[
+                    "text-sm font-extrabold",
+                    moment === "bust" ? "text-red-200" : "text-neutral-100",
+                  ].join(" ")}
+                >
+                  {currentMultDisplay.toFixed(2)}x
+                </div>
+                <div
+                  className={[
+                    "text-sm font-extrabold",
+                    moment === "bust" ? "text-red-300" : "text-emerald-200",
+                  ].join(" ")}
+                >
+                  {fmtInt(currentReturnDisplay)} DTC
+                </div>
+              </div>
+              <div className="mt-1 text-[11px] text-neutral-500">
+                Hop {Math.max(1, Math.min(hops, maxHops))}/{maxHops}
+              </div>
+            </div>
+
+            {/* NEXT CHANCE */}
+            <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2">
+              <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-emerald-200/80">
+                <span>NEXT CHANCE</span>
+                <span className="text-emerald-200/75">
+                  {modeMeta.emoji} {modeMeta.name}
+                </span>
+              </div>
+              <div className="mt-0.5 text-sm font-extrabold text-emerald-200">{nextChancePct}</div>
+            </div>
+
+            {/* PROGRESS */}
+            <div className="rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 text-right">
+              <div className="text-[11px] font-semibold text-neutral-400">PROGRESS</div>
+              <div className="mt-0.5 text-sm font-extrabold text-neutral-100">
+                {Math.min(hops, maxHops)}/{maxHops}
+              </div>
+            </div>
+          </div>
+
+          {/* MAIN: TOAD + MESSAGE */}
+          <div className="relative mt-4 flex items-center gap-4 md:mt-5">
+            <img
+              src={toadSrc}
+              alt="toad"
+              width={220}
+              height={220}
+              className="h-[175px] w-[175px] md:h-[210px] md:w-[210px]"
+              style={{ animation: "floaty 1.9s ease-in-out infinite" }}
+              draggable={false}
+            />
+
+            <div className="min-w-0">
+              <div className="text-4xl font-extrabold tracking-tight text-neutral-50 md:text-6xl">{headline}</div>
+              <div className="mt-1 text-sm font-semibold text-neutral-200 md:text-base">{subline}</div>
+
+              {showShare ? (
+                <button
+                  type="button"
+                  onClick={shareResult}
+                  className="mt-3 inline-flex items-center justify-center rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-2 text-xs font-extrabold tracking-wide text-emerald-200 hover:bg-emerald-500/15"
+                >
+                  SHARE
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {/* BOTTOM ROW: Progress (left) + NEXT/PRIZE (right) */}
+          <div className="relative mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_260px] md:items-stretch md:gap-4">
+            {/* Progress bar card (narrower height) */}
+            <div className="rounded-2xl border border-white/10 bg-black/25 px-4 py-3">
+              <div className="flex items-center justify-between text-xs font-semibold text-neutral-300">
+                <span>Progress</span>
+                <span className={pctTextClass}>{Math.round(progressPct)}%</span>
+              </div>
+
+              <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full"
+                  style={{ width: `${progressPct}%`, transition: "width 240ms ease-out", ...barStyle }}
+                />
+              </div>
+            </div>
+
+            {/* NEXT / PRIZE box */}
+            <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/55 px-4 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] font-semibold text-neutral-400">{rightBoxTitle}</div>
+                <div className="text-[11px] font-semibold text-neutral-500">{rightSubline}</div>
+              </div>
+
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <div className="text-sm font-extrabold text-neutral-100">
+                  {rightMultDisplay === null ? "—" : `${rightMultDisplay.toFixed(2)}x`}
+                </div>
+                <div className="text-sm font-extrabold text-emerald-200">
+                  {rightReturnDisplay === null ? "—" : `${fmtInt(rightReturnDisplay)} DTC`}
+                </div>
+              </div>
+
+              <div className="mt-1 text-[11px] text-neutral-500">
+                {rightBoxTitle === "NEXT" ? (rightMultDisplay === null ? "—" : rightSubline) : "Final result"}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

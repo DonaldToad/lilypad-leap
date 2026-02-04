@@ -200,7 +200,7 @@ export default function PlayPage() {
   }
 
   function playSound(key: SoundKey, opts?: { restart?: boolean }) {
-    if (!soundOn) return;
+    if (!soundOn) return; // ✅ synced with mute state
     const bank = soundsRef.current;
     if (!bank) return;
     const a = bank[key];
@@ -749,8 +749,10 @@ export default function PlayPage() {
     if (showPostOutcomeButtons) return "Busted or cashed out — choose your next move.";
     if (!hasStarted) return "Start a run.";
     if (hops >= MAX_HOPS) return "MAX HIT — cash out to lock it in.";
-    return actionLocked ? "…" : "Primary action.";
+    return actionLocked ? "…" : "Take the Leap!";
   }, [showPostOutcomeButtons, hasStarted, hops, actionLocked]);
+
+  const soundEmoji = soundOn ? "📢" : "🔇";
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -818,6 +820,26 @@ export default function PlayPage() {
           }
           50% {
             box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1);
+          }
+        }
+
+        /* ✅ Sound ON subtle pulse/glow */
+        @keyframes soundPulseGlow {
+          0%,
+          100% {
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18), 0 0 0 rgba(16, 185, 129, 0);
+            transform: translateZ(0);
+          }
+          50% {
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.28), 0 0 18px rgba(16, 185, 129, 0.12);
+          }
+        }
+        .soundPulse {
+          animation: soundPulseGlow 1.35s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .soundPulse {
+            animation: none !important;
           }
         }
 
@@ -942,7 +964,8 @@ export default function PlayPage() {
             <div>
               <h1 className="text-2xl font-bold">Play</h1>
               <p className="mt-2 text-neutral-300">
-                Choose a route, set an amount, then decide: <b>HOP</b> or <b>CASH OUT</b> — up to <b>10 hops</b>.
+                Choose a route, set an amount, then decide: <b>HOP</b> or <b>CASH OUT</b> — up to{" "}
+                <b>10 hops</b>.
               </p>
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -1039,11 +1062,26 @@ export default function PlayPage() {
               <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-xs font-semibold text-neutral-200">Sound</div>
+                    <div className="flex items-center gap-2 text-xs font-semibold text-neutral-200">
+                      <span
+                        aria-hidden="true"
+                        className={[
+                          "inline-flex h-6 w-6 items-center justify-center rounded-lg border text-sm",
+                          soundOn
+                            ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200"
+                            : "border-neutral-800 bg-neutral-900 text-neutral-300",
+                        ].join(" ")}
+                        title={soundOn ? "Sound ON" : "Sound OFF"}
+                      >
+                        {soundEmoji}
+                      </span>
+                      Sound
+                    </div>
                     <div className="mt-0.5 text-[11px] text-neutral-500">
                       {soundOn ? "ON (default)" : "OFF (muted)"}
                     </div>
                   </div>
+
                   <button
                     type="button"
                     onClick={() => setSoundOn((v) => !v)}
@@ -1052,9 +1090,12 @@ export default function PlayPage() {
                       soundOn
                         ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
                         : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
+                      soundOn ? "soundPulse" : "",
                     ].join(" ")}
+                    aria-pressed={soundOn}
+                    aria-label={soundOn ? "Mute sound" : "Enable sound"}
                   >
-                    {soundOn ? "SOUND: ON" : "SOUND: OFF"}
+                    {soundOn ? "📢 SOUND: ON" : "🔇 SOUND: OFF"}
                   </button>
                 </div>
               </div>
@@ -1226,9 +1267,7 @@ export default function PlayPage() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Estimated return</span>
-                    <span className="font-semibold">
-                      {hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}
-                    </span>
+                    <span className="font-semibold">{hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}</span>
                   </div>
                 </div>
 
@@ -1248,7 +1287,9 @@ export default function PlayPage() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-neutral-500">Commit hash</span>
-                      <span className="text-neutral-600">{commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}</span>
+                      <span className="text-neutral-600">
+                        {commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}
+                      </span>
                     </div>
 
                     <div className="mt-1 break-all font-mono text-neutral-200">
@@ -1356,8 +1397,8 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">Animation Canvas</div>
-                    <div className="mt-1 text-xs text-neutral-500">Two lilypads only • event-driven FX</div>
+                    <div className="text-sm font-semibold text-neutral-100">Make Your Bags Great Again 🐸💰</div>
+                    <div className="mt-1 text-xs text-neutral-500">Donald Toad Coin • community-driven</div>
                   </div>
                   <div className="text-xs text-neutral-400">
                     Chain: <span className="text-neutral-200">{selectedChain.name}</span> (UI)
@@ -1408,7 +1449,10 @@ export default function PlayPage() {
                           className="absolute left-1/2 top-1/2 h-[120%] w-[120%] rounded-[999px] border border-neutral-50/10"
                           style={{
                             transform: "translate(-50%, -50%)",
-                            animation: animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
+                            animation:
+                              animEvent === "hop_ok" || animEvent === "hop_fail"
+                                ? "padRipple 520ms ease-out"
+                                : "none",
                           }}
                         />
                       </div>
@@ -1436,40 +1480,6 @@ export default function PlayPage() {
                             }}
                           />
                         ) : null}
-                      </div>
-                    </div>
-
-                    {/* Top hop strip (current + next: multiplier + payout) */}
-                    <div className="absolute left-0 right-0 top-0 z-20 p-3">
-                      <div className="mx-auto flex w-full max-w-md items-center justify-between gap-2 rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 backdrop-blur">
-                        <div className="min-w-0 flex-1 rounded-xl bg-neutral-50/5 px-3 py-2 ring-1 ring-neutral-200/10">
-                          <div className="text-[11px] font-semibold text-neutral-400">CURRENT</div>
-                          <div className="mt-0.5 flex items-baseline justify-between gap-2">
-                            <div className={["text-sm font-extrabold", isFailed ? "text-red-200" : "text-neutral-100"].join(" ")}>
-                              {topCurrentMult === null ? "—" : topCurrentMult === 0 ? "0.00x" : fmtX(topCurrentMult)}
-                            </div>
-
-                            <div className={["text-sm font-extrabold", isFailed ? "text-red-300" : "text-emerald-200"].join(" ")}>
-                              {topCurrentPrize === null ? "—" : `${fmtInt(topCurrentPrize)} DTC`}
-                            </div>
-                          </div>
-                          <div className="mt-1 text-[11px] text-neutral-500">
-                            {hasStarted ? `Hop ${Math.min(hops, MAX_HOPS)}/${MAX_HOPS}` : "Not started"}
-                          </div>
-                        </div>
-
-                        <div className="min-w-0 flex-1 rounded-xl bg-neutral-50/5 px-3 py-2 ring-1 ring-neutral-200/10">
-                          <div className="text-[11px] font-semibold text-neutral-400">NEXT</div>
-                          <div className="mt-0.5 flex items-baseline justify-between gap-2">
-                            <div className="text-sm font-extrabold text-neutral-100">{nextMult === null ? "—" : fmtX(nextMult)}</div>
-                            <div className="text-sm font-extrabold text-emerald-200">
-                              {nextPrize === null ? "—" : `${fmtInt(nextPrize)} DTC`}
-                            </div>
-                          </div>
-                          <div className="mt-1 text-[11px] text-neutral-500">
-                            {nextMult === null ? (hops >= MAX_HOPS ? "MAX HIT reached" : "—") : `If hop ${Math.min(hops + 1, MAX_HOPS)} clears`}
-                          </div>
-                        </div>
                       </div>
                     </div>
 
@@ -1586,7 +1596,11 @@ export default function PlayPage() {
                         hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
 
                       const rowBase = "grid grid-cols-[90px_1fr_140px] px-4 py-3 text-sm";
-                      const rowBg = isCompleted ? "bg-emerald-500/10" : isActive ? "bg-neutral-900/40" : "bg-neutral-950";
+                      const rowBg = isCompleted
+                        ? "bg-emerald-500/10"
+                        : isActive
+                        ? "bg-neutral-900/40"
+                        : "bg-neutral-950";
 
                       const popStyle =
                         poppedHop === hopNo ? { animation: "rowPop 420ms ease-out" as const } : undefined;
@@ -1651,7 +1665,8 @@ export default function PlayPage() {
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4 text-sm text-neutral-300">
-                  <b>Demo guarantee:</b> The UI does not reveal future outcomes. Rolls are computed and displayed only after an attempt.
+                  <b>Demo guarantee:</b> The UI does not reveal future outcomes. Rolls are computed and displayed only
+                  after an attempt.
                 </div>
               </div>
             </div>
