@@ -13,6 +13,18 @@ const MAX_HOPS = 10;
 const MAX_AMOUNT = 12_000; // CHANGED from 10,000
 const MIN_AMOUNT = 1;
 
+// Sound files (served from /public)
+const SOUND_BASE = "/lilypad-leap/sounds";
+type SoundKey = "start" | "hop" | "busted" | "cashout" | "maxhit" | "win";
+const SOUND_SRC: Record<SoundKey, string> = {
+  start: `${SOUND_BASE}/start.mp3`,
+  hop: `${SOUND_BASE}/hop.mp3`,
+  busted: `${SOUND_BASE}/busted.mp3`,
+  cashout: `${SOUND_BASE}/cashout.mp3`,
+  maxhit: `${SOUND_BASE}/maxhit.mp3`,
+  win: `${SOUND_BASE}/win.mp3`,
+};
+
 // Fixed per-hop success + fixed payout tables (approved)
 const MODE: Record<
   ModeKey,
@@ -169,10 +181,78 @@ type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
 
 export default function PlayPage() {
+  // -----------------------------
+  // Sounds (ON by default + visible toggle)
+  // -----------------------------
+  const [soundOn, setSoundOn] = useState<boolean>(true);
+  const soundsRef = useRef<Record<SoundKey, HTMLAudioElement> | null>(null);
+  const winTimerRef = useRef<number | null>(null);
+
+  function stopAllSounds() {
+    const bank = soundsRef.current;
+    if (!bank) return;
+    (Object.keys(bank) as SoundKey[]).forEach((k) => {
+      try {
+        bank[k].pause();
+        bank[k].currentTime = 0;
+      } catch {}
+    });
+  }
+
+  function playSound(key: SoundKey, opts?: { restart?: boolean }) {
+    if (!soundOn) return;
+    const bank = soundsRef.current;
+    if (!bank) return;
+    const a = bank[key];
+    if (!a) return;
+
+    try {
+      if (opts?.restart !== false) a.currentTime = 0;
+      // Must be called after a user gesture for some browsers — we only call on clicks.
+      void a.play();
+    } catch {
+      // ignore (autoplay restrictions, etc.)
+    }
+  }
+
+  useEffect(() => {
+    // Create audio objects once on client
+    const bank: Record<SoundKey, HTMLAudioElement> = {
+      start: new Audio(SOUND_SRC.start),
+      hop: new Audio(SOUND_SRC.hop),
+      busted: new Audio(SOUND_SRC.busted),
+      cashout: new Audio(SOUND_SRC.cashout),
+      maxhit: new Audio(SOUND_SRC.maxhit),
+      win: new Audio(SOUND_SRC.win),
+    };
+
+    // Light preload
+    (Object.keys(bank) as SoundKey[]).forEach((k) => {
+      bank[k].preload = "auto";
+      bank[k].volume = 0.9;
+    });
+
+    soundsRef.current = bank;
+
+    return () => {
+      if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
+      winTimerRef.current = null;
+      try {
+        stopAllSounds();
+      } catch {}
+      soundsRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // When user mutes: stop any playing audio immediately
+    if (!soundOn) stopAllSounds();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soundOn]);
+
   // Chain selection (UI-only demo)
-  const [selectedChainKey, setSelectedChainKey] = useState<string>(
-    PRIMARY_CHAIN.key
-  );
+  const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
 
   // Mode selection
   const [modeKey, setModeKey] = useState<ModeKey>("safe");
@@ -191,9 +271,7 @@ export default function PlayPage() {
   const [isCashedOut, setIsCashedOut] = useState<boolean>(false);
 
   // RNG state
-  const [rngState, setRngState] = useState<number>(
-    () => (Date.now() ^ 0x6a41f7f5) >>> 0
-  );
+  const [rngState, setRngState] = useState<number>(() => (Date.now() ^ 0x6a41f7f5) >>> 0);
 
   // Commit hash
   const commitHash = useMemo(() => buildCommitHash(rngState), [rngState]);
@@ -248,17 +326,12 @@ export default function PlayPage() {
 
   // IMPORTANT: allow Cash Out at hop 10
   const canStart = !hasStarted && amount >= MIN_AMOUNT;
-  const canHop =
-    hasStarted && !isFailed && !isCashedOut && !actionLocked && hops < MAX_HOPS;
-  const canCashOut =
-    hasStarted && !isFailed && !isCashedOut && !actionLocked && hops > 0; // includes hops==10
+  const canHop = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops < MAX_HOPS;
+  const canCashOut = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops > 0; // includes hops==10
 
   const ended = isFailed || isCashedOut;
 
-  const currentReturn = useMemo(
-    () => Math.floor(amount * currentMult),
-    [amount, currentMult]
-  );
+  const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
 
   const nextHopSuccessExact = useMemo(() => {
     if (!canHop) return null;
@@ -306,6 +379,9 @@ export default function PlayPage() {
     return () => {
       if (lockTimerRef.current) window.clearTimeout(lockTimerRef.current);
       lockTimerRef.current = null;
+
+      if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
+      winTimerRef.current = null;
     };
   }, []);
 
@@ -356,6 +432,10 @@ export default function PlayPage() {
   }
 
   function resetRunNewSeed() {
+    // Stop any queued WIN sound
+    if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
+    winTimerRef.current = null;
+
     const newSeed = ((Date.now() ^ 0x9e3779b9) >>> 0) as number;
     setRngState(newSeed);
 
@@ -387,11 +467,7 @@ export default function PlayPage() {
 
   // "PLAY AGAIN" uses previous started amount, and starts immediately
   function playAgainSameAmount() {
-    const v = clampInt(
-      lastStartedAmountRef.current || amount,
-      MIN_AMOUNT,
-      MAX_AMOUNT
-    );
+    const v = clampInt(lastStartedAmountRef.current || amount, MIN_AMOUNT, MAX_AMOUNT);
     setAmount(v);
     setAmountRaw(String(v));
     resetRunNewSeed();
@@ -453,12 +529,18 @@ export default function PlayPage() {
     setOutcome("idle");
     setOutcomeText("");
 
+    // ✅ START sound
+    playSound("start");
+
     // Mobile: bring the board into view (not the buttons)
     window.setTimeout(() => scrollToBoard(), 60);
   }
 
   function hopOnce() {
     if (!canHop) return;
+
+    // ✅ HOP sound (action feedback)
+    playSound("hop");
 
     const u = xorshift32(rngState);
     const roll = uint32ToRoll(u);
@@ -479,13 +561,14 @@ export default function PlayPage() {
       setIsFailed(true);
       setOutcome("bust");
       setOutcomeText(
-        `Failed on hop ${nextHopNo}. Roll ${roll.toFixed(
-          3
-        )} > ${successPct.toFixed(6)}%.`
+        `Failed on hop ${nextHopNo}. Roll ${roll.toFixed(3)} > ${successPct.toFixed(6)}%.`
       );
 
       setFailFlash(true);
       window.setTimeout(() => setFailFlash(false), 380);
+
+      // ✅ BUSTED sound
+      playSound("busted");
 
       triggerAnim("hop_fail");
 
@@ -502,9 +585,9 @@ export default function PlayPage() {
 
     setOutcome("success");
     setOutcomeText(
-      `Hop ${completedHop} cleared. Roll ${roll.toFixed(
-        3
-      )} ≤ ${successPct.toFixed(6)}%. Cash Out now: ${fmtX(newMult)}.`
+      `Hop ${completedHop} cleared. Roll ${roll.toFixed(3)} ≤ ${successPct.toFixed(
+        6
+      )}%. Cash Out now: ${fmtX(newMult)}.`
     );
 
     setPoppedHop(completedHop);
@@ -516,10 +599,17 @@ export default function PlayPage() {
     if (completedHop >= MAX_HOPS) {
       setOutcome("maxhit");
       setOutcomeText(
-        `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(
-          newMult
-        )}.`
+        `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`
       );
+
+      // ✅ MAXHIT sound, then WIN right after
+      playSound("maxhit");
+      if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
+      winTimerRef.current = window.setTimeout(() => {
+        playSound("win");
+        winTimerRef.current = null;
+      }, 450);
+
       triggerAnim("max_hit");
     }
 
@@ -532,10 +622,11 @@ export default function PlayPage() {
     setIsCashedOut(true);
     setOutcome("cashout");
     setOutcomeText(
-      `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(
-        currentReturn
-      )} DTC (demo).`
+      `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`
     );
+
+    // ✅ CASHOUT sound
+    playSound("cashout");
 
     triggerAnim("cash_out");
 
@@ -569,8 +660,7 @@ export default function PlayPage() {
     window.setTimeout(() => scrollToBoard(), 80);
   }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce]);
 
-  const selectedChain =
-    CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
+  const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   // Visible hop rows (mobile-friendly collapse)
   const visibleHopSet = useMemo(() => {
@@ -633,8 +723,6 @@ export default function PlayPage() {
 
   const bottomPrimaryLabel = useMemo(() => {
     if (!hasStarted) return "START";
-    // Keep the original run flow: HOP during the run.
-    // (At MAX HIT, the user should cash out; keep it clear.)
     if (hops >= MAX_HOPS) return "CASH OUT";
     return "HOP";
   }, [hasStarted, hops]);
@@ -674,8 +762,7 @@ export default function PlayPage() {
           }
           45% {
             transform: scale(1.02);
-            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35),
-              0 0 24px rgba(16, 185, 129, 0.2);
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.2);
           }
           100% {
             transform: scale(1);
@@ -730,8 +817,7 @@ export default function PlayPage() {
             box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12);
           }
           50% {
-            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18),
-              0 0 18px rgba(148, 163, 184, 0.1);
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1);
           }
         }
 
@@ -808,55 +894,19 @@ export default function PlayPage() {
 
         /* Tone backgrounds for the canvas container */
         .toneSafe {
-          background: radial-gradient(
-              circle at 50% 15%,
-              rgba(56, 189, 248, 0.14),
-              transparent 55%
-            ),
-            radial-gradient(
-              circle at 25% 85%,
-              rgba(34, 197, 94, 0.12),
-              transparent 55%
-            ),
-            linear-gradient(
-              180deg,
-              rgba(2, 6, 23, 0.55),
-              rgba(2, 6, 23, 0.25)
-            );
+          background: radial-gradient(circle at 50% 15%, rgba(56, 189, 248, 0.14), transparent 55%),
+            radial-gradient(circle at 25% 85%, rgba(34, 197, 94, 0.12), transparent 55%),
+            linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.25));
         }
         .toneWild {
-          background: radial-gradient(
-              circle at 50% 15%,
-              rgba(168, 85, 247, 0.16),
-              transparent 55%
-            ),
-            radial-gradient(
-              circle at 25% 85%,
-              rgba(34, 197, 94, 0.1),
-              transparent 55%
-            ),
-            linear-gradient(
-              180deg,
-              rgba(2, 6, 23, 0.55),
-              rgba(2, 6, 23, 0.25)
-            );
+          background: radial-gradient(circle at 50% 15%, rgba(168, 85, 247, 0.16), transparent 55%),
+            radial-gradient(circle at 25% 85%, rgba(34, 197, 94, 0.1), transparent 55%),
+            linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.25));
         }
         .toneInsane {
-          background: radial-gradient(
-              circle at 50% 15%,
-              rgba(244, 63, 94, 0.16),
-              transparent 55%
-            ),
-            radial-gradient(
-              circle at 25% 85%,
-              rgba(250, 204, 21, 0.12),
-              transparent 55%
-            ),
-            linear-gradient(
-              180deg,
-              rgba(2, 6, 23, 0.55),
-              rgba(2, 6, 23, 0.25)
-            );
+          background: radial-gradient(circle at 50% 15%, rgba(244, 63, 94, 0.16), transparent 55%),
+            radial-gradient(circle at 25% 85%, rgba(250, 204, 21, 0.12), transparent 55%),
+            linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.25));
         }
 
         /* Event FX class applied to pad wrapper divs */
@@ -892,8 +942,7 @@ export default function PlayPage() {
             <div>
               <h1 className="text-2xl font-bold">Play</h1>
               <p className="mt-2 text-neutral-300">
-                Choose a route, set an amount, then decide: <b>HOP</b> or{" "}
-                <b>CASH OUT</b> — up to <b>10 hops</b>.
+                Choose a route, set an amount, then decide: <b>HOP</b> or <b>CASH OUT</b> — up to <b>10 hops</b>.
               </p>
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -907,8 +956,7 @@ export default function PlayPage() {
             </div>
 
             <div className="text-sm text-neutral-400">
-              Primary:{" "}
-              <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
+              Primary: <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
             </div>
           </div>
 
@@ -933,9 +981,7 @@ export default function PlayPage() {
                       disabled={isDisabled}
                       className={[
                         "flex flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
-                        isDisabled
-                          ? "opacity-40 cursor-not-allowed"
-                          : "hover:bg-neutral-800/40",
+                        isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-neutral-800/40",
                         isSelected
                           ? "bg-neutral-950 ring-1 ring-emerald-500/20 border border-emerald-500/20"
                           : "border border-transparent",
@@ -944,12 +990,8 @@ export default function PlayPage() {
                       <div className="flex items-center gap-2">
                         <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
                         <div className="leading-tight">
-                          <div className="text-sm font-semibold text-neutral-100">
-                            {c.name}
-                          </div>
-                          <div className="text-[11px] text-neutral-500">
-                            Chain ID: {c.chainId}
-                          </div>
+                          <div className="text-sm font-semibold text-neutral-100">{c.name}</div>
+                          <div className="text-[11px] text-neutral-500">Chain ID: {c.chainId}</div>
                         </div>
                       </div>
 
@@ -991,6 +1033,30 @@ export default function PlayPage() {
                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
                   DEMO
                 </span>
+              </div>
+
+              {/* Sound toggle */}
+              <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-200">Sound</div>
+                    <div className="mt-0.5 text-[11px] text-neutral-500">
+                      {soundOn ? "ON (default)" : "OFF (muted)"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSoundOn((v) => !v)}
+                    className={[
+                      "rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
+                      soundOn
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
+                        : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
+                    ].join(" ")}
+                  >
+                    {soundOn ? "SOUND: ON" : "SOUND: OFF"}
+                  </button>
+                </div>
               </div>
 
               {/* Mode */}
@@ -1155,9 +1221,7 @@ export default function PlayPage() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Cash Out now</span>
-                    <span className="font-semibold">
-                      {hops === 0 ? "—" : fmtX(currentMult)}
-                    </span>
+                    <span className="font-semibold">{hops === 0 ? "—" : fmtX(currentMult)}</span>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -1184,15 +1248,11 @@ export default function PlayPage() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-neutral-500">Commit hash</span>
-                      <span className="text-neutral-600">
-                        {commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}
-                      </span>
+                      <span className="text-neutral-600">{commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}</span>
                     </div>
 
                     <div className="mt-1 break-all font-mono text-neutral-200">
-                      {commitExpanded
-                        ? commitHash
-                        : truncateHashFirstLast(commitHash)}
+                      {commitExpanded ? commitHash : truncateHashFirstLast(commitHash)}
                     </div>
 
                     <div className="mt-1 text-[11px] text-neutral-600">
@@ -1296,16 +1356,11 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">
-                      Animation Canvas
-                    </div>
-                    <div className="mt-1 text-xs text-neutral-500">
-                      Two lilypads only • event-driven FX
-                    </div>
+                    <div className="text-sm font-semibold text-neutral-100">Animation Canvas</div>
+                    <div className="mt-1 text-xs text-neutral-500">Two lilypads only • event-driven FX</div>
                   </div>
                   <div className="text-xs text-neutral-400">
-                    Chain:{" "}
-                    <span className="text-neutral-200">{selectedChain.name}</span> (UI)
+                    Chain: <span className="text-neutral-200">{selectedChain.name}</span> (UI)
                   </div>
                 </div>
 
@@ -1331,9 +1386,7 @@ export default function PlayPage() {
                       />
 
                       {/* Pad A (current) */}
-                      <div
-                        className={`absolute left-[14%] bottom-[14%] h-[32%] w-[44%] ${padFxClass}`}
-                      >
+                      <div className={`absolute left-[14%] bottom-[14%] h-[32%] w-[44%] ${padFxClass}`}>
                         <div
                           className="absolute inset-0 rounded-[999px] border border-emerald-300/10"
                           style={{
@@ -1355,18 +1408,13 @@ export default function PlayPage() {
                           className="absolute left-1/2 top-1/2 h-[120%] w-[120%] rounded-[999px] border border-neutral-50/10"
                           style={{
                             transform: "translate(-50%, -50%)",
-                            animation:
-                              animEvent === "hop_ok" || animEvent === "hop_fail"
-                                ? "padRipple 520ms ease-out"
-                                : "none",
+                            animation: animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
                           }}
                         />
                       </div>
 
                       {/* Pad B (next) */}
-                      <div
-                        className={`absolute right-[12%] bottom-[22%] h-[24%] w-[34%] ${padFxClass}`}
-                      >
+                      <div className={`absolute right-[12%] bottom-[22%] h-[24%] w-[34%] ${padFxClass}`}>
                         <div
                           className="absolute inset-0 rounded-[999px] border border-emerald-300/10"
                           style={{
@@ -1395,59 +1443,31 @@ export default function PlayPage() {
                     <div className="absolute left-0 right-0 top-0 z-20 p-3">
                       <div className="mx-auto flex w-full max-w-md items-center justify-between gap-2 rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 backdrop-blur">
                         <div className="min-w-0 flex-1 rounded-xl bg-neutral-50/5 px-3 py-2 ring-1 ring-neutral-200/10">
-                          <div className="text-[11px] font-semibold text-neutral-400">
-                            CURRENT
-                          </div>
+                          <div className="text-[11px] font-semibold text-neutral-400">CURRENT</div>
                           <div className="mt-0.5 flex items-baseline justify-between gap-2">
-                            <div
-                              className={[
-                                "text-sm font-extrabold",
-                                isFailed ? "text-red-200" : "text-neutral-100",
-                              ].join(" ")}
-                            >
-                              {topCurrentMult === null
-                                ? "—"
-                                : topCurrentMult === 0
-                                ? "0.00x"
-                                : fmtX(topCurrentMult)}
+                            <div className={["text-sm font-extrabold", isFailed ? "text-red-200" : "text-neutral-100"].join(" ")}>
+                              {topCurrentMult === null ? "—" : topCurrentMult === 0 ? "0.00x" : fmtX(topCurrentMult)}
                             </div>
 
-                            <div
-                              className={[
-                                "text-sm font-extrabold",
-                                isFailed ? "text-red-300" : "text-emerald-200",
-                              ].join(" ")}
-                            >
-                              {topCurrentPrize === null
-                                ? "—"
-                                : `${fmtInt(topCurrentPrize)} DTC`}
+                            <div className={["text-sm font-extrabold", isFailed ? "text-red-300" : "text-emerald-200"].join(" ")}>
+                              {topCurrentPrize === null ? "—" : `${fmtInt(topCurrentPrize)} DTC`}
                             </div>
                           </div>
                           <div className="mt-1 text-[11px] text-neutral-500">
-                            {hasStarted
-                              ? `Hop ${Math.min(hops, MAX_HOPS)}/${MAX_HOPS}`
-                              : "Not started"}
+                            {hasStarted ? `Hop ${Math.min(hops, MAX_HOPS)}/${MAX_HOPS}` : "Not started"}
                           </div>
                         </div>
 
                         <div className="min-w-0 flex-1 rounded-xl bg-neutral-50/5 px-3 py-2 ring-1 ring-neutral-200/10">
-                          <div className="text-[11px] font-semibold text-neutral-400">
-                            NEXT
-                          </div>
+                          <div className="text-[11px] font-semibold text-neutral-400">NEXT</div>
                           <div className="mt-0.5 flex items-baseline justify-between gap-2">
-                            <div className="text-sm font-extrabold text-neutral-100">
-                              {nextMult === null ? "—" : fmtX(nextMult)}
-                            </div>
+                            <div className="text-sm font-extrabold text-neutral-100">{nextMult === null ? "—" : fmtX(nextMult)}</div>
                             <div className="text-sm font-extrabold text-emerald-200">
                               {nextPrize === null ? "—" : `${fmtInt(nextPrize)} DTC`}
                             </div>
                           </div>
                           <div className="mt-1 text-[11px] text-neutral-500">
-                            {nextMult === null
-                              ? hops >= MAX_HOPS
-                                ? "MAX HIT reached"
-                                : "—"
-                              : `If hop ${Math.min(hops + 1, MAX_HOPS)} clears`}
+                            {nextMult === null ? (hops >= MAX_HOPS ? "MAX HIT reached" : "—") : `If hop ${Math.min(hops + 1, MAX_HOPS)} clears`}
                           </div>
                         </div>
                       </div>
@@ -1507,9 +1527,7 @@ export default function PlayPage() {
                   </div>
                 )}
 
-                <div className="mt-2 text-center text-[11px] text-neutral-500">
-                  {bottomHint}
-                </div>
+                <div className="mt-2 text-center text-[11px] text-neutral-500">{bottomHint}</div>
               </div>
 
               {/* Outcome banner */}
@@ -1534,9 +1552,7 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">
-                      Steps (demo math table)
-                    </div>
+                    <div className="text-sm font-semibold text-neutral-100">Steps (demo math table)</div>
                     <div className="mt-1 text-xs text-neutral-500">
                       Success is fixed per mode; UI shows rounded-up whole %, but math uses exact precision.
                     </div>
@@ -1567,31 +1583,17 @@ export default function PlayPage() {
 
                       const isCompleted = hopNo <= hops && !isFailed;
                       const isActive =
-                        hopNo === hops + 1 &&
-                        !isFailed &&
-                        !isCashedOut &&
-                        hasStarted &&
-                        hops < MAX_HOPS;
+                        hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
 
                       const rowBase = "grid grid-cols-[90px_1fr_140px] px-4 py-3 text-sm";
-                      const rowBg = isCompleted
-                        ? "bg-emerald-500/10"
-                        : isActive
-                        ? "bg-neutral-900/40"
-                        : "bg-neutral-950";
+                      const rowBg = isCompleted ? "bg-emerald-500/10" : isActive ? "bg-neutral-900/40" : "bg-neutral-950";
 
                       const popStyle =
-                        poppedHop === hopNo
-                          ? { animation: "rowPop 420ms ease-out" as const }
-                          : undefined;
+                        poppedHop === hopNo ? { animation: "rowPop 420ms ease-out" as const } : undefined;
 
-                      const showRoll =
-                        lastAttemptHop === hopNo &&
-                        lastRoll !== null &&
-                        lastRequiredPct !== null;
+                      const showRoll = lastAttemptHop === hopNo && lastRoll !== null && lastRequiredPct !== null;
 
-                      const clearedVisible =
-                        isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
+                      const clearedVisible = isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
 
                       const showFailedChip = isFailed && lastAttemptHop === hopNo;
                       const showCashedChip = isCashedOut && hopNo === hops && hops > 0;
@@ -1614,9 +1616,7 @@ export default function PlayPage() {
                           className={`${rowBase} ${rowBg}`}
                           style={{
                             ...(popStyle ?? {}),
-                            ...(isActive
-                              ? ({ animation: "activeGlow 1.1s ease-in-out infinite" } as const)
-                              : {}),
+                            ...(isActive ? ({ animation: "activeGlow 1.1s ease-in-out infinite" } as const) : {}),
                           }}
                         >
                           <div className="font-semibold text-neutral-100">
@@ -1634,21 +1634,16 @@ export default function PlayPage() {
                           </div>
 
                           <div className="text-center">
-                            <span className="font-semibold text-neutral-100">
-                              {ceilPercent(stepSuccessPctExact)}
-                            </span>
+                            <span className="font-semibold text-neutral-100">{ceilPercent(stepSuccessPctExact)}</span>
 
                             {showRoll ? (
                               <span className="ml-2 text-xs text-neutral-400">
-                                (roll {formatRoll(lastRoll)} / need ≤{" "}
-                                {lastRequiredPct!.toFixed(6)}%)
+                                (roll {formatRoll(lastRoll)} / need ≤ {lastRequiredPct!.toFixed(6)}%)
                               </span>
                             ) : null}
                           </div>
 
-                          <div className="text-right font-semibold text-neutral-100">
-                            {fmtX(multTable[idx])}
-                          </div>
+                          <div className="text-right font-semibold text-neutral-100">{fmtX(multTable[idx])}</div>
                         </div>
                       );
                     })}
@@ -1663,8 +1658,7 @@ export default function PlayPage() {
           </div>
 
           <div className="mt-3 text-xs text-neutral-600">
-            Selected chain:{" "}
-            <span className="text-neutral-300">{selectedChain.name}</span> (UI only)
+            Selected chain: <span className="text-neutral-300">{selectedChain.name}</span> (UI only)
           </div>
         </div>
       </section>
