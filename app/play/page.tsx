@@ -228,7 +228,7 @@ export default function PlayPage() {
   // Scroll helper
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
 
-  // NEW: scroll target = Outcome board / canvas (where the toad is)
+  // Scroll target = Outcome board / canvas (where the toad is)
   const boardScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Remember last amount used at START, so PLAY AGAIN can reuse it
@@ -626,47 +626,43 @@ export default function PlayPage() {
   const modeToneClass =
     modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
 
-  // --- Bottom CTA behavior: ALWAYS show PLAY AGAIN + CHANGE AMOUNT ---
-  const playAgainDisabled = useMemo(() => {
+  // ✅ BELOW-CANVAS CTA FIX:
+  // - Default: single button that reads START then HOP (normal run flow)
+  // - Only after CASH OUT or BUSTED: swap to 2-button layout (PLAY AGAIN + CHANGE AMOUNT)
+  const showPostOutcomeButtons = ended;
+
+  const bottomPrimaryLabel = useMemo(() => {
+    if (!hasStarted) return "START";
+    // Keep the original run flow: HOP during the run.
+    // (At MAX HIT, the user should cash out; keep it clear.)
+    if (hops >= MAX_HOPS) return "CASH OUT";
+    return "HOP";
+  }, [hasStarted, hops]);
+
+  const bottomPrimaryDisabled = useMemo(() => {
     if (!hasStarted) return !canStart;
-    if (ended) return false;
     if (hops >= MAX_HOPS) return !canCashOut;
     return !canHop;
-  }, [hasStarted, canStart, ended, hops, canCashOut, canHop]);
+  }, [hasStarted, canStart, hops, canCashOut, canHop]);
 
-  function onPlayAgainButton() {
-    // Not started -> START
+  function onBottomPrimary() {
     if (!hasStarted) {
       startRun();
       return;
     }
-
-    // Ended -> immediate new run with same amount
-    if (ended) {
-      playAgainSameAmount();
-      return;
-    }
-
-    // In run -> continue (HOP) OR (MAX HIT) cash out
     if (hops >= MAX_HOPS) {
-      if (canCashOut) cashOut();
+      cashOut();
       return;
     }
-
     hopOnce();
   }
 
-  function onChangeAmountButton() {
-    // Always take them back to amount entry, same interface
-    changeAmountFlow();
-  }
-
   const bottomHint = useMemo(() => {
-    if (!hasStarted) return "Start a run — then keep smashing PLAY AGAIN.";
-    if (ended) return "Busted or cashed — PLAY AGAIN keeps the same amount.";
-    if (hops >= MAX_HOPS) return "MAX HIT reached — PLAY AGAIN will cash out.";
-    return actionLocked ? "…" : "PLAY AGAIN continues the run (HOP).";
-  }, [hasStarted, ended, hops, actionLocked]);
+    if (showPostOutcomeButtons) return "Busted or cashed out — choose your next move.";
+    if (!hasStarted) return "Start a run.";
+    if (hops >= MAX_HOPS) return "MAX HIT — cash out to lock it in.";
+    return actionLocked ? "…" : "Primary action.";
+  }, [showPostOutcomeButtons, hasStarted, hops, actionLocked]);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -1474,32 +1470,42 @@ export default function PlayPage() {
                 </div>
               </div>
 
-              {/* PRIMARY CTA under Canvas: ALWAYS PLAY AGAIN + CHANGE AMOUNT */}
+              {/* ✅ PRIMARY CTA under Canvas (FIXED SEQUENCE) */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-                <div className="grid grid-cols-2 gap-3">
+                {!showPostOutcomeButtons ? (
                   <button
                     type="button"
-                    onClick={onPlayAgainButton}
-                    disabled={playAgainDisabled}
+                    onClick={onBottomPrimary}
+                    disabled={bottomPrimaryDisabled}
                     className={[
-                      "rounded-2xl px-4 py-4 text-base font-extrabold tracking-wide transition",
-                      playAgainDisabled
+                      "w-full rounded-2xl px-4 py-4 text-base font-extrabold tracking-wide transition",
+                      bottomPrimaryDisabled
                         ? "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500"
                         : "bg-emerald-500 text-neutral-950 hover:bg-emerald-400",
                     ].join(" ")}
                     style={hopPulse ? { animation: "hopPulse 160ms ease-out" } : undefined}
                   >
-                    PLAY AGAIN
+                    {bottomPrimaryLabel}
                   </button>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={playAgainSameAmount}
+                      className="rounded-2xl px-4 py-4 text-base font-extrabold tracking-wide transition bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
+                    >
+                      PLAY AGAIN
+                    </button>
 
-                  <button
-                    type="button"
-                    onClick={onChangeAmountButton}
-                    className="rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-4 text-base font-extrabold tracking-wide text-neutral-100 hover:bg-neutral-800/60"
-                  >
-                    CHANGE AMOUNT
-                  </button>
-                </div>
+                    <button
+                      type="button"
+                      onClick={changeAmountFlow}
+                      className="rounded-2xl border border-neutral-800 bg-neutral-900 px-4 py-4 text-base font-extrabold tracking-wide text-neutral-100 hover:bg-neutral-800/60"
+                    >
+                      CHANGE AMOUNT
+                    </button>
+                  </div>
+                )}
 
                 <div className="mt-2 text-center text-[11px] text-neutral-500">
                   {bottomHint}
