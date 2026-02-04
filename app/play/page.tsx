@@ -13,42 +13,37 @@ const MAX_HOPS = 10;
 const MAX_AMOUNT = 10_000;
 const MIN_AMOUNT = 1;
 
-// House math config (demo now, contract later)
-const EDGE = 0.06;
-const E = 1 - EDGE; // 0.94
-
-// Per-step success (constant per mode) — exact values used by game logic.
-// Derived from p = (E / Mmax)^(1/10)
+// Fixed per-hop success + fixed payout tables (approved)
 const MODE: Record<
   ModeKey,
   {
     key: ModeKey;
     label: string;
     subtitle: string;
-    pStep: number; // 0..1
-    mMax: number;
+    pStep: number; // 0..1 (fixed per hop)
+    mults: number[]; // hop 1..10 cashout multipliers
   }
 > = {
   safe: {
     key: "safe",
-    label: "Safe",
+    label: "🛡️ SAFE",
     subtitle: "Smoother curve. Lower variance.",
-    pStep: 0.8965963823795033,
-    mMax: 2.8,
+    pStep: 0.9,
+    mults: [1.04, 1.16, 1.28, 1.43, 1.59, 1.76, 1.96, 2.18, 2.42, 2.69],
   },
   wild: {
     key: "wild",
-    label: "Wild",
+    label: "😎 WILD",
     subtitle: "Balanced risk. Faster growth.",
-    pStep: 0.8696298244261585,
-    mMax: 3.8,
+    pStep: 0.82,
+    mults: [1.11, 1.35, 1.65, 2.01, 2.45, 2.99, 3.64, 4.44, 5.41, 6.0],
   },
   insane: {
     key: "insane",
-    label: "Insane",
+    label: "🐸 DEGEN",
     subtitle: "High risk. Fast multipliers.",
-    pStep: 0.842776565531457,
-    mMax: 5.2,
+    pStep: 0.69,
+    mults: [1.2, 1.64, 2.24, 3.06, 4.19, 5.73, 7.83, 10.7, 14.63, 20.0],
   },
 };
 
@@ -156,17 +151,6 @@ type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
 
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
 
-function buildMultiplierTable(pStep: number) {
-  // M[n] = E / (pStep^n), n=1..10
-  const arr: number[] = [];
-  let surv = 1.0;
-  for (let n = 1; n <= MAX_HOPS; n++) {
-    surv *= pStep;
-    arr.push(E / surv);
-  }
-  return arr;
-}
-
 export default function PlayPage() {
   // Chain selection (UI-only demo)
   const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
@@ -223,8 +207,8 @@ export default function PlayPage() {
   // Scroll helper
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
 
-  // Derived tables for this mode
-  const multTable = useMemo(() => buildMultiplierTable(mode.pStep), [mode.pStep]);
+  // Derived tables for this mode (fixed)
+  const multTable = useMemo(() => mode.mults, [modeKey]);
 
   // Exact per-step success % used by game math
   const stepSuccessPctExact = useMemo(() => mode.pStep * 100, [mode.pStep]);
@@ -711,10 +695,10 @@ export default function PlayPage() {
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
-                  {demoTag}: Local simulation
+                  DEMO: Local simulation
                 </span>
                 <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 font-semibold text-neutral-100 ring-1 ring-neutral-200/20">
-                  {tokenTag}: Next step (on-chain amounts)
+                  TOKEN: Next step (on-chain amounts)
                 </span>
               </div>
             </div>
@@ -777,8 +761,7 @@ export default function PlayPage() {
                         {c.explorerBaseUrl ? (
                           <>
                             {" "}
-                            - Explorer:{" "}
-                            <span className="text-neutral-300">{c.explorerBaseUrl.replace("https://", "")}</span>
+                            - Explorer: <span className="text-neutral-300">{c.explorerBaseUrl.replace("https://", "")}</span>
                           </>
                         ) : null}
                       </div>
@@ -812,7 +795,7 @@ export default function PlayPage() {
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold text-neutral-100">Demo Controls</div>
                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
-                  {demoTag}
+                  DEMO
                 </span>
               </div>
 
@@ -914,7 +897,7 @@ export default function PlayPage() {
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold">Run status</div>
                   <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20">
-                    {demoTag}
+                    DEMO
                   </span>
                 </div>
 
@@ -946,9 +929,7 @@ export default function PlayPage() {
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Next hop success</span>
                     <span className="font-semibold">
-                      {nextHopSuccessExact === null
-                        ? "—"
-                        : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(6)}%)`}
+                      {nextHopSuccessExact === null ? "—" : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(6)}%)`}
                     </span>
                   </div>
 
@@ -1043,9 +1024,7 @@ export default function PlayPage() {
                         disabled={!canCashOut}
                         className={[
                           "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
-                          canCashOut
-                            ? "bg-neutral-50 text-neutral-950 hover:bg-white"
-                            : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
+                          canCashOut ? "bg-neutral-50 text-neutral-950 hover:bg-white" : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
                         ].join(" ")}
                       >
                         CASH OUT
@@ -1067,7 +1046,7 @@ export default function PlayPage() {
                 {/* Token mode CTA (future) */}
                 <div className="mt-2 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3 text-xs text-neutral-300">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold">{tokenTag} mode</span>
+                    <span className="font-semibold">TOKEN mode</span>
                     <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 text-[11px] font-semibold text-neutral-100 ring-1 ring-neutral-200/20">
                       SOON
                     </span>
@@ -1136,8 +1115,7 @@ export default function PlayPage() {
                           className="absolute left-1/2 top-1/2 h-[120%] w-[120%] rounded-[999px] border border-neutral-50/10"
                           style={{
                             transform: "translate(-50%, -50%)",
-                            animation:
-                              animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
+                            animation: animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
                           }}
                         />
                       </div>
@@ -1236,15 +1214,10 @@ export default function PlayPage() {
                       if (!visibleHopSet.has(hopNo)) return null;
 
                       const isCompleted = hopNo <= hops && !isFailed;
-                      const isActive =
-                        hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
+                      const isActive = hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
 
                       const rowBase = "grid grid-cols-[90px_1fr_140px] px-4 py-3 text-sm";
-                      const rowBg = isCompleted
-                        ? "bg-emerald-500/10"
-                        : isActive
-                        ? "bg-neutral-900/40"
-                        : "bg-neutral-950";
+                      const rowBg = isCompleted ? "bg-emerald-500/10" : isActive ? "bg-neutral-900/40" : "bg-neutral-950";
 
                       const popStyle = poppedHop === hopNo ? { animation: "rowPop 420ms ease-out" as const } : undefined;
 

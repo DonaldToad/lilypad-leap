@@ -51,7 +51,7 @@ export default function OutcomeBoard(props: {
   }, [animNonce, animEvent]);
 
   // Mode tone (very cheap “feel” shift)
-  const tone = modeKey === "safe" ? "tone-safe" : modeKey === "wild" ? "tone-wild" : "tone-insane";
+  const tone = modeKey === "safe" ? "tone-safe" : modeKey === "wild" ? "tone-wild" : "tone-degen";
 
   const title =
     animEvent === "max_hit" || outcome === "maxhit"
@@ -74,6 +74,8 @@ export default function OutcomeBoard(props: {
       : title === "HOP!"
       ? `Cleared hop ${hops}/${maxHops}`
       : `Press HOP or CASH OUT`;
+
+  const modeChipText = modeKey === "insane" ? "DEGEN" : modeKey.toUpperCase();
 
   return (
     <div className={`relative h-full w-full ${tone}`}>
@@ -101,7 +103,7 @@ export default function OutcomeBoard(props: {
 
               <div className="mt-3 flex items-center gap-2 text-[11px] text-neutral-400">
                 <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 ring-1 ring-neutral-200/15">
-                  {modeKey.toUpperCase()}
+                  {modeChipText}
                 </span>
                 <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 ring-1 ring-neutral-200/15">
                   {hops}/{maxHops}
@@ -125,15 +127,15 @@ export default function OutcomeBoard(props: {
         }
         .tone-safe {
           background: radial-gradient(circle at 50% 30%, rgba(56, 189, 248, 0.14), transparent 55%),
-            radial-gradient(circle at 30% 80%, rgba(34, 197, 94, 0.10), transparent 55%);
+            radial-gradient(circle at 30% 80%, rgba(34, 197, 94, 0.1), transparent 55%);
         }
         .tone-wild {
           background: radial-gradient(circle at 50% 30%, rgba(168, 85, 247, 0.16), transparent 55%),
-            radial-gradient(circle at 30% 80%, rgba(34, 197, 94, 0.10), transparent 55%);
+            radial-gradient(circle at 30% 80%, rgba(34, 197, 94, 0.1), transparent 55%);
         }
-        .tone-insane {
+        .tone-degen {
           background: radial-gradient(circle at 50% 30%, rgba(244, 63, 94, 0.16), transparent 55%),
-            radial-gradient(circle at 30% 80%, rgba(250, 204, 21, 0.10), transparent 55%);
+            radial-gradient(circle at 30% 80%, rgba(250, 204, 21, 0.1), transparent 55%);
         }
 
         .fx-idle {
