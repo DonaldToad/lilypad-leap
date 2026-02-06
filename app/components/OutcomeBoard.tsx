@@ -71,7 +71,8 @@ export default function OutcomeBoard(props: {
   /** Optional: upstream gating for cash out (e.g., actionLocked, pending tx, etc.) */
   cashOutEnabled?: boolean;
 }) {
-  const { outcome, animEvent, animNonce, hops, maxHops, currentMult, currentReturn, modeKey, onCashOut, cashOutEnabled } = props;
+  const { outcome, animEvent, animNonce, hops, maxHops, currentMult, currentReturn, modeKey, onCashOut, cashOutEnabled } =
+    props;
 
   const modeMeta = useMemo(() => MODE_META[modeKey], [modeKey]);
 
@@ -173,17 +174,16 @@ export default function OutcomeBoard(props: {
   }, [moment, hops, maxHops]);
 
   const pctTextClass =
-    moment === "bust"
-      ? "text-red-200"
-      : moment === "cashout" || moment === "maxhit"
-      ? "text-emerald-200"
-      : "text-neutral-300";
+    moment === "bust" ? "text-red-200" : moment === "cashout" || moment === "maxhit" ? "text-emerald-200" : "text-neutral-300";
 
   const showShare = moment === "cashout" || moment === "maxhit";
   const showConfetti = moment === "maxhit";
   const showLightning = moment === "maxhit";
-  const showCoinSplash = moment === "cashout";
   const showBustFlash = moment === "bust";
+
+  // ✅ Coin effect rule:
+  // Only show coins INSIDE the PRIZE box, and only after CASH OUT is confirmed (moment === "cashout").
+  const showCoinSplashInPrizeBox = moment === "cashout";
 
   // Cash Out button availability: hop 1..maxHops, not on busted/cashed out/max hit.
   const cashOutBtnEnabled = useMemo(() => {
@@ -344,7 +344,7 @@ export default function OutcomeBoard(props: {
           }
         }
 
-        /* Cashout: coins splash */
+        /* Cashout coins (inside PRIZE box) */
         @keyframes coinBurst {
           0% {
             transform: translate3d(0, 0, 0) scale(0.6);
@@ -428,17 +428,18 @@ export default function OutcomeBoard(props: {
           animation: confettiFall 980ms ease-out 1;
         }
 
+        /* Coins overlay used inside PRIZE box */
         .fx-coins {
           position: absolute;
           inset: 0;
           pointer-events: none;
           overflow: hidden;
-          border-radius: 28px;
+          border-radius: 16px;
         }
         .fx-coins i {
           position: absolute;
-          left: 48%;
-          top: 52%;
+          left: 52%;
+          top: 55%;
           width: 10px;
           height: 10px;
           border-radius: 999px;
@@ -481,28 +482,9 @@ export default function OutcomeBoard(props: {
           </div>
         ) : null}
 
-        {showCoinSplash ? (
-          <div key={`coin-${animNonce}`} className="fx-coins">
-            {Array.from({ length: 14 }).map((_, i) => {
-              const ang = (i / 14) * Math.PI * 1.15 + 0.2; // mostly upward/left
-              const dist = 34 + (i % 5) * 14;
-              const dx = Math.round(Math.cos(ang) * dist) * -1;
-              const dy = Math.round(Math.sin(ang) * dist) * -1;
-
-              const style: CSSVars = {
-                animationDelay: `${(i % 7) * 26}ms`,
-                ["--dx"]: `${dx}px`,
-                ["--dy"]: `${dy}px`,
-              };
-
-              return <i key={i} style={style} />;
-            })}
-          </div>
-        ) : null}
-
-        {/* TOP BOXES: CURRENT | NEXT CHANCE | PROGRESS */}
+        {/* TOP BOXES: CASH OUT (clickable) | NEXT CHANCE | PROGRESS */}
         <div className="relative grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-3">
-          {/* CASH OUT (was CURRENT) */}
+          {/* CASH OUT (clickable) */}
           <button
             type="button"
             onClick={() => {
@@ -592,18 +574,40 @@ export default function OutcomeBoard(props: {
           </div>
 
           {/* NEXT / PRIZE box */}
-          <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 sm:px-4 sm:py-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-[11px] font-semibold text-neutral-400">{rightBoxTitle}</div>
-              <div className="text-[11px] font-semibold text-neutral-500">{rightSubline}</div>
-            </div>
+          <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 sm:px-4 sm:py-3 overflow-hidden">
+            {/* ✅ Coin splash only in PRIZE box, only after CASH OUT confirmed */}
+            {showCoinSplashInPrizeBox ? (
+              <div key={`coin-prize-${animNonce}`} className="fx-coins">
+                {Array.from({ length: 14 }).map((_, i) => {
+                  const ang = (i / 14) * Math.PI * 1.15 + 0.2;
+                  const dist = 34 + (i % 5) * 14;
+                  const dx = Math.round(Math.cos(ang) * dist) * -1;
+                  const dy = Math.round(Math.sin(ang) * dist) * -1;
 
-            <div className="mt-1 flex items-baseline justify-between gap-3">
-              <div className="text-sm font-extrabold text-neutral-100">
-                {rightMultDisplay === null ? "—" : `${rightMultDisplay.toFixed(2)}x`}
+                  const style: CSSVars = {
+                    animationDelay: `${(i % 7) * 26}ms`,
+                    ["--dx"]: `${dx}px`,
+                    ["--dy"]: `${dy}px`,
+                  };
+
+                  return <i key={i} style={style} />;
+                })}
               </div>
-              <div className="text-sm font-extrabold text-emerald-200">
-                {rightReturnDisplay === null ? "—" : `${fmtInt(rightReturnDisplay)} DTC`}
+            ) : null}
+
+            <div className="relative z-10">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] font-semibold text-neutral-400">{rightBoxTitle}</div>
+                <div className="text-[11px] font-semibold text-neutral-500">{rightSubline}</div>
+              </div>
+
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <div className="text-sm font-extrabold text-neutral-100">
+                  {rightMultDisplay === null ? "—" : `${rightMultDisplay.toFixed(2)}x`}
+                </div>
+                <div className="text-sm font-extrabold text-emerald-200">
+                  {rightReturnDisplay === null ? "—" : `${fmtInt(rightReturnDisplay)} DTC`}
+                </div>
               </div>
             </div>
           </div>
