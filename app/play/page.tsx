@@ -38,7 +38,7 @@ type ModeKey = "safe" | "wild" | "insane";
 const MAX_HOPS = 10;
 
 // IMPORTANT: Liquidity protection
-const MAX_AMOUNT = 12_000; // CHANGED from 10,000
+const MAX_AMOUNT = 12_000; // ALWAYS 12,000
 const MIN_AMOUNT = 1;
 
 // Sound files (served from /public)
@@ -205,6 +205,20 @@ async function copyText(text: string) {
   }
 }
 
+function bytesToHex(bytes: Uint8Array): Hex {
+  let hex = "0x";
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, "0");
+  }
+  return hex as Hex;
+}
+
+function randomSecret32(): Hex {
+  const b = new Uint8Array(32);
+  crypto.getRandomValues(b);
+  return bytesToHex(b);
+}
+
 type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
 
@@ -232,23 +246,18 @@ export default function PlayPage() {
   }
 
   function playSound(key: SoundKey, opts?: { restart?: boolean }) {
-    if (!soundOn) return; // ✅ synced with mute state
+    if (!soundOn) return;
     const bank = soundsRef.current;
     if (!bank) return;
     const a = bank[key];
     if (!a) return;
-
     try {
       if (opts?.restart !== false) a.currentTime = 0;
-      // Must be called after a user gesture for some browsers — we only call on clicks.
       void a.play();
-    } catch {
-      // ignore (autoplay restrictions, etc.)
-    }
+    } catch {}
   }
 
   useEffect(() => {
-    // Create audio objects once on client
     const bank: Record<SoundKey, HTMLAudioElement> = {
       start: new Audio(SOUND_SRC.start),
       hop: new Audio(SOUND_SRC.hop),
@@ -258,7 +267,6 @@ export default function PlayPage() {
       win: new Audio(SOUND_SRC.win),
     };
 
-    // Light preload
     (Object.keys(bank) as SoundKey[]).forEach((k) => {
       bank[k].preload = "auto";
       bank[k].volume = 0.9;
@@ -278,7 +286,6 @@ export default function PlayPage() {
   }, []);
 
   useEffect(() => {
-    // When user mutes: stop any playing audio immediately
     if (!soundOn) stopAllSounds();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soundOn]);
@@ -290,7 +297,7 @@ export default function PlayPage() {
   const chainId = useChainId();
   const { connect, connectors, isPending: connectPending } = useConnect();
   const { disconnect } = useDisconnect();
-  const { switchChain, isPending: switchPending } = useSwitchChain();
+  const { switchChain } = useSwitchChain();
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
 
@@ -314,15 +321,16 @@ export default function PlayPage() {
   const [txStatus, setTxStatus] = useState<string>("");
   const [txError, setTxError] = useState<string>("");
   const [startPending, setStartPending] = useState<boolean>(false);
+
   const [activeGameId, setActiveGameId] = useState<Hex | null>(null);
   const [activeUserSecret, setActiveUserSecret] = useState<Hex | null>(null);
   const [activeRandAnchor, setActiveRandAnchor] = useState<Hex | null>(null);
   const [settledPayoutWei, setSettledPayoutWei] = useState<bigint | null>(null);
   const [settledWon, setSettledWon] = useState<boolean | null>(null);
 
-
   // Chain selection (UI-only demo)
   const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
+  const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   // Mode selection
   const [modeKey, setModeKey] = useState<ModeKey>("safe");
@@ -375,8 +383,6 @@ export default function PlayPage() {
 
   // Scroll helper
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
-
-  // Scroll target = Outcome board / canvas (where the toad is)
   const boardScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Remember last amount used at START, so PLAY AGAIN can reuse it
@@ -388,24 +394,23 @@ export default function PlayPage() {
   // Exact per-step success % used by game math
   const stepSuccessPctExact = useMemo(() => mode.pStep * 100, [mode.pStep]);
 
-// -----------------------------
-// TOKEN MODE deterministic seed (matches Solidity)
-// seed = keccak256(abi.encodePacked(userSecret, randAnchor, vault, gameId))
-// hop roll = uint256(keccak256(abi.encodePacked(seed, hopNo))) % 10000
-// -----------------------------
-const tokenSeed = useMemo(() => {
-  if (playMode !== "token") return null;
-  if (!activeUserSecret || !activeGameId || !activeRandAnchor) return null;
-  if (vaultAddress === zeroAddress) return null;
+  // -----------------------------
+  // TOKEN MODE deterministic seed (matches Solidity)
+  // seed = keccak256(abi.encodePacked(userSecret, randAnchor, vault, gameId))
+  // hop roll = uint256(keccak256(abi.encodePacked(seed, hopNo))) % 10000
+  // -----------------------------
+  const tokenSeed = useMemo(() => {
+    if (playMode !== "token") return null;
+    if (!activeUserSecret || !activeGameId || !activeRandAnchor) return null;
+    if (vaultAddress === zeroAddress) return null;
 
-  return keccak256(
-    encodePacked(
-      ["bytes32", "bytes32", "address", "bytes32"],
-      [activeUserSecret, activeRandAnchor, vaultAddress, activeGameId]
-    )
-  ) as Hex;
-}, [playMode, activeUserSecret, activeGameId, activeRandAnchor, vaultAddress]);
-
+    return keccak256(
+      encodePacked(
+        ["bytes32", "bytes32", "address", "bytes32"],
+        [activeUserSecret, activeRandAnchor, vaultAddress, activeGameId]
+      )
+    ) as Hex;
+  }, [playMode, activeUserSecret, activeGameId, activeRandAnchor, vaultAddress]);
 
   // Next hop info
   const nextHopIndex = hops; // 0-based
@@ -423,7 +428,7 @@ const tokenSeed = useMemo(() => {
   }, [amount]);
 
   const approvalTargetWei = useMemo(() => {
-    if (approvalPolicy.kind === "unlimited") return (2n ** 256n - 1n);
+    if (approvalPolicy.kind === "unlimited") return 2n ** 256n - 1n;
     return parseUnits(String(Math.max(1, Math.floor(approveCapDtc))), 18);
   }, [approvalPolicy, approveCapDtc]);
 
@@ -455,10 +460,10 @@ const tokenSeed = useMemo(() => {
     if (!allowed) return false;
     if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) return false;
     return hasEnoughAllowance;
-  }, [hasStarted, amount, playMode, isConnected, address, allowed, tokenAddress, vaultAddress, hasEnoughAllowance]);
+  }, [hasStarted, startPending, amount, playMode, isConnected, address, allowed, tokenAddress, vaultAddress, hasEnoughAllowance]);
+
   const canHop = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops < MAX_HOPS;
   const canCashOut = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops > 0; // includes hops==10
-
   const ended = isFailed || isCashedOut;
 
   const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
@@ -468,7 +473,6 @@ const tokenSeed = useMemo(() => {
     return stepSuccessPctExact;
   }, [canHop, stepSuccessPctExact]);
 
-  // Values for the top strip (current + next)
   const currentPrize = useMemo(() => {
     if (!hasStarted) return 0;
     return Math.floor(amount * (hops === 0 ? 1.0 : currentMult));
@@ -484,19 +488,6 @@ const tokenSeed = useMemo(() => {
     if (nextMult === null) return null;
     return Math.floor(amount * nextMult);
   }, [amount, nextMult]);
-
-  // Busted display for top CURRENT strip
-  const topCurrentMult = useMemo(() => {
-    if (!hasStarted) return null;
-    if (isFailed) return 0;
-    return hops === 0 ? 1.0 : currentMult;
-  }, [hasStarted, isFailed, hops, currentMult]);
-
-  const topCurrentPrize = useMemo(() => {
-    if (!hasStarted) return null;
-    if (isFailed) return 0;
-    return currentPrize;
-  }, [hasStarted, isFailed, currentPrize]);
 
   // Default table behavior: show all on desktop, collapsed on mobile
   useEffect(() => {
@@ -546,7 +537,6 @@ const tokenSeed = useMemo(() => {
     setAnimEvent(ev);
     setAnimNonce((n) => n + 1);
 
-    // Dopamine beat: lock buttons until the “moment” finishes
     const ms =
       ev === "hop_ok"
         ? 260
@@ -562,7 +552,6 @@ const tokenSeed = useMemo(() => {
   }
 
   function resetRunNewSeed() {
-    // Stop any queued WIN sound
     if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
     winTimerRef.current = null;
 
@@ -613,10 +602,8 @@ const tokenSeed = useMemo(() => {
   }
 
   function sanitizeAndSetAmount(nextRaw: string) {
-    // Locked after START
     if (hasStarted || startPending) return;
 
-    // Keep raw for UX, but sanitize
     const cleaned = nextRaw.replace(/[^\d]/g, "");
     setAmountRaw(cleaned);
 
@@ -644,25 +631,10 @@ const tokenSeed = useMemo(() => {
     setAmountRaw(String(clamped));
   }
 
-  function bytesToHex(bytes: Uint8Array): Hex {
-    let hex = "0x";
-    for (let i = 0; i < bytes.length; i++) {
-      hex += bytes[i].toString(16).padStart(2, "0");
-    }
-    return hex as Hex;
-  }
-
-  function randomSecret32(): Hex {
-    const b = new Uint8Array(32);
-    crypto.getRandomValues(b);
-    return bytesToHex(b);
-  }
-
   async function approveNow() {
     if (!isConnected || !address) return;
     if (!allowed) {
       setTxError("Unsupported network. Switch to Linea or Base.");
-      setStartPending(false);
       return;
     }
     if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) {
@@ -694,15 +666,12 @@ const tokenSeed = useMemo(() => {
     if (startPending) return;
     setStartPending(true);
 
-    // Ensure amount is valid
     const clamped = clampInt(amount || MIN_AMOUNT, MIN_AMOUNT, MAX_AMOUNT);
     setAmount(clamped);
     setAmountRaw(String(clamped));
 
-    // Remember this amount for PLAY AGAIN
     lastStartedAmountRef.current = clamped;
 
-    // Clear previous on-chain state
     setActiveGameId(null);
     setActiveUserSecret(null);
     setActiveRandAnchor(null);
@@ -715,10 +684,9 @@ const tokenSeed = useMemo(() => {
       setOutcome("idle");
       setOutcomeText("");
 
-      // ✅ START sound
       playSound("start");
-
       window.setTimeout(() => scrollToBoard(), 60);
+
       setStartPending(false);
       return;
     }
@@ -731,11 +699,13 @@ const tokenSeed = useMemo(() => {
     }
     if (!allowed) {
       setTxError("Unsupported network. Switch to Linea or Base.");
+      setStartPending(false);
       return;
     }
 
     try {
       if (!publicClient) throw new Error("No public client");
+
       const userSecret = randomSecret32();
       const userCommit = keccak256(userSecret);
       setActiveUserSecret(userSecret);
@@ -756,7 +726,6 @@ const tokenSeed = useMemo(() => {
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
 
-      // Extract gameId + randAnchor from GameCreated event
       let gameId: Hex | null = null;
       let randAnchor: Hex | null = null;
       for (const log of receipt.logs) {
@@ -782,6 +751,7 @@ const tokenSeed = useMemo(() => {
       setOutcomeText("Game started on-chain. Hop in the UI, then Cash Out to settle.");
 
       playSound("start");
+
       setTxStatus("On-chain game started.");
       window.setTimeout(() => setTxStatus(""), 1400);
       window.setTimeout(() => scrollToBoard(), 60);
@@ -793,111 +763,103 @@ const tokenSeed = useMemo(() => {
     }
   }
 
-  
-function hopOnce() {
-  if (!canHop) return;
+  function hopOnce() {
+    if (!canHop) return;
 
-  // ✅ HOP sound (action feedback)
-  playSound("hop");
+    playSound("hop");
 
-  let rollPct: number;
-  let passed: boolean;
-  let requiredPct: number;
+    let rollPct: number;
+    let passed: boolean;
+    let requiredPct: number;
 
-  if (playMode === "token") {
-    if (!tokenSeed) {
-      setTxError("Missing token seed. Please START again.");
+    if (playMode === "token") {
+      if (!tokenSeed) {
+        setTxError("Missing token seed. Please START again.");
+        return;
+      }
+
+      const hopNo = nextHopNo;
+      const h = keccak256(encodePacked(["bytes32", "uint8"], [tokenSeed, hopNo])) as Hex;
+      const rBps = Number(BigInt(h) % 10000n); // 0..9999
+      rollPct = rBps / 100;
+
+      const pBps = modeKey === "safe" ? 9000 : modeKey === "wild" ? 8200 : 6900;
+      requiredPct = pBps / 100;
+      passed = rBps < pBps;
+    } else {
+      const u = xorshift32(rngState);
+      rollPct = uint32ToRoll(u);
+
+      requiredPct = stepSuccessPctExact;
+      passed = rollPct <= requiredPct;
+
+      setRngState(u);
+    }
+
+    setLastRoll(rollPct);
+    setLastAttemptHop(nextHopNo);
+    setLastRequiredPct(requiredPct);
+
+    setHopPulse(true);
+    window.setTimeout(() => setHopPulse(false), 160);
+
+    if (!passed) {
+      setIsFailed(true);
+      setOutcome("bust");
+      setOutcomeText(
+        `Failed on hop ${nextHopNo}. Roll ${rollPct.toFixed(3)} > ${requiredPct.toFixed(6)}%.`
+      );
+
+      setFailFlash(true);
+      window.setTimeout(() => setFailFlash(false), 380);
+
+      playSound("busted");
+      triggerAnim("hop_fail");
+
+      window.setTimeout(() => scrollToBoard(), 80);
       return;
     }
 
-    // Solidity: r = uint256(keccak256(abi.encodePacked(seed, hopNo))) % 10000
-    const hopNo = nextHopNo;
-    const h = keccak256(encodePacked(["bytes32", "uint8"], [tokenSeed, hopNo])) as Hex;
-    const rBps = Number(BigInt(h) % 10000n); // 0..9999
-    rollPct = rBps / 100;
+    // Passed
+    const completedHop = nextHopNo;
+    setHops(completedHop);
 
-    const pBps = modeKey === "safe" ? 9000 : modeKey === "wild" ? 8200 : 6900;
-    requiredPct = pBps / 100;
-    passed = rBps < pBps; // Solidity uses r >= p => fail
-  } else {
-    const u = xorshift32(rngState);
-    rollPct = uint32ToRoll(u);
+    const newMult = multTable[nextHopIndex];
+    setCurrentMult(newMult);
 
-    requiredPct = stepSuccessPctExact;
-    passed = rollPct <= requiredPct;
-
-    setRngState(u);
-  }
-
-  setLastRoll(rollPct);
-  setLastAttemptHop(nextHopNo);
-  setLastRequiredPct(requiredPct);
-
-  setHopPulse(true);
-  window.setTimeout(() => setHopPulse(false), 160);
-
-  if (!passed) {
-    setIsFailed(true);
-    setOutcome("bust");
+    setOutcome("success");
     setOutcomeText(
-      `Failed on hop ${nextHopNo}. Roll ${rollPct.toFixed(3)} > ${requiredPct.toFixed(6)}%.`
+      `Hop ${completedHop} cleared. Roll ${rollPct.toFixed(3)} ≤ ${requiredPct.toFixed(
+        6
+      )}%. Cash Out now: ${fmtX(newMult)}.`
     );
 
-    setFailFlash(true);
-    window.setTimeout(() => setFailFlash(false), 380);
+    setPoppedHop(completedHop);
+    window.setTimeout(() => setPoppedHop(null), 420);
 
-    // ✅ BUSTED sound
-    playSound("busted");
+    triggerAnim("hop_ok");
 
-    triggerAnim("hop_fail");
+    // MAX HIT reached
+    if (completedHop >= MAX_HOPS) {
+      setOutcome("maxhit");
+      setOutcomeText(
+        `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`
+      );
 
-    window.setTimeout(() => scrollToBoard(), 80);
+      playSound("maxhit");
+      if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
+      winTimerRef.current = window.setTimeout(() => {
+        playSound("win");
+        winTimerRef.current = null;
+      }, 450);
 
-    // IMPORTANT (per spec): do NOT auto-send any transaction on bust.
-    // The run ends in UI. On-chain game can be refunded after deadline via refund().
-    return;
+      triggerAnim("max_hit");
+    }
+
+    window.setTimeout(() => scrollToBoard(), 90);
   }
 
-  // Passed
-  const completedHop = nextHopNo;
-  setHops(completedHop);
-
-  const newMult = multTable[nextHopIndex];
-  setCurrentMult(newMult);
-
-  setOutcome("success");
-  setOutcomeText(
-    `Hop ${completedHop} cleared. Roll ${rollPct.toFixed(3)} ≤ ${requiredPct.toFixed(
-      6
-    )}%. Cash Out now: ${fmtX(newMult)}.`
-  );
-
-  setPoppedHop(completedHop);
-  window.setTimeout(() => setPoppedHop(null), 420);
-
-  triggerAnim("hop_ok");
-
-  // MAX HIT reached
-  if (completedHop >= MAX_HOPS) {
-    setOutcome("maxhit");
-    setOutcomeText(
-      `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`
-    );
-
-    // ✅ MAXHIT sound, then WIN right after
-    playSound("maxhit");
-    if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
-    winTimerRef.current = window.setTimeout(() => {
-      playSound("win");
-      winTimerRef.current = null;
-    }, 450);
-
-    triggerAnim("max_hit");
-  }
-
-  window.setTimeout(() => scrollToBoard(), 90);
-}
-async function settleOnChain(cashoutHop: number) {
+  async function settleOnChain(cashoutHop: number) {
     try {
       if (!publicClient) throw new Error("No public client");
       if (playMode !== "token") return;
@@ -910,6 +872,7 @@ async function settleOnChain(cashoutHop: number) {
         setTxError("Missing on-chain game state. Please start again.");
         return;
       }
+
       setTxError("");
       setTxStatus("Settling on-chain…");
 
@@ -922,12 +885,15 @@ async function settleOnChain(cashoutHop: number) {
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
 
-      // Extract GameSettled
       let payout: bigint | null = null;
       let won: boolean | null = null;
       for (const log of receipt.logs) {
         try {
-          const decoded = decodeEventLog({ abi: LILYPAD_VAULT_ABI, data: log.data, topics: log.topics });
+          const decoded = decodeEventLog({
+            abi: LILYPAD_VAULT_ABI,
+            data: log.data,
+            topics: log.topics,
+          });
           if (decoded.eventName === "GameSettled") {
             payout = decoded.args.payout as bigint;
             won = decoded.args.won as boolean;
@@ -943,10 +909,13 @@ async function settleOnChain(cashoutHop: number) {
 
       // Mark as ended only after settle succeeds
       setIsCashedOut(true);
+
       if (payout && payout > 0n) {
         setOutcome("cashout");
         setOutcomeText(
-          `Settled on-chain at hop ${cashoutHop}. Payout: ${payoutDtc?.toLocaleString("en-US", { maximumFractionDigits: 4 })} DTC.`
+          `Settled on-chain at hop ${cashoutHop}. Payout: ${payoutDtc?.toLocaleString("en-US", {
+            maximumFractionDigits: 4,
+          })} DTC.`
         );
         playSound("cashout");
         triggerAnim("cash_out");
@@ -1009,8 +978,6 @@ async function settleOnChain(cashoutHop: number) {
     if (!isMobile) return;
     window.setTimeout(() => scrollToBoard(), 80);
   }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce]);
-
-  const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   // Visible hop rows (mobile-friendly collapse)
   const visibleHopSet = useMemo(() => {
@@ -1085,7 +1052,7 @@ async function settleOnChain(cashoutHop: number) {
 
   function onBottomPrimary() {
     if (!hasStarted) {
-      startRun();
+      void startRun();
       return;
     }
     if (hops >= MAX_HOPS) {
@@ -1122,149 +1089,64 @@ async function settleOnChain(cashoutHop: number) {
           }
         }
         @keyframes failShake {
-          0% {
-            transform: translateX(0);
-          }
-          20% {
-            transform: translateX(-6px);
-          }
-          40% {
-            transform: translateX(6px);
-          }
-          60% {
-            transform: translateX(-5px);
-          }
-          80% {
-            transform: translateX(5px);
-          }
-          100% {
-            transform: translateX(0);
-          }
+          0% { transform: translateX(0); }
+          20% { transform: translateX(-6px); }
+          40% { transform: translateX(6px); }
+          60% { transform: translateX(-5px); }
+          80% { transform: translateX(5px); }
+          100% { transform: translateX(0); }
         }
         @keyframes failFlash {
-          0% {
-            opacity: 0;
-          }
-          25% {
-            opacity: 0.55;
-          }
-          100% {
-            opacity: 0;
-          }
+          0% { opacity: 0; }
+          25% { opacity: 0.55; }
+          100% { opacity: 0; }
         }
         @keyframes hopPulse {
-          0% {
-            transform: scale(1);
-          }
-          50% {
-            transform: scale(1.03);
-          }
-          100% {
-            transform: scale(1);
-          }
+          0% { transform: scale(1); }
+          50% { transform: scale(1.03); }
+          100% { transform: scale(1); }
         }
         @keyframes activeGlow {
-          0%,
-          100% {
-            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12);
-          }
-          50% {
-            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1);
-          }
+          0%,100% { box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12); }
+          50% { box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1); }
         }
-
-        /* ✅ Sound ON subtle pulse/glow */
         @keyframes soundPulseGlow {
-          0%,
-          100% {
-            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18), 0 0 0 rgba(16, 185, 129, 0);
-            transform: translateZ(0);
-          }
-          50% {
-            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.28), 0 0 18px rgba(16, 185, 129, 0.12);
-          }
+          0%,100% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18), 0 0 0 rgba(16, 185, 129, 0); transform: translateZ(0); }
+          50% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.28), 0 0 18px rgba(16, 185, 129, 0.12); }
         }
-        .soundPulse {
-          animation: soundPulseGlow 1.35s ease-in-out infinite;
-        }
+        .soundPulse { animation: soundPulseGlow 1.35s ease-in-out infinite; }
         @media (prefers-reduced-motion: reduce) {
-          .soundPulse {
-            animation: none !important;
-          }
+          .soundPulse { animation: none !important; }
         }
-
-        /* --- Lilypad FX (no assets) --- */
         @keyframes padBob {
-          0%,
-          100% {
-            transform: translateY(0);
-          }
-          50% {
-            transform: translateY(-2px);
-          }
+          0%,100% { transform: translateY(0); }
+          50% { transform: translateY(-2px); }
         }
         @keyframes padRipple {
-          0% {
-            transform: translate(-50%, -50%) scale(0.7);
-            opacity: 0;
-          }
-          15% {
-            opacity: 0.28;
-          }
-          100% {
-            transform: translate(-50%, -50%) scale(1.55);
-            opacity: 0;
-          }
+          0% { transform: translate(-50%, -50%) scale(0.7); opacity: 0; }
+          15% { opacity: 0.28; }
+          100% { transform: translate(-50%, -50%) scale(1.55); opacity: 0; }
         }
         @keyframes padOk {
-          0% {
-            transform: translateY(0) scale(1);
-          }
-          55% {
-            transform: translateY(-2px) scale(1.01);
-          }
-          100% {
-            transform: translateY(0) scale(1);
-          }
+          0% { transform: translateY(0) scale(1); }
+          55% { transform: translateY(-2px) scale(1.01); }
+          100% { transform: translateY(0) scale(1); }
         }
         @keyframes padFail {
-          0% {
-            transform: translateY(0) scale(1);
-            filter: saturate(1);
-          }
-          60% {
-            transform: translateY(2px) scale(0.995);
-            filter: saturate(0.8);
-          }
-          100% {
-            transform: translateY(0) scale(1);
-            filter: saturate(1);
-          }
+          0% { transform: translateY(0) scale(1); filter: saturate(1); }
+          60% { transform: translateY(2px) scale(0.995); filter: saturate(0.8); }
+          100% { transform: translateY(0) scale(1); filter: saturate(1); }
         }
         @keyframes padCash {
-          0% {
-            box-shadow: 0 0 0 rgba(16, 185, 129, 0);
-          }
-          50% {
-            box-shadow: 0 0 32px rgba(16, 185, 129, 0.18);
-          }
-          100% {
-            box-shadow: 0 0 0 rgba(16, 185, 129, 0);
-          }
+          0% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
+          50% { box-shadow: 0 0 32px rgba(16, 185, 129, 0.18); }
+          100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
         }
         @keyframes padMax {
-          0% {
-            box-shadow: 0 0 0 rgba(250, 204, 21, 0);
-          }
-          45% {
-            box-shadow: 0 0 48px rgba(250, 204, 21, 0.22);
-          }
-          100% {
-            box-shadow: 0 0 0 rgba(250, 204, 21, 0);
-          }
+          0% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); }
+          45% { box-shadow: 0 0 48px rgba(250, 204, 21, 0.22); }
+          100% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); }
         }
-
-        /* Tone backgrounds for the canvas container */
         .toneSafe {
           background: radial-gradient(circle at 50% 15%, rgba(56, 189, 248, 0.14), transparent 55%),
             radial-gradient(circle at 25% 85%, rgba(34, 197, 94, 0.12), transparent 55%),
@@ -1280,20 +1162,10 @@ async function settleOnChain(cashoutHop: number) {
             radial-gradient(circle at 25% 85%, rgba(250, 204, 21, 0.12), transparent 55%),
             linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.25));
         }
-
-        /* Event FX class applied to pad wrapper divs */
-        .padFxOk {
-          animation: padOk 260ms ease-out;
-        }
-        .padFxFail {
-          animation: padFail 520ms ease-out;
-        }
-        .padFxCash {
-          animation: padCash 520ms ease-out;
-        }
-        .padFxMax {
-          animation: padMax 680ms ease-out;
-        }
+        .padFxOk { animation: padOk 260ms ease-out; }
+        .padFxFail { animation: padFail 520ms ease-out; }
+        .padFxCash { animation: padCash 520ms ease-out; }
+        .padFxMax { animation: padMax 680ms ease-out; }
       `}</style>
 
       {failFlash ? (
@@ -1323,7 +1195,7 @@ async function settleOnChain(cashoutHop: number) {
                   DEMO: Local simulation
                 </span>
                 <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 font-semibold text-neutral-100 ring-1 ring-neutral-200/20">
-                  TOKEN: Next step (on-chain amounts)
+                  TOKEN: On-chain settle at Cash Out
                 </span>
               </div>
             </div>
@@ -1696,14 +1568,13 @@ async function settleOnChain(cashoutHop: number) {
                       </div>
 
                       <div className="mt-2 text-[11px] text-neutral-500">
-                        Token Mode settles on-chain at Cash Out (or on Bust). The hop animation is UX-only.
+                        Token Mode settles on-chain at Cash Out. The hop animation is UX-only.
                       </div>
                     </div>
                   </>
                 ) : null}
-                <div className="mt-1 text-xs text-neutral-600">
-                  {hasStarted ? "Locked after START." : "Set before START."}
-                </div>
+
+                <div className="mt-1 text-xs text-neutral-600">{hasStarted ? "Locked after START." : "Set before START."}</div>
 
                 {maxClampNotice ? (
                   <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
@@ -1716,8 +1587,15 @@ async function settleOnChain(cashoutHop: number) {
               <div className="mt-5 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold">Run status</div>
-                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20">
-                    DEMO
+                  <span
+                    className={[
+                      "rounded-full px-2 py-0.5 text-xs font-medium ring-1",
+                      playMode === "token"
+                        ? "bg-emerald-500/10 text-emerald-300 ring-emerald-500/20"
+                        : "bg-neutral-800/50 text-neutral-200 ring-neutral-700",
+                    ].join(" ")}
+                  >
+                    {playMode === "token" ? "TOKEN" : "DEMO"}
                   </span>
                 </div>
 
@@ -1751,9 +1629,7 @@ async function settleOnChain(cashoutHop: number) {
                     <span className="font-semibold">
                       {nextHopSuccessExact === null
                         ? "—"
-                        : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(
-                            6
-                          )}%)`}
+                        : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(6)}%)`}
                     </span>
                   </div>
 
@@ -1778,7 +1654,6 @@ async function settleOnChain(cashoutHop: number) {
                   </div>
                 </div>
 
-                {/* Commit + last roll */}
                 <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-xs text-neutral-300">
                   <button
                     type="button"
@@ -1832,75 +1707,43 @@ async function settleOnChain(cashoutHop: number) {
                     START
                   </button>
                 ) : (
-                  <>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={hopOnce}
-                        disabled={!canHop}
-                        className={[
-                          "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
-                          canHop
-                            ? "bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
-                            : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
-                        ].join(" ")}
-                        style={hopPulse ? { animation: "hopPulse 160ms ease-out" } : undefined}
-                      >
-                        HOP
-                      </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={hopOnce}
+                      disabled={!canHop}
+                      className={[
+                        "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
+                        canHop
+                          ? "bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
+                          : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
+                      ].join(" ")}
+                      style={hopPulse ? { animation: "hopPulse 160ms ease-out" } : undefined}
+                    >
+                      HOP
+                    </button>
 
-                      <button
-                        type="button"
-                        onClick={cashOut}
-                        disabled={!canCashOut}
-                        className={[
-                          "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
-                          canCashOut
-                            ? "bg-neutral-50 text-neutral-950 hover:bg-white"
-                            : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
-                        ].join(" ")}
-                      >
-                        CASH OUT
-                      </button>
-                    </div>
-
-                    {ended ? (
-                      <button
-                        type="button"
-                        onClick={resetRunNewSeed}
-                        className="rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-3 text-sm font-semibold text-neutral-100 hover:bg-neutral-800/60"
-                      >
-                        NEW RUN
-                      </button>
-                    ) : null}
-                  </>
+                    <button
+                      type="button"
+                      onClick={cashOut}
+                      disabled={!canCashOut}
+                      className={[
+                        "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
+                        canCashOut
+                          ? "bg-neutral-50 text-neutral-950 hover:bg-white"
+                          : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
+                      ].join(" ")}
+                    >
+                      CASH OUT
+                    </button>
+                  </div>
                 )}
-
-                {/* Token mode CTA (future) */}
-                <div className="mt-2 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3 text-xs text-neutral-300">
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold">TOKEN mode</span>
-                    <span className="rounded-full bg-neutral-50/10 px-2 py-0.5 text-[11px] font-semibold text-neutral-100 ring-1 ring-neutral-200/20">
-                      SOON
-                    </span>
-                  </div>
-                  <div className="mt-2 text-neutral-400">
-                    After demo polish + animations, we’ll enable on-chain amounts (trusted signer, settle once at the end).
-                  </div>
-                  <button
-                    type="button"
-                    disabled
-                    className="mt-2 w-full cursor-not-allowed rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-xs font-semibold text-neutral-500"
-                  >
-                    Play for real (coming soon)
-                  </button>
-                </div>
               </div>
             </div>
 
-            {/* Right side: Animation + Table */}
+            {/* Right side: Board + Table */}
             <div className="grid gap-6" ref={tableWrapRef}>
-              {/* Animation canvas */}
+              {/* Board */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
@@ -1921,7 +1764,6 @@ async function settleOnChain(cashoutHop: number) {
                       minHeight: 420,
                     }}
                   >
-                    {/* Water + lilypads (no assets) */}
                     <div className="absolute inset-0">
                       <div className="absolute inset-0 bg-gradient-to-b from-neutral-950/20 via-neutral-950/10 to-neutral-950/30" />
                       <div
@@ -1990,7 +1832,6 @@ async function settleOnChain(cashoutHop: number) {
                       </div>
                     </div>
 
-                    {/* Board layer */}
                     <div key={`${animEvent}-${animNonce}`} className="absolute inset-0 z-10">
                       <OutcomeBoard
                         outcome={outcome}
@@ -2001,6 +1842,8 @@ async function settleOnChain(cashoutHop: number) {
                         currentMult={currentMult}
                         currentReturn={currentReturn}
                         modeKey={modeKey}
+                        onCashOut={cashOut}
+                        cashOutEnabled={canCashOut}
                       />
                     </div>
                   </div>

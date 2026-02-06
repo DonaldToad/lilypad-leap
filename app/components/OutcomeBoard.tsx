@@ -66,8 +66,12 @@ export default function OutcomeBoard(props: {
   currentMult: number;
   currentReturn: number;
   modeKey: ModeKey;
+  /** Optional: make the top-left box act as a Cash Out trigger */
+  onCashOut?: () => void;
+  /** Optional: upstream gating for cash out (e.g., actionLocked, pending tx, etc.) */
+  cashOutEnabled?: boolean;
 }) {
-  const { outcome, animEvent, animNonce, hops, maxHops, currentMult, currentReturn, modeKey } = props;
+  const { outcome, animEvent, animNonce, hops, maxHops, currentMult, currentReturn, modeKey, onCashOut, cashOutEnabled } = props;
 
   const modeMeta = useMemo(() => MODE_META[modeKey], [modeKey]);
 
@@ -180,6 +184,16 @@ export default function OutcomeBoard(props: {
   const showLightning = moment === "maxhit";
   const showCoinSplash = moment === "cashout";
   const showBustFlash = moment === "bust";
+
+  // Cash Out button availability: hop 1..maxHops, not on busted/cashed out/max hit.
+  const cashOutBtnEnabled = useMemo(() => {
+    if (!onCashOut) return false;
+    if (cashOutEnabled === false) return false;
+    if (moment === "bust" || moment === "cashout" || moment === "maxhit") return false;
+    if (hops < 1) return false;
+    if (hops > maxHops) return false;
+    return true;
+  }, [onCashOut, cashOutEnabled, moment, hops, maxHops]);
 
   async function shareResult() {
     const modeLabel = `${modeMeta.emoji} ${modeMeta.name}`;
@@ -423,205 +437,173 @@ export default function OutcomeBoard(props: {
         }
         .fx-coins i {
           position: absolute;
-          right: 26px;
-          bottom: 26px;
+          left: 48%;
+          top: 52%;
           width: 10px;
           height: 10px;
           border-radius: 999px;
-          background: radial-gradient(
-            circle at 30% 30%,
-            rgba(255, 255, 255, 0.85),
-            rgba(250, 204, 21, 0.9) 45%,
-            rgba(250, 204, 21, 0.35) 75%
-          );
-          box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.22);
+          background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.65), rgba(250, 204, 21, 0.85) 45%, rgba(245, 158, 11, 0.85));
+          box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.15), 0 6px 16px rgba(0, 0, 0, 0.25);
           opacity: 0;
-          animation: coinBurst 650ms ease-out 1;
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          .fx-card,
-          .fx-max,
-          .fx-lightning,
-          .fx-confetti span,
-          .fx-coins i,
-          .fx-bustFlash {
-            animation: none !important;
-          }
+          animation: coinBurst 520ms ease-out 1;
         }
       `}</style>
 
-      {/* Big board: occupies the canvas area */}
-      <div className="absolute inset-0 flex items-center justify-center px-4 py-4 md:px-6 md:py-6">
-        <div
-          key={`card-${animNonce}`}
-          className={[
-            "relative w-full max-w-3xl rounded-3xl border border-neutral-800 bg-neutral-950/60",
-            "p-4 md:p-6",
-            moment === "maxhit"
-              ? "ring-1 ring-emerald-500/25"
-              : moment === "cashout"
-              ? "ring-1 ring-neutral-200/15"
-              : moment === "bust"
-              ? "ring-1 ring-red-500/25"
-              : moment === "success"
-              ? "ring-1 ring-emerald-500/20"
-              : "",
-            moment === "maxhit" ? "fx-max" : "fx-card",
-          ].join(" ")}
-        >
-          {/* soft tint */}
-          <div
+      <div
+        className={[
+          "relative h-full w-full rounded-[28px] border border-white/10 bg-black/30 p-4 md:p-5 overflow-hidden",
+          showLightning ? "fx-max" : "fx-card",
+        ].join(" ")}
+      >
+        {showLightning ? <div key={`lt-${animNonce}`} className="fx-lightning" /> : null}
+        {showBustFlash ? <div key={`bf-${animNonce}`} className="fx-bustFlash" /> : null}
+
+        {showConfetti ? (
+          <div key={`cf-${animNonce}`} className="fx-confetti">
+            {Array.from({ length: 14 }).map((_, i) => (
+              <span
+                key={i}
+                style={{
+                  left: `${(i * 7) % 100}%`,
+                  animationDelay: `${(i % 6) * 22}ms`,
+                  background:
+                    i % 4 === 0
+                      ? "rgba(250,204,21,0.95)"
+                      : i % 4 === 1
+                      ? "rgba(34,197,94,0.9)"
+                      : i % 4 === 2
+                      ? "rgba(236,72,153,0.9)"
+                      : "rgba(59,130,246,0.9)",
+                  transform: `rotate(${(i * 19) % 180}deg)`,
+                }}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {showCoinSplash ? (
+          <div key={`coin-${animNonce}`} className="fx-coins">
+            {Array.from({ length: 14 }).map((_, i) => {
+              const ang = (i / 14) * Math.PI * 1.15 + 0.2; // mostly upward/left
+              const dist = 34 + (i % 5) * 14;
+              const dx = Math.round(Math.cos(ang) * dist) * -1;
+              const dy = Math.round(Math.sin(ang) * dist) * -1;
+
+              const style: CSSVars = {
+                animationDelay: `${(i % 7) * 26}ms`,
+                ["--dx"]: `${dx}px`,
+                ["--dy"]: `${dy}px`,
+              };
+
+              return <i key={i} style={style} />;
+            })}
+          </div>
+        ) : null}
+
+        {/* TOP BOXES: CURRENT | NEXT CHANCE | PROGRESS */}
+        <div className="relative grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-3">
+          {/* CASH OUT (was CURRENT) */}
+          <button
+            type="button"
+            onClick={() => {
+              if (!cashOutBtnEnabled) return;
+              onCashOut?.();
+            }}
+            disabled={!cashOutBtnEnabled}
             className={[
-              "pointer-events-none absolute inset-0 rounded-3xl",
-              moment === "bust" ? "bg-red-500/10" : "bg-emerald-500/10",
+              "rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 text-left",
+              cashOutBtnEnabled ? "" : "cursor-not-allowed",
             ].join(" ")}
+          >
+            <div className="text-[11px] font-semibold text-neutral-400">Cash Out</div>
+            <div className="mt-0.5 flex items-baseline justify-between gap-3">
+              <div className={["text-sm font-extrabold", moment === "bust" ? "text-red-200" : "text-neutral-100"].join(" ")}>
+                {currentMultDisplay.toFixed(2)}x
+              </div>
+              <div className={["text-sm font-extrabold", moment === "bust" ? "text-red-300" : "text-neutral-100"].join(" ")}>
+                {fmtInt(currentReturnDisplay)} DTC
+              </div>
+            </div>
+            <div className="mt-1 text-[11px] text-neutral-500">
+              Hop {Math.max(1, Math.min(hops, maxHops))}/{maxHops}
+            </div>
+          </button>
+
+          {/* NEXT CHANCE */}
+          <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2">
+            <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-emerald-200/80">
+              <span>NEXT CHANCE</span>
+              <span className="text-emerald-200/75">
+                {modeMeta.emoji} {modeMeta.name}
+              </span>
+            </div>
+            <div className="mt-0.5 text-sm font-extrabold text-emerald-200">{nextChancePct}</div>
+          </div>
+
+          {/* PROGRESS (desktop only) */}
+          <div className="hidden md:block rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 text-right">
+            <div className="text-[11px] font-semibold text-neutral-400">PROGRESS</div>
+            <div className="mt-0.5 text-sm font-extrabold text-neutral-100">
+              {Math.min(hops, maxHops)}/{maxHops}
+            </div>
+          </div>
+        </div>
+
+        {/* MAIN: TOAD + MESSAGE */}
+        <div className="relative mt-4 flex items-center gap-3 md:gap-4 md:mt-5">
+          <img
+            src={toadSrc}
+            alt="toad"
+            width={240}
+            height={240}
+            className="h-[140px] w-[140px] sm:h-[165px] sm:w-[165px] md:h-[220px] md:w-[220px]"
+            style={{ animation: "floaty 1.9s ease-in-out infinite" }}
+            draggable={false}
           />
 
-          {/* FX layers */}
-          {showBustFlash ? <div className="fx-bustFlash" /> : null}
-          {showLightning ? <div key={`light-${animNonce}`} className="fx-lightning" /> : null}
+          <div className="min-w-0 flex-1">
+            <div className="text-3xl sm:text-4xl font-extrabold tracking-tight text-neutral-50 md:text-6xl">{headline}</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-200 md:text-base">{subline}</div>
 
-          {showConfetti ? (
-            <div key={`conf-${animNonce}`} className="fx-confetti">
-              {Array.from({ length: 22 }).map((_, i) => (
-                <span
-                  key={i}
-                  style={{
-                    left: `${(i * 4.5) % 100}%`,
-                    animationDelay: `${(i % 6) * 40}ms`,
-                    background:
-                      i % 4 === 0
-                        ? "rgba(250,204,21,0.9)"
-                        : i % 4 === 1
-                        ? "rgba(16,185,129,0.9)"
-                        : i % 4 === 2
-                        ? "rgba(244,63,94,0.9)"
-                        : "rgba(59,130,246,0.9)",
-                    transform: `rotate(${(i * 19) % 180}deg)`,
-                  }}
-                />
-              ))}
-            </div>
-          ) : null}
+            {showShare ? (
+              <button
+                type="button"
+                onClick={shareResult}
+                className="mt-3 inline-flex items-center justify-center rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-2 text-xs font-extrabold tracking-wide text-emerald-200 hover:bg-emerald-500/15"
+              >
+                SHARE
+              </button>
+            ) : null}
+          </div>
+        </div>
 
-          {showCoinSplash ? (
-            <div key={`coin-${animNonce}`} className="fx-coins">
-              {Array.from({ length: 14 }).map((_, i) => {
-                const ang = (i / 14) * Math.PI * 1.15 + 0.2; // mostly upward/left
-                const dist = 34 + (i % 5) * 14;
-                const dx = Math.round(Math.cos(ang) * dist) * -1;
-                const dy = Math.round(Math.sin(ang) * dist) * -1;
-
-                const style: CSSVars = {
-                  animationDelay: `${(i % 7) * 26}ms`,
-                  ["--dx"]: `${dx}px`,
-                  ["--dy"]: `${dy}px`,
-                };
-
-                return <i key={i} style={style} />;
-              })}
-            </div>
-          ) : null}
-
-          {/* TOP BOXES: CURRENT | NEXT CHANCE | PROGRESS */}
-          <div className="relative grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-3">
-            {/* CURRENT */}
-            <div className="rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2">
-              <div className="text-[11px] font-semibold text-neutral-400">CURRENT</div>
-              <div className="mt-0.5 flex items-baseline justify-between gap-3">
-                <div className={["text-sm font-extrabold", moment === "bust" ? "text-red-200" : "text-neutral-100"].join(" ")}>
-                  {currentMultDisplay.toFixed(2)}x
-                </div>
-                <div className={["text-sm font-extrabold", moment === "bust" ? "text-red-300" : "text-emerald-200"].join(" ")}>
-                  {fmtInt(currentReturnDisplay)} DTC
-                </div>
-              </div>
-              <div className="mt-1 text-[11px] text-neutral-500">
-                Hop {Math.max(1, Math.min(hops, maxHops))}/{maxHops}
-              </div>
+        {/* BOTTOM ROW: Progress (left) + NEXT/PRIZE (right) */}
+        <div className="relative mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_260px] md:items-stretch md:gap-4">
+          {/* Progress bar card (narrower height) */}
+          <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 sm:px-4 sm:py-3">
+            <div className="flex items-center justify-between text-xs font-semibold text-neutral-300">
+              <span>Progress</span>
+              <span className={pctTextClass}>{Math.round(progressPct)}%</span>
             </div>
 
-            {/* NEXT CHANCE */}
-            <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2">
-              <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-emerald-200/80">
-                <span>NEXT CHANCE</span>
-                <span className="text-emerald-200/75">
-                  {modeMeta.emoji} {modeMeta.name}
-                </span>
-              </div>
-              <div className="mt-0.5 text-sm font-extrabold text-emerald-200">{nextChancePct}</div>
-            </div>
-
-            {/* PROGRESS (desktop only) */}
-            <div className="hidden md:block rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 text-right">
-              <div className="text-[11px] font-semibold text-neutral-400">PROGRESS</div>
-              <div className="mt-0.5 text-sm font-extrabold text-neutral-100">
-                {Math.min(hops, maxHops)}/{maxHops}
-              </div>
+            <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-white/10">
+              <div className="h-full rounded-full" style={{ width: `${progressPct}%`, transition: "width 240ms ease-out", ...barStyle }} />
             </div>
           </div>
 
-          {/* MAIN: TOAD + MESSAGE */}
-          <div className="relative mt-4 flex items-center gap-3 md:gap-4 md:mt-5">
-            <img
-              src={toadSrc}
-              alt="toad"
-              width={240}
-              height={240}
-              className="h-[140px] w-[140px] sm:h-[165px] sm:w-[165px] md:h-[220px] md:w-[220px]"
-              style={{ animation: "floaty 1.9s ease-in-out infinite" }}
-              draggable={false}
-            />
-
-            <div className="min-w-0 flex-1">
-              <div className="text-3xl sm:text-4xl font-extrabold tracking-tight text-neutral-50 md:text-6xl">{headline}</div>
-              <div className="mt-1 text-sm font-semibold text-neutral-200 md:text-base">{subline}</div>
-
-              {showShare ? (
-                <button
-                  type="button"
-                  onClick={shareResult}
-                  className="mt-3 inline-flex items-center justify-center rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-2 text-xs font-extrabold tracking-wide text-emerald-200 hover:bg-emerald-500/15"
-                >
-                  SHARE
-                </button>
-              ) : null}
-            </div>
-          </div>
-
-          {/* BOTTOM ROW: Progress (left) + NEXT/PRIZE (right) */}
-          <div className="relative mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_260px] md:items-stretch md:gap-4">
-            {/* Progress bar card (narrower height) */}
-            <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 sm:px-4 sm:py-3">
-              <div className="flex items-center justify-between text-xs font-semibold text-neutral-300">
-                <span>Progress</span>
-                <span className={pctTextClass}>{Math.round(progressPct)}%</span>
-              </div>
-
-              <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div className="h-full rounded-full" style={{ width: `${progressPct}%`, transition: "width 240ms ease-out", ...barStyle }} />
-              </div>
+          {/* NEXT / PRIZE box */}
+          <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 sm:px-4 sm:py-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold text-neutral-400">{rightBoxTitle}</div>
+              <div className="text-[11px] font-semibold text-neutral-500">{rightSubline}</div>
             </div>
 
-            {/* NEXT / PRIZE box */}
-            <div className="relative rounded-2xl border border-neutral-800 bg-neutral-950/55 px-3 py-2 sm:px-4 sm:py-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] font-semibold text-neutral-400">{rightBoxTitle}</div>
-                <div className="text-[11px] font-semibold text-neutral-500">{rightSubline}</div>
+            <div className="mt-1 flex items-baseline justify-between gap-3">
+              <div className="text-sm font-extrabold text-neutral-100">
+                {rightMultDisplay === null ? "—" : `${rightMultDisplay.toFixed(2)}x`}
               </div>
-
-              <div className="mt-1 flex items-baseline justify-between gap-3">
-                <div className="text-sm font-extrabold text-neutral-100">
-                  {rightMultDisplay === null ? "—" : `${rightMultDisplay.toFixed(2)}x`}
-                </div>
-                <div className="text-sm font-extrabold text-emerald-200">
-                  {rightReturnDisplay === null ? "—" : `${fmtInt(rightReturnDisplay)} DTC`}
-                </div>
-              </div>
-
-              <div className="mt-1 text-[11px] text-neutral-500">
-                {rightBoxTitle === "NEXT" ? (rightMultDisplay === null ? "—" : rightSubline) : "Final result"}
+              <div className="text-sm font-extrabold text-emerald-200">
+                {rightReturnDisplay === null ? "—" : `${fmtInt(rightReturnDisplay)} DTC`}
               </div>
             </div>
           </div>
