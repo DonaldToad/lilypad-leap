@@ -15,7 +15,7 @@ export type TopNavProps = {
   soundOn?: boolean;
   setSoundOn?: React.Dispatch<React.SetStateAction<boolean>>;
 
-  // Lock changing mode, network (handled in page), and disconnect once game is created
+  // 🔒 When true: user must not navigate away / disconnect / change mode
   controlsLocked?: boolean;
 };
 
@@ -57,8 +57,11 @@ const NAV = [
 
 export default function TopNav(props: TopNavProps) {
   const pathname = usePathname();
-
   const { playMode, setPlayMode, soundOn, setSoundOn, controlsLocked } = props;
+
+  // ✅ Hydration-safe mount flag (prevents SSR/CSR mismatches from wallet state)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
@@ -74,7 +77,7 @@ export default function TopNav(props: TopNavProps) {
   const tokenActive = playMode === "token";
 
   // -----------------------------
-  // Mobile-only auto-hide TopNav (show only when scrolled to top)
+  // Mobile-only auto-hide TopNav
   // -----------------------------
   const [isMobile, setIsMobile] = useState(false);
   const [hideOnScroll, setHideOnScroll] = useState(false);
@@ -83,10 +86,8 @@ export default function TopNav(props: TopNavProps) {
     if (typeof window === "undefined") return;
 
     const computeIsMobile = () => setIsMobile(window.innerWidth < 900);
-
     computeIsMobile();
     window.addEventListener("resize", computeIsMobile, { passive: true });
-
     return () => window.removeEventListener("resize", computeIsMobile);
   }, []);
 
@@ -99,18 +100,25 @@ export default function TopNav(props: TopNavProps) {
 
     const onScroll = () => {
       const y = window.scrollY || window.pageYOffset || 0;
-      // hide after small scroll; show only at the very top
       setHideOnScroll(y > 20);
     };
 
     window.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
-
     return () => window.removeEventListener("scroll", onScroll);
   }, [isMobile]);
 
-  // Collapse header on mobile without leaving a blank gap
   const mobileCollapsed = isMobile && hideOnScroll;
+
+  const navPillClass = (active: boolean, locked: boolean) =>
+    [
+      "shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+      "md:px-4 md:py-2 md:text-sm",
+      locked ? "opacity-40 cursor-not-allowed" : "",
+      active
+        ? "border-neutral-700 bg-neutral-800 text-neutral-50"
+        : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
+    ].join(" ");
 
   return (
     <header
@@ -123,24 +131,18 @@ export default function TopNav(props: TopNavProps) {
       <div
         className={[
           "mx-auto w-full max-w-6xl px-3 md:px-4",
-          // desktop padding
           "md:py-4",
-          // mobile padding (collapses to 0 when hidden)
           mobileCollapsed ? "py-0" : "py-3",
           "transition-[padding] duration-300 ease-out",
         ].join(" ")}
       >
-        {/* Collapsible content wrapper (mobile only) */}
         <div
           className={[
-            // desktop always visible
             "md:opacity-100 md:max-h-none md:pointer-events-auto",
-            // mobile collapsible
             mobileCollapsed ? "max-h-0 opacity-0 pointer-events-none overflow-hidden" : "max-h-[260px] opacity-100",
             "transition-[max-height,opacity] duration-300 ease-out",
           ].join(" ")}
         >
-          {/* Top row: Brand + Controls */}
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             {/* Brand */}
             <div className="flex items-center gap-4">
@@ -161,7 +163,8 @@ export default function TopNav(props: TopNavProps) {
             <div className="flex flex-wrap items-center justify-end gap-2">
               {/* Wallet pill */}
               <div className="flex items-center gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/30 px-2 py-2">
-                {isConnected && chainKey ? (
+                {/* Render chain icon ONLY after mount to avoid hydration mismatch */}
+                {mounted && isConnected && chainKey ? (
                   <img
                     src={`/chains/${chainKey}.png`}
                     alt={chainKey}
@@ -175,16 +178,18 @@ export default function TopNav(props: TopNavProps) {
 
                 <div className="min-w-0">
                   <div className="text-[10px] font-semibold text-neutral-400 leading-none">Wallet</div>
-                  <div className="truncate text-xs font-bold text-neutral-100">
-                    {isConnected && address ? truncateAddr(address) : "Not connected"}
+
+                  {/* Also gate address text behind mounted */}
+                  <div className="truncate text-xs font-bold text-neutral-100" suppressHydrationWarning>
+                    {mounted && isConnected && address ? truncateAddr(address) : "Not connected"}
                   </div>
                 </div>
 
-                {isConnected ? (
+                {mounted && isConnected ? (
                   <button
                     type="button"
                     onClick={() => {
-                      if (controlsLocked) return; // 🔒 cannot disconnect after createGame
+                      if (controlsLocked) return;
                       disconnect();
                     }}
                     disabled={!!controlsLocked}
@@ -201,11 +206,16 @@ export default function TopNav(props: TopNavProps) {
                 ) : (
                   <button
                     type="button"
-                    onClick={() => connect({ connector: connectors[0] })}
-                    disabled={connectPending}
+                    onClick={() => {
+                      if (controlsLocked) return;
+                      const first = connectors?.[0];
+                      if (first) connect({ connector: first });
+                    }}
+                    disabled={connectPending || !!controlsLocked}
+                    title={controlsLocked ? "Locked while a game is active" : "Connect"}
                     className={[
                       "rounded-xl border px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
-                      connectPending
+                      connectPending || controlsLocked
                         ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
                         : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15",
                     ].join(" ")}
@@ -251,9 +261,11 @@ export default function TopNav(props: TopNavProps) {
                       if (controlsLocked) return;
                       setPlayMode!("token");
                     }}
-                    disabled={!!controlsLocked || !isConnected}
+                    disabled={!!controlsLocked || !(mounted && isConnected)}
                     title={
-                      !isConnected
+                      !mounted
+                        ? "Loading…"
+                        : !isConnected
                         ? "Connect wallet to enable TOKEN mode"
                         : controlsLocked
                         ? "Locked while a game is active"
@@ -262,7 +274,7 @@ export default function TopNav(props: TopNavProps) {
                     className={[
                       "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
                       tokenActive ? "text-emerald-100" : "text-neutral-200 hover:bg-neutral-800/60",
-                      !isConnected ? "opacity-40 cursor-not-allowed" : "",
+                      !(mounted && isConnected) ? "opacity-40 cursor-not-allowed" : "",
                       controlsLocked ? "opacity-60 cursor-not-allowed" : "",
                       tokenActive ? "" : "opacity-80",
                     ].join(" ")}
@@ -283,7 +295,7 @@ export default function TopNav(props: TopNavProps) {
                 </div>
               ) : null}
 
-              {/* Sound (allowed even when game locked) */}
+              {/* Sound */}
               {showSoundControl ? (
                 <button
                   type="button"
@@ -302,7 +314,7 @@ export default function TopNav(props: TopNavProps) {
             </div>
           </div>
 
-          {/* Nav row (mobile: compact, single-line, right-aligned, scroll if needed) */}
+          {/* Nav row */}
           <nav className="mt-2 flex justify-end md:mt-4">
             <div
               className={[
@@ -313,22 +325,25 @@ export default function TopNav(props: TopNavProps) {
             >
               {NAV.map((item) => {
                 const active = pathname === item.href;
-
-                // Mobile label shortening: keep it compact
                 const label = item.label === "Verify Fairness" ? "Fairness" : item.label;
 
+                // 🔒 When game is active, render disabled buttons instead of Links
+                if (controlsLocked) {
+                  return (
+                    <button
+                      key={item.href}
+                      type="button"
+                      disabled
+                      className={navPillClass(active, true)}
+                      title="Locked while a game is active"
+                    >
+                      {label}
+                    </button>
+                  );
+                }
+
                 return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={[
-                      "shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition",
-                      "md:px-4 md:py-2 md:text-sm",
-                      active
-                        ? "border-neutral-700 bg-neutral-800 text-neutral-50"
-                        : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
-                    ].join(" ")}
-                  >
+                  <Link key={item.href} href={item.href} className={navPillClass(active, false)}>
                     {label}
                   </Link>
                 );

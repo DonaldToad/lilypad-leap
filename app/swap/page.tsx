@@ -1,12 +1,18 @@
+"use client";
+
 import TopNav from "../components/TopNav";
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 
-function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
-  // expects:
-  // /public/chains/linea.png
-  // /public/chains/base.png
-  const src = `/chains/${chainKey}.png`;
+import { useMemo, useState } from "react";
+import { useAccount, useConnect } from "wagmi";
+import { mainnet, linea, base, arbitrum, optimism } from "wagmi/chains";
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { RelayKitProvider, SwapWidget } from "@relayprotocol/relay-kit-ui";
+import { MAINNET_RELAY_API, convertViemChainToRelayChain } from "@relayprotocol/relay-sdk";
+
+function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
+  const src = `/chains/${chainKey}.png`;
   return (
     <img
       src={src}
@@ -15,11 +21,102 @@ function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
       height={28}
       className="h-7 w-7 rounded-lg ring-1 ring-neutral-800"
       loading="lazy"
+      decoding="async"
     />
   );
 }
 
+const queryClient = new QueryClient();
+
+const LINEA_CHAIN_ID = 59144;
+const NATIVE = "0x0000000000000000000000000000000000000000";
+const DTC = "0xEb1fD1dBB8aDDA4fa2b5A5C4bcE34F6F20d125D2";
+
+// Force Lynex DTC output token (prevents default ETH/whatever view)
+const FORCED_LINEA_SWAP_URL = `https://app.wowmax.exchange/swap/59144/0x0000000000000000000000000000000000000000/0xeb1fd1dbb8adda4fa2b5a5c4bce34f6f20d125d2`;
+
+// Stable public logos (so icons appear immediately without re-select)
+const ETH_LOGO =
+  "https://cdn.jsdelivr.net/gh/trustwallet/assets@master/blockchains/ethereum/info/logo.png";
+const DTC_LOGO = "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
+
+type RelayCurrency = {
+  chainId: number;
+  address: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  vmType?: string;
+  logoURI?: string;
+  metadata?: {
+    logoURI?: string;
+    verified?: boolean;
+    isNative?: boolean;
+  };
+};
+
+function withLogo(c: RelayCurrency, logoURI: string, extra?: Partial<RelayCurrency>): RelayCurrency {
+  return {
+    ...c,
+    ...(extra ?? {}),
+    logoURI,
+    metadata: {
+      ...(c.metadata ?? {}),
+      ...(extra?.metadata ?? {}),
+      logoURI,
+    },
+  };
+}
+
 export default function SwapPage() {
+  const { isConnected } = useAccount();
+  const { connect, connectors } = useConnect();
+
+  // Full aggregator mode across these chains
+  const relayChains = useMemo(() => {
+    return [
+      convertViemChainToRelayChain(mainnet),
+      convertViemChainToRelayChain(linea),
+      convertViemChainToRelayChain(base),
+      convertViemChainToRelayChain(arbitrum),
+      convertViemChainToRelayChain(optimism),
+    ];
+  }, []);
+
+  // Defaults (user can change chain/token freely)
+  const [fromToken, setFromToken] = useState<RelayCurrency>(() =>
+    withLogo(
+      {
+        chainId: LINEA_CHAIN_ID,
+        address: NATIVE,
+        decimals: 18,
+        name: "Ether",
+        symbol: "ETH",
+        metadata: { isNative: true },
+      },
+      ETH_LOGO
+    )
+  );
+
+  const [toToken, setToToken] = useState<RelayCurrency>(() =>
+    withLogo(
+      {
+        chainId: LINEA_CHAIN_ID,
+        address: DTC,
+        decimals: 18,
+        name: "Donald Toad Coin",
+        symbol: "DTC",
+      },
+      DTC_LOGO
+    )
+  );
+
+  const onConnectWallet = () => {
+    if (isConnected) return;
+    const first = connectors?.[0];
+    if (first) connect({ connector: first });
+  };
+
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
       <TopNav />
@@ -30,96 +127,163 @@ export default function SwapPage() {
             <div>
               <h1 className="text-2xl font-bold">Swap</h1>
               <p className="mt-2 text-neutral-300">
-                Choose a chain to trade DTC. Linea is primary. Base is coming
-                soon.
+                Default: <b>ETH (Linea)</b> → <b>DTC (Linea)</b>. You can switch to any chain/token.
               </p>
             </div>
 
             <div className="text-sm text-neutral-400">
-              Primary:{" "}
-              <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
+              Primary: <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
             </div>
           </div>
 
-          <div className="mt-6 grid gap-3">
-            {CHAIN_LIST.map((c) => (
-              <div
-                key={c.key}
-                className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4"
-              >
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    {/* Title row: ICON + NAME + TAGS */}
-                    <div className="flex items-center gap-3">
-                      <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
+          {/* Relay widget */}
+          <div className="mt-6 flex justify-center">
+            <div className="w-full max-w-[440px] rounded-3xl border border-neutral-800 bg-neutral-950 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+              {/* Small scoped patch: ensure % quick buttons are readable even if Relay renders a light chip */}
+              <style jsx>{`
+                .relayWrap {
+                  color-scheme: dark;
+                }
+                .relayWrap :global(button) {
+                  color-scheme: dark;
+                }
+                .relayWrap :global(button) :global(*) {
+                  text-shadow: none;
+                }
+                .relayWrap :global(button[aria-label*="%"]),
+                .relayWrap :global(button[title*="%"]) {
+                  color: #0a0a0a !important;
+                  background: rgba(255, 255, 255, 0.92) !important;
+                  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+                }
+              `}</style>
 
-                      <div className="flex items-center gap-2">
-                        <div className="text-lg font-semibold">{c.name}</div>
+              <QueryClientProvider client={queryClient}>
+                <RelayKitProvider
+                  options={{
+                    appName: "Lilypad Leap",
+                    chains: relayChains,
+                    baseApiUrl: MAINNET_RELAY_API,
+                  }}
+                >
+                  <div className="relayWrap">
+                    <SwapWidget
+                      supportedWalletVMs={["evm"]}
+                      onConnectWallet={onConnectWallet}
+                      fromToken={fromToken as any}
+                      setFromToken={setFromToken as any}
+                      toToken={toToken as any}
+                      setToToken={setToToken as any}
+                      disableInputAutoFocus
+                    />
+                  </div>
+                </RelayKitProvider>
+              </QueryClientProvider>
 
-                        <span
-                          className={
-                            c.statusTag === "LIVE"
-                              ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20"
-                              : "rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/20"
-                          }
-                        >
-                          {c.statusTag}
-                        </span>
+              <div className="mt-3 text-[11px] text-neutral-500 break-all">
+                Default DTC (Linea): {DTC}
+              </div>
+            </div>
+          </div>
 
-                        {c.isPrimary ? (
-                          <span className="rounded-full bg-neutral-800/60 px-2 py-0.5 text-xs text-neutral-200 ring-1 ring-neutral-700">
-                            PRIMARY
+          {/* Chain cards */}
+          <div className="mt-8 grid gap-3">
+            {CHAIN_LIST.map((c) => {
+              const isBaseCard = c.chainId === 8453 || c.key === "base";
+              const isLineaCard = c.chainId === 59144 || c.key === "linea";
+
+              // Base: keep chain available elsewhere, but disable swap CTA here + show SOON
+              const displayStatus = isBaseCard ? "SOON" : c.statusTag;
+
+              // Force Lynex DTC link for Linea
+              const swapHref = isLineaCard ? FORCED_LINEA_SWAP_URL : c.swapUrl;
+
+              // Disable only for Base in this page
+              const swapDisabled = isBaseCard ? true : !(c.enabled && swapHref);
+
+              return (
+                <div key={c.key} className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
+
+                        <div className="flex items-center gap-2">
+                          <div className="text-lg font-semibold">{c.name}</div>
+
+                          <span
+                            className={
+                              displayStatus === "LIVE"
+                                ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20"
+                                : displayStatus === "SOON"
+                                ? "rounded-full bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-300 ring-1 ring-orange-500/20"
+                                : "rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/20"
+                            }
+                          >
+                            {displayStatus}
                           </span>
+
+                          {c.isPrimary ? (
+                            <span className="rounded-full bg-neutral-800/60 px-2 py-0.5 text-xs text-neutral-200 ring-1 ring-neutral-700">
+                              PRIMARY
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 text-sm text-neutral-200">{c.swapLabel}</div>
+                      <div className="mt-2 text-sm text-neutral-300">{c.note}</div>
+
+                      <div className="mt-3 text-xs text-neutral-500">
+                        Chain ID: {c.chainId}
+                        {c.explorerBaseUrl ? (
+                          <>
+                            {" "}
+                            • Explorer:{" "}
+                            <span className="text-neutral-300">
+                              {c.explorerBaseUrl.replace("https://", "")}
+                            </span>
+                          </>
                         ) : null}
                       </div>
-                    </div>
 
-                    <div className="mt-3 text-sm text-neutral-200">
-                      {c.swapLabel}
-                    </div>
-                    <div className="mt-2 text-sm text-neutral-300">{c.note}</div>
-
-                    <div className="mt-3 text-xs text-neutral-500">
-                      Chain ID: {c.chainId}
-                      {c.explorerBaseUrl ? (
-                        <>
-                          {" "}
-                          • Explorer:{" "}
-                          <span className="text-neutral-300">
-                            {c.explorerBaseUrl.replace("https://", "")}
-                          </span>
-                        </>
+                      {/* Base-only disclaimer */}
+                      {isBaseCard ? (
+                        <div className="mt-3 rounded-xl border border-orange-500/20 bg-orange-500/10 p-3 text-xs text-orange-200">
+                          <b>Base swap is coming soon.</b> DTC on Base will be announced from official Donald Toad Coin
+                          accounts only — beware of impersonators and fake token contracts.
+                        </div>
                       ) : null}
                     </div>
-                  </div>
 
-                  <div className="flex gap-2">
-                    {c.enabled && c.swapUrl ? (
-                      <a
-                        href={c.swapUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-xl bg-emerald-500 px-4 py-2 text-center text-sm font-semibold text-neutral-950 hover:bg-emerald-400"
-                      >
-                        Open Swap
-                      </a>
-                    ) : (
-                      <button
-                        disabled
-                        className="cursor-not-allowed rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-sm font-semibold text-neutral-500"
-                      >
-                        Swap (soon)
-                      </button>
-                    )}
+                    <div className="flex gap-2">
+                      {!swapDisabled ? (
+                        <a
+                          href={swapHref}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-xl bg-emerald-500 px-4 py-2 text-center text-sm font-semibold text-neutral-950 hover:bg-emerald-400"
+                        >
+                          Open Swap
+                        </a>
+                      ) : (
+                        <button
+                          disabled
+                          className="cursor-not-allowed rounded-xl border border-orange-500/25 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-200"
+                          title={isBaseCard ? "Base swap coming soon" : "Swap unavailable"}
+                        >
+                          SOON
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 text-sm text-neutral-300">
-            <b>Note:</b> Chain switching + wallet connect will be enabled after
-            Base Uniswap listing and when the bridge is public.
+            <b>Note:</b> Relay widget is full aggregator mode; defaults are ETH → DTC on Linea.
           </div>
         </div>
       </section>
