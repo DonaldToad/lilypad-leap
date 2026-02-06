@@ -165,9 +165,7 @@ export default function TopNav(props: TopNavProps) {
                   disabled={!!controlsLocked}
                   className={[
                     "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
-                    demoActive
-                      ? "text-neutral-950"
-                      : "text-neutral-200 hover:bg-neutral-800/60",
+                    demoActive ? "text-neutral-950" : "text-neutral-200 hover:bg-neutral-800/60",
                     controlsLocked ? lockClass : "",
                     demoActive ? "" : "opacity-80",
                   ].join(" ")}
@@ -202,9 +200,7 @@ export default function TopNav(props: TopNavProps) {
                   }
                   className={[
                     "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
-                    tokenActive
-                      ? "text-emerald-100"
-                      : "text-neutral-200 hover:bg-neutral-800/60",
+                    tokenActive ? "text-emerald-100" : "text-neutral-200 hover:bg-neutral-800/60",
                     !isConnected ? "opacity-40 cursor-not-allowed" : "",
                     controlsLocked ? lockClass : "",
                     tokenActive ? "" : "opacity-80",
@@ -214,8 +210,7 @@ export default function TopNav(props: TopNavProps) {
                       ? {
                           background:
                             "radial-gradient(circle at 50% 10%, rgba(16,185,129,0.28), rgba(16,185,129,0.10) 60%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(16,185,129,0.18), rgba(16,185,129,0.07))",
-                          boxShadow:
-                            "0 0 0 1px rgba(16,185,129,0.28), 0 0 22px rgba(16,185,129,0.16)",
+                          boxShadow: "0 0 0 1px rgba(16,185,129,0.28), 0 0 22px rgba(16,185,129,0.16)",
                         }
                       : undefined
                   }
@@ -249,25 +244,41 @@ export default function TopNav(props: TopNavProps) {
           </div>
         </div>
 
-        {/* Nav row */}
-        <nav className="mt-4 flex flex-wrap gap-2">
-          {NAV.map((item) => {
-            const active = pathname === item.href;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={[
-                  "rounded-full border px-4 py-2 text-sm font-semibold transition",
-                  active
-                    ? "border-neutral-700 bg-neutral-800 text-neutral-50"
-                    : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
-                ].join(" ")}
-              >
-                {item.label}
-              </Link>
-            );
-          })}
+        {/* Nav row (mobile: compact, single-line, right-aligned, scroll if needed) */}
+        <nav className="mt-2 flex justify-end md:mt-4">
+          <div
+            className={[
+              "flex w-full justify-end gap-2 overflow-x-auto pb-1",
+              "md:flex-wrap md:overflow-visible md:pb-0",
+              "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+            ].join(" ")}
+          >
+            {NAV.map((item) => {
+              const active = pathname === item.href;
+
+              // Optional mobile label shortening (keeps desktop full label)
+              const label =
+                item.label === "Verify Fairness"
+                  ? "Fairness"
+                  : item.label;
+
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={[
+                    "shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                    "md:px-4 md:py-2 md:text-sm",
+                    active
+                      ? "border-neutral-700 bg-neutral-800 text-neutral-50"
+                      : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
+                  ].join(" ")}
+                >
+                  {label}
+                </Link>
+              );
+            })}
+          </div>
         </nav>
       </div>
     </header>
