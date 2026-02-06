@@ -9,6 +9,9 @@ export type AppChain = {
   statusTag: "LIVE" | "SOON";
   isPrimary?: boolean;
   note: string;
+
+  // ✅ used by app/page.tsx
+  explorerBaseUrl?: string; // e.g. https://basescan.org
 };
 
 export const CHAIN_LIST: AppChain[] = [
@@ -20,6 +23,7 @@ export const CHAIN_LIST: AppChain[] = [
     statusTag: "LIVE",
     isPrimary: true,
     note: "Linea mainnet (primary chain).",
+    explorerBaseUrl: "https://lineascan.build",
   },
   {
     key: "base",
@@ -28,6 +32,7 @@ export const CHAIN_LIST: AppChain[] = [
     enabled: true,
     statusTag: "LIVE",
     note: "Base mainnet.",
+    explorerBaseUrl: "https://basescan.org",
   },
 ];
 

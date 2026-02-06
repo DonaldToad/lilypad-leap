@@ -34,16 +34,12 @@ export default function TopNav() {
                 Lilypad Leap
               </div>
               <div className="truncate text-xs text-neutral-400 md:text-sm">
-                Product v1 (frozen) · Demo Mode
+                Product v1 (frozen)
               </div>
             </div>
           </div>
 
-          <div className="shrink-0">
-            <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
-              DEMO
-            </span>
-          </div>
+          <div className="shrink-0" />
         </div>
 
         <nav className="mt-4 flex flex-wrap gap-2">
