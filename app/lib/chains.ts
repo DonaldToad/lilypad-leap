@@ -10,7 +10,10 @@ export type AppChain = {
   isPrimary?: boolean;
   note: string;
 
-  // ✅ used by app/page.tsx
+  // Used in swap page UI
+  swapLabel?: string;
+
+  // Used by app/page.tsx
   explorerBaseUrl?: string; // e.g. https://basescan.org
 };
 
@@ -23,6 +26,7 @@ export const CHAIN_LIST: AppChain[] = [
     statusTag: "LIVE",
     isPrimary: true,
     note: "Linea mainnet (primary chain).",
+    swapLabel: "Swap $DTC on Linea (Lynex / DEX)",
     explorerBaseUrl: "https://lineascan.build",
   },
   {
@@ -32,8 +36,10 @@ export const CHAIN_LIST: AppChain[] = [
     enabled: true,
     statusTag: "LIVE",
     note: "Base mainnet.",
+    swapLabel: "Swap $DTC on Base",
     explorerBaseUrl: "https://basescan.org",
   },
 ];
 
-export const PRIMARY_CHAIN = CHAIN_LIST.find((c) => c.isPrimary) ?? CHAIN_LIST[0];
+export const PRIMARY_CHAIN =
+  CHAIN_LIST.find((c) => c.isPrimary) ?? CHAIN_LIST[0];
