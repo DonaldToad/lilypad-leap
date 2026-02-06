@@ -5,6 +5,34 @@ import TopNav from "../components/TopNav";
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 import OutcomeBoard from "../components/OutcomeBoard";
 
+import ApprovalToggle from "../components/ApprovalToggle";
+
+import {
+  useAccount,
+  useChainId,
+  useConnect,
+  useDisconnect,
+  useReadContract,
+  useSwitchChain,
+  useWriteContract,
+  usePublicClient,
+} from "wagmi";
+
+import { ERC20_ABI } from "../lib/abi/erc20";
+import { LILYPAD_VAULT_ABI } from "../lib/abi/lilypadVault";
+import { DTC_BY_CHAIN, LILYPAD_VAULT_BY_CHAIN } from "../lib/addresses";
+import type { ApprovalPolicy } from "../lib/approvalPolicy";
+
+import {
+  parseUnits,
+  formatUnits,
+  keccak256,
+  encodePacked,
+  type Hex,
+  zeroAddress,
+  decodeEventLog,
+} from "viem";
+
 type ModeKey = "safe" | "wild" | "insane";
 
 const MAX_HOPS = 10;
@@ -181,6 +209,10 @@ type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
 
 export default function PlayPage() {
+  // Prevent hydration mismatch (wallet state differs server vs client)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   // -----------------------------
   // Sounds (ON by default + visible toggle)
   // -----------------------------
@@ -251,6 +283,44 @@ export default function PlayPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soundOn]);
 
+  // -----------------------------
+  // Wallet + Chain
+  // -----------------------------
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+  const { connect, connectors, isPending: connectPending } = useConnect();
+  const { disconnect } = useDisconnect();
+  const { switchChain, isPending: switchPending } = useSwitchChain();
+  const publicClient = usePublicClient();
+  const { writeContractAsync } = useWriteContract();
+
+  const allowed = chainId === 59144 || chainId === 8453;
+  const effectiveChainId = allowed ? chainId : PRIMARY_CHAIN.chainId;
+
+  const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+
+  type PlayMode = "demo" | "token";
+  const [playMode, setPlayMode] = useState<PlayMode>("demo");
+
+  // If wallet disconnects, force demo.
+  useEffect(() => {
+    if (!isConnected) setPlayMode("demo");
+  }, [isConnected]);
+
+  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>({ kind: "unlimited" });
+  const approveCapDtc = approvalPolicy.kind === "limited" ? approvalPolicy.capDtc : MAX_AMOUNT;
+
+  const [txStatus, setTxStatus] = useState<string>("");
+  const [txError, setTxError] = useState<string>("");
+  const [startPending, setStartPending] = useState<boolean>(false);
+  const [activeGameId, setActiveGameId] = useState<Hex | null>(null);
+  const [activeUserSecret, setActiveUserSecret] = useState<Hex | null>(null);
+  const [activeRandAnchor, setActiveRandAnchor] = useState<Hex | null>(null);
+  const [settledPayoutWei, setSettledPayoutWei] = useState<bigint | null>(null);
+  const [settledWon, setSettledWon] = useState<boolean | null>(null);
+
+
   // Chain selection (UI-only demo)
   const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
 
@@ -318,14 +388,74 @@ export default function PlayPage() {
   // Exact per-step success % used by game math
   const stepSuccessPctExact = useMemo(() => mode.pStep * 100, [mode.pStep]);
 
+// -----------------------------
+// TOKEN MODE deterministic seed (matches Solidity)
+// seed = keccak256(abi.encodePacked(userSecret, randAnchor, vault, gameId))
+// hop roll = uint256(keccak256(abi.encodePacked(seed, hopNo))) % 10000
+// -----------------------------
+const tokenSeed = useMemo(() => {
+  if (playMode !== "token") return null;
+  if (!activeUserSecret || !activeGameId || !activeRandAnchor) return null;
+  if (vaultAddress === zeroAddress) return null;
+
+  return keccak256(
+    encodePacked(
+      ["bytes32", "bytes32", "address", "bytes32"],
+      [activeUserSecret, activeRandAnchor, vaultAddress, activeGameId]
+    )
+  ) as Hex;
+}, [playMode, activeUserSecret, activeGameId, activeRandAnchor, vaultAddress]);
+
+
   // Next hop info
   const nextHopIndex = hops; // 0-based
   const nextHopNo = hops + 1;
 
+  // -----------------------------
+  // Token mode accounting (18 decimals)
+  // -----------------------------
+  const amountWei = useMemo(() => {
+    try {
+      return parseUnits(String(Math.max(0, Math.floor(amount))), 18);
+    } catch {
+      return 0n;
+    }
+  }, [amount]);
+
+  const approvalTargetWei = useMemo(() => {
+    if (approvalPolicy.kind === "unlimited") return (2n ** 256n - 1n);
+    return parseUnits(String(Math.max(1, Math.floor(approveCapDtc))), 18);
+  }, [approvalPolicy, approveCapDtc]);
+
+  const { data: allowanceWei, refetch: refetchAllowance } = useReadContract({
+    abi: ERC20_ABI,
+    address: tokenAddress,
+    functionName: "allowance",
+    args: address && vaultAddress !== zeroAddress ? [address, vaultAddress] : [zeroAddress, zeroAddress],
+    query: { enabled: isConnected && !!address && tokenAddress !== zeroAddress && vaultAddress !== zeroAddress },
+  });
+
+  const hasEnoughAllowance = useMemo(() => {
+    const a = allowanceWei ?? 0n;
+    return a >= amountWei;
+  }, [allowanceWei, amountWei]);
+
   const maxHit = hasStarted && !isFailed && hops >= MAX_HOPS;
 
   // IMPORTANT: allow Cash Out at hop 10
-  const canStart = !hasStarted && amount >= MIN_AMOUNT;
+  const canStart = useMemo(() => {
+    if (hasStarted) return false;
+    if (startPending) return false;
+    if (amount < MIN_AMOUNT) return false;
+
+    if (playMode === "demo") return true;
+
+    // token mode
+    if (!isConnected || !address) return false;
+    if (!allowed) return false;
+    if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) return false;
+    return hasEnoughAllowance;
+  }, [hasStarted, amount, playMode, isConnected, address, allowed, tokenAddress, vaultAddress, hasEnoughAllowance]);
   const canHop = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops < MAX_HOPS;
   const canCashOut = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops > 0; // includes hops==10
 
@@ -484,7 +614,7 @@ export default function PlayPage() {
 
   function sanitizeAndSetAmount(nextRaw: string) {
     // Locked after START
-    if (hasStarted) return;
+    if (hasStarted || startPending) return;
 
     // Keep raw for UX, but sanitize
     const cleaned = nextRaw.replace(/[^\d]/g, "");
@@ -508,14 +638,61 @@ export default function PlayPage() {
   }
 
   function setAmountPreset(v: number) {
-    if (hasStarted) return;
+    if (hasStarted || startPending) return;
     const clamped = clampInt(v, MIN_AMOUNT, MAX_AMOUNT);
     setAmount(clamped);
     setAmountRaw(String(clamped));
   }
 
-  function startRun() {
+  function bytesToHex(bytes: Uint8Array): Hex {
+    let hex = "0x";
+    for (let i = 0; i < bytes.length; i++) {
+      hex += bytes[i].toString(16).padStart(2, "0");
+    }
+    return hex as Hex;
+  }
+
+  function randomSecret32(): Hex {
+    const b = new Uint8Array(32);
+    crypto.getRandomValues(b);
+    return bytesToHex(b);
+  }
+
+  async function approveNow() {
+    if (!isConnected || !address) return;
+    if (!allowed) {
+      setTxError("Unsupported network. Switch to Linea or Base.");
+      setStartPending(false);
+      return;
+    }
+    if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) {
+      setTxError("Missing token/vault address for this chain.");
+      return;
+    }
+    try {
+      if (!publicClient) throw new Error("No public client");
+      setTxError("");
+      setTxStatus("Approving DTC…");
+      const hash = await writeContractAsync({
+        abi: ERC20_ABI,
+        address: tokenAddress,
+        functionName: "approve",
+        args: [vaultAddress, approvalTargetWei],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+      await refetchAllowance();
+      setTxStatus("Approved.");
+      window.setTimeout(() => setTxStatus(""), 1200);
+    } catch (e: any) {
+      setTxStatus("");
+      setTxError(e?.shortMessage || e?.message || "Approve failed");
+    }
+  }
+
+  async function startRun() {
     if (!canStart) return;
+    if (startPending) return;
+    setStartPending(true);
 
     // Ensure amount is valid
     const clamped = clampInt(amount || MIN_AMOUNT, MIN_AMOUNT, MAX_AMOUNT);
@@ -525,111 +702,284 @@ export default function PlayPage() {
     // Remember this amount for PLAY AGAIN
     lastStartedAmountRef.current = clamped;
 
-    setHasStarted(true);
-    setOutcome("idle");
-    setOutcomeText("");
+    // Clear previous on-chain state
+    setActiveGameId(null);
+    setActiveUserSecret(null);
+    setActiveRandAnchor(null);
+    setSettledPayoutWei(null);
+    setSettledWon(null);
+    setTxError("");
 
-    // ✅ START sound
-    playSound("start");
+    if (playMode === "demo") {
+      setHasStarted(true);
+      setOutcome("idle");
+      setOutcomeText("");
 
-    // Mobile: bring the board into view (not the buttons)
-    window.setTimeout(() => scrollToBoard(), 60);
-  }
+      // ✅ START sound
+      playSound("start");
 
-  function hopOnce() {
-    if (!canHop) return;
-
-    // ✅ HOP sound (action feedback)
-    playSound("hop");
-
-    const u = xorshift32(rngState);
-    const roll = uint32ToRoll(u);
-
-    // Success test uses exact probability (NOT rounded UI)
-    const successPct = stepSuccessPctExact;
-    const passed = roll <= successPct;
-
-    setRngState(u);
-    setLastRoll(roll);
-    setLastAttemptHop(nextHopNo);
-    setLastRequiredPct(successPct);
-
-    setHopPulse(true);
-    window.setTimeout(() => setHopPulse(false), 160);
-
-    if (!passed) {
-      setIsFailed(true);
-      setOutcome("bust");
-      setOutcomeText(
-        `Failed on hop ${nextHopNo}. Roll ${roll.toFixed(3)} > ${successPct.toFixed(6)}%.`
-      );
-
-      setFailFlash(true);
-      window.setTimeout(() => setFailFlash(false), 380);
-
-      // ✅ BUSTED sound
-      playSound("busted");
-
-      triggerAnim("hop_fail");
-
-      window.setTimeout(() => scrollToBoard(), 80);
+      window.setTimeout(() => scrollToBoard(), 60);
+      setStartPending(false);
       return;
     }
 
-    // Passed
-    const completedHop = nextHopNo;
-    setHops(completedHop);
-
-    const newMult = multTable[nextHopIndex];
-    setCurrentMult(newMult);
-
-    setOutcome("success");
-    setOutcomeText(
-      `Hop ${completedHop} cleared. Roll ${roll.toFixed(3)} ≤ ${successPct.toFixed(
-        6
-      )}%. Cash Out now: ${fmtX(newMult)}.`
-    );
-
-    setPoppedHop(completedHop);
-    window.setTimeout(() => setPoppedHop(null), 420);
-
-    triggerAnim("hop_ok");
-
-    // MAX HIT reached
-    if (completedHop >= MAX_HOPS) {
-      setOutcome("maxhit");
-      setOutcomeText(
-        `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`
-      );
-
-      // ✅ MAXHIT sound, then WIN right after
-      playSound("maxhit");
-      if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
-      winTimerRef.current = window.setTimeout(() => {
-        playSound("win");
-        winTimerRef.current = null;
-      }, 450);
-
-      triggerAnim("max_hit");
+    // TOKEN MODE: createGame() at START
+    if (!isConnected || !address) {
+      setTxError("Connect your wallet first.");
+      setStartPending(false);
+      return;
+    }
+    if (!allowed) {
+      setTxError("Unsupported network. Switch to Linea or Base.");
+      return;
     }
 
-    window.setTimeout(() => scrollToBoard(), 90);
+    try {
+      if (!publicClient) throw new Error("No public client");
+      const userSecret = randomSecret32();
+      const userCommit = keccak256(userSecret);
+      setActiveUserSecret(userSecret);
+
+      // Use secret as a UX seed (purely for animation/demo rolls)
+      const seed32 = Number(BigInt(userSecret) & 0xffffffffn);
+      setRngState(seed32 >>> 0);
+
+      const modeEnum = modeKey === "safe" ? 0 : modeKey === "wild" ? 1 : 2;
+
+      setTxStatus("Confirm in wallet…");
+      const hash = await writeContractAsync({
+        abi: LILYPAD_VAULT_ABI,
+        address: vaultAddress,
+        functionName: "createGame",
+        args: [amountWei, modeEnum, userCommit],
+      });
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+
+      // Extract gameId + randAnchor from GameCreated event
+      let gameId: Hex | null = null;
+      let randAnchor: Hex | null = null;
+      for (const log of receipt.logs) {
+        try {
+          const decoded = decodeEventLog({
+            abi: LILYPAD_VAULT_ABI,
+            data: log.data,
+            topics: log.topics,
+          });
+          if (decoded.eventName === "GameCreated") {
+            gameId = decoded.args.gameId as Hex;
+            randAnchor = (decoded.args.randAnchor as Hex) ?? null;
+            break;
+          }
+        } catch {}
+      }
+      if (!gameId) throw new Error("GameCreated event not found in receipt.");
+
+      setActiveGameId(gameId);
+      setActiveRandAnchor(randAnchor);
+      setHasStarted(true);
+      setOutcome("idle");
+      setOutcomeText("Game started on-chain. Hop in the UI, then Cash Out to settle.");
+
+      playSound("start");
+      setTxStatus("On-chain game started.");
+      window.setTimeout(() => setTxStatus(""), 1400);
+      window.setTimeout(() => scrollToBoard(), 60);
+      setStartPending(false);
+    } catch (e: any) {
+      setTxStatus("");
+      setTxError(e?.shortMessage || e?.message || "createGame failed");
+      setStartPending(false);
+    }
+  }
+
+  
+function hopOnce() {
+  if (!canHop) return;
+
+  // ✅ HOP sound (action feedback)
+  playSound("hop");
+
+  let rollPct: number;
+  let passed: boolean;
+  let requiredPct: number;
+
+  if (playMode === "token") {
+    if (!tokenSeed) {
+      setTxError("Missing token seed. Please START again.");
+      return;
+    }
+
+    // Solidity: r = uint256(keccak256(abi.encodePacked(seed, hopNo))) % 10000
+    const hopNo = nextHopNo;
+    const h = keccak256(encodePacked(["bytes32", "uint8"], [tokenSeed, hopNo])) as Hex;
+    const rBps = Number(BigInt(h) % 10000n); // 0..9999
+    rollPct = rBps / 100;
+
+    const pBps = modeKey === "safe" ? 9000 : modeKey === "wild" ? 8200 : 6900;
+    requiredPct = pBps / 100;
+    passed = rBps < pBps; // Solidity uses r >= p => fail
+  } else {
+    const u = xorshift32(rngState);
+    rollPct = uint32ToRoll(u);
+
+    requiredPct = stepSuccessPctExact;
+    passed = rollPct <= requiredPct;
+
+    setRngState(u);
+  }
+
+  setLastRoll(rollPct);
+  setLastAttemptHop(nextHopNo);
+  setLastRequiredPct(requiredPct);
+
+  setHopPulse(true);
+  window.setTimeout(() => setHopPulse(false), 160);
+
+  if (!passed) {
+    setIsFailed(true);
+    setOutcome("bust");
+    setOutcomeText(
+      `Failed on hop ${nextHopNo}. Roll ${rollPct.toFixed(3)} > ${requiredPct.toFixed(6)}%.`
+    );
+
+    setFailFlash(true);
+    window.setTimeout(() => setFailFlash(false), 380);
+
+    // ✅ BUSTED sound
+    playSound("busted");
+
+    triggerAnim("hop_fail");
+
+    window.setTimeout(() => scrollToBoard(), 80);
+
+    // IMPORTANT (per spec): do NOT auto-send any transaction on bust.
+    // The run ends in UI. On-chain game can be refunded after deadline via refund().
+    return;
+  }
+
+  // Passed
+  const completedHop = nextHopNo;
+  setHops(completedHop);
+
+  const newMult = multTable[nextHopIndex];
+  setCurrentMult(newMult);
+
+  setOutcome("success");
+  setOutcomeText(
+    `Hop ${completedHop} cleared. Roll ${rollPct.toFixed(3)} ≤ ${requiredPct.toFixed(
+      6
+    )}%. Cash Out now: ${fmtX(newMult)}.`
+  );
+
+  setPoppedHop(completedHop);
+  window.setTimeout(() => setPoppedHop(null), 420);
+
+  triggerAnim("hop_ok");
+
+  // MAX HIT reached
+  if (completedHop >= MAX_HOPS) {
+    setOutcome("maxhit");
+    setOutcomeText(
+      `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`
+    );
+
+    // ✅ MAXHIT sound, then WIN right after
+    playSound("maxhit");
+    if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
+    winTimerRef.current = window.setTimeout(() => {
+      playSound("win");
+      winTimerRef.current = null;
+    }, 450);
+
+    triggerAnim("max_hit");
+  }
+
+  window.setTimeout(() => scrollToBoard(), 90);
+}
+async function settleOnChain(cashoutHop: number) {
+    try {
+      if (!publicClient) throw new Error("No public client");
+      if (playMode !== "token") return;
+      if (!isConnected || !address) return;
+      if (!allowed) {
+        setTxError("Unsupported network. Switch to Linea or Base.");
+        return;
+      }
+      if (!activeGameId || !activeUserSecret) {
+        setTxError("Missing on-chain game state. Please start again.");
+        return;
+      }
+      setTxError("");
+      setTxStatus("Settling on-chain…");
+
+      const hash = await writeContractAsync({
+        abi: LILYPAD_VAULT_ABI,
+        address: vaultAddress,
+        functionName: "cashOut",
+        args: [activeGameId, activeUserSecret, cashoutHop],
+      });
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+
+      // Extract GameSettled
+      let payout: bigint | null = null;
+      let won: boolean | null = null;
+      for (const log of receipt.logs) {
+        try {
+          const decoded = decodeEventLog({ abi: LILYPAD_VAULT_ABI, data: log.data, topics: log.topics });
+          if (decoded.eventName === "GameSettled") {
+            payout = decoded.args.payout as bigint;
+            won = decoded.args.won as boolean;
+            break;
+          }
+        } catch {}
+      }
+
+      setSettledPayoutWei(payout);
+      setSettledWon(won);
+
+      const payoutDtc = payout !== null ? Number(formatUnits(payout, 18)) : null;
+
+      // Mark as ended only after settle succeeds
+      setIsCashedOut(true);
+      if (payout && payout > 0n) {
+        setOutcome("cashout");
+        setOutcomeText(
+          `Settled on-chain at hop ${cashoutHop}. Payout: ${payoutDtc?.toLocaleString("en-US", { maximumFractionDigits: 4 })} DTC.`
+        );
+        playSound("cashout");
+        triggerAnim("cash_out");
+      } else {
+        setOutcome("bust");
+        setOutcomeText(`Settled on-chain at hop ${cashoutHop}. Payout: 0 DTC.`);
+        playSound("busted");
+        triggerAnim("hop_fail");
+      }
+
+      setTxStatus("Settled.");
+      window.setTimeout(() => setTxStatus(""), 1400);
+      window.setTimeout(() => scrollToBoard(), 90);
+    } catch (e: any) {
+      setTxStatus("");
+      setTxError(e?.shortMessage || e?.message || "cashOut failed");
+    }
   }
 
   function cashOut() {
     if (!canCashOut) return;
 
+    if (playMode === "token") {
+      void settleOnChain(hops);
+      return;
+    }
+
+    // DEMO
     setIsCashedOut(true);
     setOutcome("cashout");
-    setOutcomeText(
-      `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`
-    );
-
-    // ✅ CASHOUT sound
+    setOutcomeText(`Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`);
     playSound("cashout");
-
     triggerAnim("cash_out");
-
     window.setTimeout(() => scrollToBoard(), 90);
   }
 
@@ -991,7 +1341,7 @@ export default function PlayPage() {
               <div className="flex w-full max-w-xl items-center justify-between rounded-2xl border border-neutral-800 bg-neutral-900/40 p-1">
                 {CHAIN_LIST.map((c) => {
                   const isSelected = c.key === selectedChainKey;
-                  const isDisabled = c.enabled === false;
+                  const isDisabled = c.enabled === false || (hasStarted && !ended);
 
                   return (
                     <button
@@ -999,9 +1349,15 @@ export default function PlayPage() {
                       type="button"
                       onClick={() => {
                         if (isDisabled) return;
+                        if ((hasStarted && !ended) || startPending) return;
                         setSelectedChainKey(c.key);
+                        if (isConnected && switchChain) {
+                          try {
+                            switchChain({ chainId: c.chainId });
+                          } catch {}
+                        }
                       }}
-                      disabled={isDisabled}
+                      disabled={isDisabled || ((hasStarted && !ended) || startPending)}
                       className={[
                         "flex flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
                         isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-neutral-800/40",
@@ -1052,11 +1408,121 @@ export default function PlayPage() {
               style={isFailed ? { animation: "failShake 420ms ease-out" } : undefined}
             >
               <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-neutral-100">Demo Controls</div>
-                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
-                  DEMO
+                <div className="text-sm font-semibold text-neutral-100">Controls</div>
+                <span
+                  className={[
+                    "rounded-full px-2 py-0.5 text-xs font-semibold ring-1",
+                    playMode === "token"
+                      ? "bg-emerald-500/10 text-emerald-200 ring-emerald-500/20"
+                      : "bg-neutral-800/50 text-neutral-200 ring-neutral-700",
+                  ].join(" ")}
+                >
+                  {playMode === "token" ? "TOKEN" : "DEMO"}
                 </span>
               </div>
+
+              {/* Wallet / Play mode */}
+              <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-200">Wallet</div>
+                    <div suppressHydrationWarning className="mt-0.5 text-[11px] text-neutral-500">
+                      {mounted && isConnected && address
+                        ? `Connected: ${address.slice(0, 6)}…${address.slice(-4)}`
+                        : "Not connected"}
+                    </div>
+                    {isConnected ? (
+                      <div className="mt-0.5 text-[11px] text-neutral-500">
+                        Network: {CHAIN_LIST.find((c) => c.chainId === effectiveChainId)?.name ?? "—"}
+                        {!allowed ? " (unsupported)" : ""}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {isConnected ? (
+                    <button
+                      type="button"
+                      onClick={() => disconnect()}
+                      className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-extrabold text-neutral-200 hover:bg-neutral-800/60"
+                    >
+                      DISCONNECT
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => connect({ connector: connectors[0] })}
+                      disabled={connectPending}
+                      className={[
+                        "rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
+                        connectPending
+                          ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
+                          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15",
+                      ].join(" ")}
+                    >
+                      {connectPending ? "CONNECTING…" : "CONNECT"}
+                    </button>
+                  )}
+                </div>
+
+                {isConnected ? (
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if ((hasStarted && !ended) || startPending) return;
+                        setPlayMode("demo");
+                      }}
+                      disabled={(hasStarted && !ended) || startPending}
+                      className={[
+                        "flex-1 rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
+                        playMode === "demo"
+                          ? "border-neutral-700 bg-neutral-800 text-neutral-50"
+                          : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
+                      ].join(" ")}
+                    >
+                      DEMO
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if ((hasStarted && !ended) || startPending) return;
+                        setPlayMode("token");
+                      }}
+                      disabled={(hasStarted && !ended) || startPending}
+                      className={[
+                        "flex-1 rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
+                        playMode === "token"
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                          : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
+                      ].join(" ")}
+                    >
+                      TOKEN
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-3 text-[11px] text-neutral-500">
+                    Demo is always available. Connect to play with real transfers.
+                  </div>
+                )}
+
+                {isConnected && !allowed ? (
+                  <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] text-amber-200">
+                    Unsupported network. Switch to Linea or Base.
+                  </div>
+                ) : null}
+              </div>
+
+              {txStatus ? (
+                <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[11px] text-neutral-200">
+                  {txStatus}
+                </div>
+              ) : null}
+
+              {txError ? (
+                <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[11px] text-red-200">
+                  {txError}
+                </div>
+              ) : null}
 
               {/* Sound toggle */}
               <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
@@ -1112,7 +1578,7 @@ export default function PlayPage() {
                         key={r.key}
                         type="button"
                         onClick={() => {
-                          if (hasStarted) return;
+                          if (hasStarted || startPending) return;
                           setModeKey(r.key);
                         }}
                         className={[
@@ -1122,7 +1588,7 @@ export default function PlayPage() {
                             ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                             : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
                         ].join(" ")}
-                        disabled={hasStarted}
+                        disabled={hasStarted || startPending}
                       >
                         {r.label}
                       </button>
@@ -1140,7 +1606,7 @@ export default function PlayPage() {
                   onChange={(e) => sanitizeAndSetAmount(e.target.value)}
                   inputMode="numeric"
                   placeholder={`${MIN_AMOUNT}`}
-                  disabled={hasStarted}
+                  disabled={hasStarted || startPending}
                   className={[
                     "mt-2 w-full rounded-xl border bg-neutral-900 px-4 py-3 text-sm text-neutral-50 outline-none ring-0 placeholder:text-neutral-600",
                     hasStarted
@@ -1153,7 +1619,7 @@ export default function PlayPage() {
                   <button
                     type="button"
                     onClick={() => setAmountPreset(1_000)}
-                    disabled={hasStarted}
+                    disabled={hasStarted || startPending}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
                       hasStarted
@@ -1166,7 +1632,7 @@ export default function PlayPage() {
                   <button
                     type="button"
                     onClick={() => setAmountPreset(5_000)}
-                    disabled={hasStarted}
+                    disabled={hasStarted || startPending}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
                       hasStarted
@@ -1179,7 +1645,7 @@ export default function PlayPage() {
                   <button
                     type="button"
                     onClick={() => setAmountPreset(12_000)}
-                    disabled={hasStarted}
+                    disabled={hasStarted || startPending}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
                       hasStarted
@@ -1194,6 +1660,47 @@ export default function PlayPage() {
                 <div className="mt-2 text-xs text-neutral-500">
                   Max game = {fmtInt(MAX_AMOUNT)} <DtcIcon size={12} />
                 </div>
+
+                {playMode === "token" ? (
+                  <>
+                    <ApprovalToggle
+                      chainId={effectiveChainId}
+                      wallet={(address ?? null) as any}
+                      amountDtc={amount}
+                      maxAmountDtc={MAX_AMOUNT}
+                      onPolicyChange={(p) => setApprovalPolicy(p)}
+                    />
+
+                    <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-xs font-semibold text-neutral-200">Allowance</div>
+                          <div className="mt-0.5 text-[11px] text-neutral-500">
+                            {hasEnoughAllowance ? "✅ Sufficient" : "⚠️ Needs approval"}
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={approveNow}
+                          disabled={!isConnected || !address || !allowed || hasEnoughAllowance}
+                          className={[
+                            "rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
+                            !isConnected || !address || !allowed || hasEnoughAllowance
+                              ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
+                              : "border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15",
+                          ].join(" ")}
+                        >
+                          APPROVE
+                        </button>
+                      </div>
+
+                      <div className="mt-2 text-[11px] text-neutral-500">
+                        Token Mode settles on-chain at Cash Out (or on Bust). The hop animation is UX-only.
+                      </div>
+                    </div>
+                  </>
+                ) : null}
                 <div className="mt-1 text-xs text-neutral-600">
                   {hasStarted ? "Locked after START." : "Set before START."}
                 </div>
