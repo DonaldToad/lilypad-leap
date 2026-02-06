@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/TopNav";
+
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 import OutcomeBoard from "../components/OutcomeBoard";
 
@@ -1178,7 +1179,13 @@ export default function PlayPage() {
         />
       ) : null}
 
-      <TopNav />
+      <TopNav
+  playMode={playMode}
+  setPlayMode={setPlayMode}
+  soundOn={soundOn}
+  setSoundOn={setSoundOn}
+  controlsLocked={(hasStarted && !ended) || startPending}
+/>
 
       <section className="mx-auto w-full max-w-6xl px-4 py-10">
         <div className="rounded-3xl border border-neutral-800 bg-neutral-900/30 p-6">

@@ -1,4 +1,3 @@
-
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -15,64 +14,120 @@ export default function ApprovalToggle(props: {
   const { chainId, wallet, amountDtc, maxAmountDtc, onPolicyChange } = props;
 
   const fallbackCap = useMemo(() => {
-    // sensible default: max of current amount and maxAmountDtc
     return Math.max(1, Math.min(maxAmountDtc, Math.max(amountDtc, 1)));
   }, [amountDtc, maxAmountDtc]);
 
   const [mode, setMode] = useState<ApprovalMode>("unlimited");
   const [capDtc, setCapDtc] = useState<number | null>(null);
 
-  // load saved prefs (per chain + wallet)
   useEffect(() => {
     if (!wallet || !chainId) return;
     const pref = loadApprovalPrefs(chainId, wallet);
-    setMode(pref.mode);
-    setCapDtc(pref.capDtc);
+    setMode(pref?.mode === "limited" ? "limited" : "unlimited");
+    setCapDtc(pref?.capDtc ?? null);
   }, [chainId, wallet]);
 
-  // whenever settings change, persist + notify parent
   useEffect(() => {
     if (!wallet || !chainId) return;
     saveApprovalPrefs(chainId, wallet, mode, capDtc);
     onPolicyChange(toPolicy(mode, capDtc, fallbackCap));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chainId, wallet, mode, capDtc, fallbackCap]);
 
-  const capValue = capDtc ?? fallbackCap;
+  const capValue = Math.max(1, Math.min(maxAmountDtc, capDtc ?? fallbackCap));
+
+  const base =
+    "rounded-xl border px-3 py-3 transition text-left";
+
+  const activeUnlimited =
+    "border-emerald-500/30 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_0_18px_rgba(16,185,129,0.08)]";
+
+  const activeLimited =
+    "border-amber-500/30 bg-amber-500/10 shadow-[0_0_0_1px_rgba(245,158,11,0.15),0_0_14px_rgba(245,158,11,0.08)]";
+
+  const inactive =
+    "border-neutral-800 bg-neutral-950/30 hover:bg-neutral-900/40 opacity-90";
 
   return (
-    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-semibold">Approval</div>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setMode("limited")}
-            className={`rounded-lg px-3 py-1 text-xs font-semibold ${
-              mode === "limited" ? "bg-white/15" : "bg-white/5 hover:bg-white/10"
-            }`}
-          >
-            LIMITED
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("unlimited")}
-            className={`rounded-lg px-3 py-1 text-xs font-semibold ${
-              mode === "unlimited" ? "bg-white/15" : "bg-white/5 hover:bg-white/10"
-            }`}
-          >
-            UNLIMITED
-          </button>
-        </div>
+    <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-900/20 p-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-extrabold text-neutral-100">Approval</div>
+        <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-200">
+          Recommended
+        </span>
       </div>
 
-      {mode === "limited" && (
-        <div className="mt-2">
-          <div className="text-xs text-white/70">
-            Approve up to a cap (DTC). Safer than unlimited approvals.
+      {/* UNLIMITED (primary) */}
+      <button
+        type="button"
+        onClick={() => setMode("unlimited")}
+        className={[
+          base,
+          "mt-2",
+          mode === "unlimited" ? activeUnlimited : inactive,
+        ].join(" ")}
+      >
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-extrabold text-neutral-50">
+            UNLIMITED
           </div>
 
+          <div className="flex items-center gap-2">
+            <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-200">
+              less gas
+            </span>
+
+            <span
+              className={[
+                "h-5 w-5 rounded-full border flex items-center justify-center text-[11px] font-black",
+                mode === "unlimited"
+                  ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-200"
+                  : "border-neutral-800 bg-neutral-900 text-neutral-400",
+              ].join(" ")}
+            >
+              ✓
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-1 text-[11px] text-neutral-400">
+          One approval. Smooth gameplay.
+        </div>
+      </button>
+
+      {/* LIMITED (secondary) */}
+      <button
+        type="button"
+        onClick={() => setMode("limited")}
+        className={[
+          base,
+          "mt-2",
+          mode === "limited" ? activeLimited : inactive,
+        ].join(" ")}
+      >
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-extrabold text-neutral-50">
+            LIMITED
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-200">
+              safer
+            </span>
+
+            <span
+              className={[
+                "h-5 w-5 rounded-full border flex items-center justify-center text-[11px] font-black",
+                mode === "limited"
+                  ? "border-amber-500/30 bg-amber-500/15 text-amber-200"
+                  : "border-neutral-800 bg-neutral-900 text-neutral-400",
+              ].join(" ")}
+            >
+              ✓
+            </span>
+          </div>
+        </div>
+
+        {mode === "limited" && (
           <div className="mt-2 flex items-center gap-2">
             <input
               type="number"
@@ -87,22 +142,18 @@ export default function ApprovalToggle(props: {
                 }
                 setCapDtc(Math.max(1, Math.min(maxAmountDtc, n)));
               }}
-              className="w-32 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none"
+              className="w-24 rounded-lg border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-50 outline-none focus:border-neutral-700"
             />
-            <div className="text-xs text-white/60">max {maxAmountDtc.toLocaleString()} DTC</div>
+            <div className="text-[10px] text-neutral-500">
+              max {maxAmountDtc.toLocaleString()}
+            </div>
           </div>
+        )}
+      </button>
 
-          <div className="mt-2 text-xs text-white/60">
-            Current cap: <span className="text-white/80">{capValue.toLocaleString()} DTC</span>
-          </div>
-        </div>
-      )}
-
-      {mode === "unlimited" && (
-        <div className="mt-2 text-xs text-white/70">
-          Unlimited approvals are convenient but riskier. Use LIMITED if you prefer tighter control.
-        </div>
-      )}
+      <div className="mt-2 text-[10px] text-neutral-500">
+        Unlimited = fewer approvals. Limited = tighter control.
+      </div>
     </div>
   );
 }
