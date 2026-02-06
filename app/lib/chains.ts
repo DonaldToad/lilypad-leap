@@ -12,6 +12,7 @@ export type AppChain = {
 
   // Used in swap page UI
   swapLabel?: string;
+  swapUrl?: string;
 
   // Used by app/page.tsx
   explorerBaseUrl?: string; // e.g. https://basescan.org
@@ -26,7 +27,9 @@ export const CHAIN_LIST: AppChain[] = [
     statusTag: "LIVE",
     isPrimary: true,
     note: "Linea mainnet (primary chain).",
-    swapLabel: "Swap $DTC on Linea (Lynex / DEX)",
+    swapLabel: "Swap $DTC on Linea",
+    // Replace with your exact pool URL if you have it
+    swapUrl: "https://lynex.fi",
     explorerBaseUrl: "https://lineascan.build",
   },
   {
@@ -37,6 +40,8 @@ export const CHAIN_LIST: AppChain[] = [
     statusTag: "LIVE",
     note: "Base mainnet.",
     swapLabel: "Swap $DTC on Base",
+    // Replace with your exact DEX/pool URL if you have it
+    swapUrl: "https://app.uniswap.org",
     explorerBaseUrl: "https://basescan.org",
   },
 ];
