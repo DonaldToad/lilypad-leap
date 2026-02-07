@@ -1,22 +1,60 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
-import { useAccount, useConnect, useSwitchChain } from "wagmi";
+import dynamic from "next/dynamic";
+import TopNav from "../components/TopNav";
+import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
+
+import { useEffect, useMemo, useState } from "react";
+import { useAccount, useConnect, useWalletClient, useSwitchChain } from "wagmi";
 import { mainnet, linea, base, arbitrum, optimism } from "wagmi/chains";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { RelayKitProvider, SwapWidget } from "@relayprotocol/relay-kit-ui";
-import { MAINNET_RELAY_API, convertViemChainToRelayChain } from "@relayprotocol/relay-sdk";
+import {
+  MAINNET_RELAY_API,
+  convertViemChainToRelayChain,
+  createClient,
+} from "@relayprotocol/relay-sdk";
 
+// Relay UI must be client-only
+const RelayKitProviderNoSSR = dynamic(
+  () => import("@relayprotocol/relay-kit-ui").then((m) => m.RelayKitProvider),
+  { ssr: false }
+);
+const SwapWidgetNoSSR = dynamic(
+  () => import("@relayprotocol/relay-kit-ui").then((m) => m.SwapWidget),
+  { ssr: false }
+);
+
+function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
+  const src = `/chains/${chainKey}.png`;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      width={28}
+      height={28}
+      className="h-7 w-7 rounded-lg ring-1 ring-neutral-800"
+      loading="lazy"
+      decoding="async"
+    />
+  );
+}
+
+// Keep QueryClient stable
 const queryClient = new QueryClient();
 
 const LINEA_CHAIN_ID = 59144;
 const NATIVE = "0x0000000000000000000000000000000000000000";
 const DTC = "0xEb1fD1dBB8aDDA4fa2b5A5C4bcE34F6F20d125D2";
 
+// External CTA only (not Relay)
+const FORCED_LINEA_SWAP_URL =
+  "https://app.wowmax.exchange/swap/59144/0x0000000000000000000000000000000000000000/0xeb1fd1dbb8adda4fa2b5a5c4bce34f6f20d125d2";
+
 const ETH_LOGO =
   "https://cdn.jsdelivr.net/gh/trustwallet/assets@master/blockchains/ethereum/info/logo.png";
-const DTC_LOGO = "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
+const DTC_LOGO =
+  "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
 
 type RelayCurrency = {
   chainId: number;
@@ -33,7 +71,11 @@ type RelayCurrency = {
   };
 };
 
-function withLogo(c: RelayCurrency, logoURI: string, extra?: Partial<RelayCurrency>): RelayCurrency {
+function withLogo(
+  c: RelayCurrency,
+  logoURI: string,
+  extra?: Partial<RelayCurrency>
+): RelayCurrency {
   return {
     ...c,
     ...(extra ?? {}),
@@ -46,10 +88,58 @@ function withLogo(c: RelayCurrency, logoURI: string, extra?: Partial<RelayCurren
   };
 }
 
+/**
+ * RelayKit wallet adapter (works with relay-kit-ui v7.x)
+ * Provide EIP-1193 `request` + address/chain getters.
+ */
+function toRelayWallet(walletClient: any) {
+  if (!walletClient) return undefined;
+
+  const request = (args: { method: string; params?: any }) =>
+    walletClient.request(args);
+
+  const getChainId = async () => walletClient.chain?.id;
+  const getAddress = async () => walletClient.account?.address;
+
+  return {
+    getChainId,
+    getAddress,
+    request,
+  };
+}
+
 export default function RelaySwapClient() {
-  const { isConnected, chainId } = useAccount();
+  const { isConnected, chainId, address } = useAccount();
   const { connect, connectors } = useConnect();
+  const { data: walletClient } = useWalletClient();
   const { switchChainAsync } = useSwitchChain();
+
+  // Hydration-safe UI bits
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // Init Relay SDK client once (client-side)
+  useEffect(() => {
+    const g = globalThis as any;
+    if (g.__RELAY_CLIENT_READY__) return;
+    g.__RELAY_CLIENT_READY__ = true;
+
+    try {
+      createClient({
+        baseApiUrl: MAINNET_RELAY_API,
+        source: "donaldtoad.com",
+        chains: [
+          convertViemChainToRelayChain(mainnet),
+          convertViemChainToRelayChain(linea),
+          convertViemChainToRelayChain(base),
+          convertViemChainToRelayChain(arbitrum),
+          convertViemChainToRelayChain(optimism),
+        ],
+      } as any);
+    } catch (e) {
+      console.warn("Relay createClient init failed:", e);
+    }
+  }, []);
 
   const relayChains = useMemo(() => {
     return [
@@ -61,7 +151,9 @@ export default function RelaySwapClient() {
     ];
   }, []);
 
-  // Defaults: ETH(Linea) -> DTC(Linea)
+  const relayWallet = useMemo(() => toRelayWallet(walletClient), [walletClient]);
+
+  // Defaults: ETH (Linea) -> DTC (Linea)
   const [fromToken, setFromToken] = useState<RelayCurrency>(() =>
     withLogo(
       {
@@ -70,6 +162,7 @@ export default function RelaySwapClient() {
         decimals: 18,
         name: "Ether",
         symbol: "ETH",
+        vmType: "evm",
         metadata: { isNative: true },
       },
       ETH_LOGO
@@ -84,89 +177,205 @@ export default function RelaySwapClient() {
         decimals: 18,
         name: "Donald Toad Coin",
         symbol: "DTC",
+        vmType: "evm",
       },
       DTC_LOGO
     )
   );
 
-  // ✅ Fix for: "Current chain id X does not match expected chain id Y"
-  // Whenever user changes FROM chain, switch wallet to that chain (best-effort).
-  useEffect(() => {
-    if (!isConnected) return;
-    const expected = fromToken?.chainId;
-    if (!expected) return;
-    if (!chainId) return;
-    if (chainId === expected) return;
-
-    (async () => {
-      try {
-        await switchChainAsync({ chainId: expected });
-      } catch (e) {
-        // Non-fatal: widget will surface the mismatch if user refuses switching
-        console.warn("Wallet refused chain switch:", e);
-      }
-    })();
-  }, [isConnected, chainId, fromToken?.chainId, switchChainAsync]);
-
-  const onConnectWallet = useCallback(() => {
+  const onConnectWallet = () => {
     if (isConnected) return;
     const first = connectors?.[0];
     if (first) connect({ connector: first });
-  }, [isConnected, connectors, connect]);
+  };
+
+  // Auto-switch wallet chain if Relay complains about chain mismatch
+  const handleSwapError = async (e: any) => {
+    console.error("Relay swap error:", e);
+
+    const msg = typeof e === "string" ? e : e?.message ?? "";
+    const m = msg.match(/expected chain id:\s*(\d+)/i);
+    if (!m) return;
+
+    const expected = Number(m[1]);
+    if (!Number.isFinite(expected)) return;
+
+    try {
+      await switchChainAsync({ chainId: expected });
+    } catch (err) {
+      console.warn("Auto switchChain failed:", err);
+    }
+  };
 
   return (
-    <div className="w-full max-w-[440px] rounded-3xl border border-neutral-800 bg-neutral-950 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
-      {/* Readable quick % chips */}
-      <style jsx>{`
-        .relayWrap {
-          color-scheme: dark;
-        }
-        .relayWrap :global(button) {
-          color-scheme: dark;
-        }
-        .relayWrap :global(button) :global(*) {
-          text-shadow: none;
-        }
-        .relayWrap :global(button[aria-label*="%"]),
-        .relayWrap :global(button[title*="%"]) {
-          color: #0a0a0a !important;
-          background: rgba(255, 255, 255, 0.92) !important;
-          border: 1px solid rgba(0, 0, 0, 0.12) !important;
-        }
-      `}</style>
+    <main className="min-h-screen bg-neutral-950 text-neutral-50">
+      <TopNav />
 
-      <QueryClientProvider client={queryClient}>
-        <RelayKitProvider
-          options={{
-            appName: "Lilypad Leap",
-            themeScheme: "dark",
-            chains: relayChains,
-            baseApiUrl: MAINNET_RELAY_API,
+      <section className="mx-auto w-full max-w-5xl px-4 py-10">
+        <div className="rounded-3xl border border-neutral-800 bg-neutral-900/30 p-6">
+          <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h1 className="text-2xl font-bold">Swap</h1>
+              <p className="mt-2 text-neutral-300">
+                Default: <b>ETH (Linea)</b> → <b>DTC (Linea)</b>. You can switch
+                to any chain/token.
+              </p>
 
-            // Helps Relay analytics + removes “auto-generated source” warnings
-            source: {
-              name: "Lilypad Leap",
-              url: "https://lilypad.donaldtoad.com",
-            } as any,
-          }}
-        >
-          <div className="relayWrap">
-            <SwapWidget
-              supportedWalletVMs={["evm"]}
-              onConnectWallet={onConnectWallet}
-              fromToken={fromToken as any}
-              setFromToken={setFromToken as any}
-              toToken={toToken as any}
-              setToToken={setToToken as any}
-              disableInputAutoFocus
-              onRouteError={(e: any) => console.error("Relay route error:", e)}
-              onSwapError={(e: any) => console.error("Relay swap error:", e)}
-            />
+              <div className="mt-2 text-xs text-neutral-400 break-all">
+                Wallet:{" "}
+                {mounted ? (isConnected ? "connected" : "not connected") : "—"} •{" "}
+                chainId: {mounted ? chainId ?? "—" : "—"} • address:{" "}
+                {mounted ? address ?? "—" : "—"} • walletClient:{" "}
+                {mounted ? (walletClient ? "ok" : "—") : "—"}
+              </div>
+            </div>
+
+            <div className="text-sm text-neutral-400">
+              Primary:{" "}
+              <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
+            </div>
           </div>
-        </RelayKitProvider>
-      </QueryClientProvider>
 
-      <div className="mt-3 text-[11px] text-neutral-500 break-all">Default DTC (Linea): {DTC}</div>
-    </div>
+          {/* Relay widget */}
+          <div className="mt-6 flex justify-center">
+            <div className="w-full max-w-[440px] rounded-3xl border border-neutral-800 bg-neutral-950 p-4">
+              <QueryClientProvider client={queryClient}>
+                <RelayKitProviderNoSSR
+                  options={{
+                    appName: "Lilypad Leap",
+                    chains: relayChains,
+                    baseApiUrl: MAINNET_RELAY_API,
+                    themeScheme: "dark",
+                  }}
+                >
+                  <SwapWidgetNoSSR
+                    supportedWalletVMs={["evm"]}
+                    wallet={relayWallet as any}
+                    onConnectWallet={onConnectWallet}
+                    fromToken={fromToken as any}
+                    setFromToken={setFromToken as any}
+                    toToken={toToken as any}
+                    setToToken={setToToken as any}
+                    disableInputAutoFocus
+                    onSwapError={handleSwapError}
+                  />
+                </RelayKitProviderNoSSR>
+              </QueryClientProvider>
+
+              <div className="mt-3 text-[11px] text-neutral-500 break-all">
+                Default DTC (Linea): {DTC}
+              </div>
+
+              <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-xs text-neutral-400">
+                If swaps fail, check you don’t have multiple wallet extensions
+                fighting over the injected provider (MetaMask + another wallet).
+              </div>
+            </div>
+          </div>
+
+          {/* Chain cards */}
+          <div className="mt-8 grid gap-3">
+            {CHAIN_LIST.map((c) => {
+              const isBaseCard = c.chainId === 8453 || c.key === "base";
+              const isLineaCard = c.chainId === 59144 || c.key === "linea";
+
+              const displayStatus = isBaseCard ? "SOON" : c.statusTag;
+              const swapHref = isLineaCard ? FORCED_LINEA_SWAP_URL : c.swapUrl;
+              const swapDisabled = isBaseCard ? true : !(c.enabled && swapHref);
+
+              return (
+                <div
+                  key={c.key}
+                  className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4"
+                >
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
+                        <div className="flex items-center gap-2">
+                          <div className="text-lg font-semibold">{c.name}</div>
+
+                          <span
+                            className={
+                              displayStatus === "LIVE"
+                                ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/20"
+                                : displayStatus === "SOON"
+                                ? "rounded-full bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-300 ring-1 ring-orange-500/20"
+                                : "rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/20"
+                            }
+                          >
+                            {displayStatus}
+                          </span>
+
+                          {c.isPrimary ? (
+                            <span className="rounded-full bg-neutral-800/60 px-2 py-0.5 text-xs text-neutral-200 ring-1 ring-neutral-700">
+                              PRIMARY
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 text-sm text-neutral-200">
+                        {c.swapLabel}
+                      </div>
+                      <div className="mt-2 text-sm text-neutral-300">{c.note}</div>
+
+                      <div className="mt-3 text-xs text-neutral-500">
+                        Chain ID: {c.chainId}
+                        {c.explorerBaseUrl ? (
+                          <>
+                            {" "}
+                            • Explorer:{" "}
+                            <span className="text-neutral-300">
+                              {c.explorerBaseUrl.replace("https://", "")}
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
+
+                      {isBaseCard ? (
+                        <div className="mt-3 rounded-xl border border-orange-500/20 bg-orange-500/10 p-3 text-xs text-orange-200">
+                          <b>Base swap is coming soon.</b> DTC on Base will be
+                          announced from official Donald Toad Coin accounts only
+                          — beware of impersonators and fake token contracts.
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="flex gap-2">
+                      {!swapDisabled ? (
+                        <a
+                          href={swapHref}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-xl bg-emerald-500 px-4 py-2 text-center text-sm font-semibold text-neutral-950 hover:bg-emerald-400"
+                        >
+                          Open Swap
+                        </a>
+                      ) : (
+                        <button
+                          disabled
+                          className="cursor-not-allowed rounded-xl border border-orange-500/25 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-200"
+                          title={
+                            isBaseCard ? "Base swap coming soon" : "Swap unavailable"
+                          }
+                        >
+                          SOON
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 text-sm text-neutral-300">
+            <b>Note:</b> Relay widget is full aggregator mode; defaults are ETH →
+            DTC on Linea.
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }
