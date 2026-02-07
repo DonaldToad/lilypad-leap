@@ -1,8 +1,9 @@
-﻿import "@relayprotocol/relay-kit-ui/styles.css";
+import type { Metadata } from "next";
 import "./globals.css";
+import "@relayprotocol/relay-kit-ui/styles.css";
 import Providers from "./providers";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Lilypad Leap",
   description: "Donald Toad Coin • Lilypad Leap",
 };
