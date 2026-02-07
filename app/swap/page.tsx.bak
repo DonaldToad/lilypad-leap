@@ -1,14 +1,21 @@
-﻿"use client";
+"use client";
 
 import dynamic from "next/dynamic";
 import TopNav from "../components/TopNav";
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 
 import { useEffect, useMemo, useState } from "react";
-import { useAccount, useConnect, useSwitchChain, useWalletClient } from "wagmi";
+import { useAccount, useConnect, useWalletClient } from "wagmi";
+import { mainnet, linea, base, arbitrum, optimism } from "wagmi/chains";
 
-import { adaptViemWallet } from "@relayprotocol/relay-sdk";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  MAINNET_RELAY_API,
+  convertViemChainToRelayChain,
+  createClient,
+} from "@relayprotocol/relay-sdk";
 
+// Relay UI must be client-only
 const RelayKitProviderNoSSR = dynamic(
   () => import("@relayprotocol/relay-kit-ui").then((m) => m.RelayKitProvider),
   { ssr: false }
@@ -33,10 +40,14 @@ function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
   );
 }
 
+// Keep QueryClient stable
+const queryClient = new QueryClient();
+
 const LINEA_CHAIN_ID = 59144;
 const NATIVE = "0x0000000000000000000000000000000000000000";
 const DTC = "0xEb1fD1dBB8aDDA4fa2b5A5C4bcE34F6F20d125D2";
 
+// External CTA only (not Relay)
 const FORCED_LINEA_SWAP_URL =
   "https://app.wowmax.exchange/swap/59144/0x0000000000000000000000000000000000000000/0xeb1fd1dbb8adda4fa2b5a5c4bce34f6f20d125d2";
 
@@ -77,20 +88,189 @@ function withLogo(
   };
 }
 
+/**
+ * ✅ Relay wallet adapter for relay-kit-ui v7.x + relay-sdk v5.x
+ *
+ * RelayKit/SDK expects (at minimum):
+ * - address(): Promise<string>
+ * - getChainId(): Promise<number>
+ * - request({ method, params? }): Promise<any>  (EIP-1193)
+ * - handleSendTransactionStep(step): Promise<string | { txHash: string }>
+ *
+ * We implement all of those using wagmi/viem WalletClient.
+ */
+function toRelayWallet(walletClient: any) {
+  if (!walletClient) return undefined;
+
+  const request = (args: { method: string; params?: any }) =>
+    walletClient.request(args);
+
+  const address = async () => walletClient.account?.address;
+  const getChainId = async () => walletClient.chain?.id;
+
+  const switchChain = async (chainId: number) => {
+    await request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0x" + chainId.toString(16) }],
+    });
+  };
+
+  // Try to extract an EIP-1559 / legacy tx request from Relay step objects
+  const pickTxFromStep = (step: any) => {
+    // Common patterns we’ve seen in routing SDKs:
+    const candidates = [
+      step?.tx,
+      step?.transaction,
+      step?.data?.tx,
+      step?.data?.transaction,
+      step?.item?.tx,
+      step?.item?.transaction,
+      step?.items?.[0]?.tx,
+      step?.items?.[0]?.transaction,
+      step?.transactionRequest,
+      step?.data?.transactionRequest,
+    ].filter(Boolean);
+
+    for (const tx of candidates) {
+      if (tx?.to) return tx;
+    }
+    return undefined;
+  };
+
+  const normalizeTx = async (tx: any) => {
+    const from = walletClient.account?.address;
+    if (!from) throw new Error("No wallet account available");
+
+    // Relay may pass numbers/BigInt/hex strings; eth_sendTransaction wants hex strings.
+    const toHexQty = (v: any) => {
+      if (v == null) return undefined;
+      if (typeof v === "string") return v; // may already be hex
+      try {
+        const bi = typeof v === "bigint" ? v : BigInt(v);
+        return "0x" + bi.toString(16);
+      } catch {
+        return undefined;
+      }
+    };
+
+    const out: any = {
+      from,
+      to: tx.to,
+      data: tx.data ?? tx.calldata ?? undefined,
+    };
+
+    // value
+    const value = tx.value ?? tx.amount ?? undefined;
+    const vHex = toHexQty(value);
+    if (vHex) out.value = vHex;
+
+    // gas fields (optional)
+    const gas = tx.gas ?? tx.gasLimit ?? undefined;
+    const gasHex = toHexQty(gas);
+    if (gasHex) out.gas = gasHex;
+
+    const gasPrice = tx.gasPrice ?? undefined;
+    const gasPriceHex = toHexQty(gasPrice);
+    if (gasPriceHex) out.gasPrice = gasPriceHex;
+
+    const maxFeePerGas = tx.maxFeePerGas ?? undefined;
+    const maxFeeHex = toHexQty(maxFeePerGas);
+    if (maxFeeHex) out.maxFeePerGas = maxFeeHex;
+
+    const maxPriorityFeePerGas = tx.maxPriorityFeePerGas ?? undefined;
+    const maxPrioHex = toHexQty(maxPriorityFeePerGas);
+    if (maxPrioHex) out.maxPriorityFeePerGas = maxPrioHex;
+
+    // Some SDKs pass chainId in the tx; keep if present
+    if (tx.chainId != null) out.chainId = toHexQty(tx.chainId) ?? tx.chainId;
+
+    return out;
+  };
+
+  const handleSendTransactionStep = async (step: any) => {
+    const tx = pickTxFromStep(step);
+    if (!tx) {
+      throw new Error("Relay step missing transaction data");
+    }
+
+    // If step wants a chain switch, try it
+    const wantedChainId =
+      tx.chainId ?? step?.chainId ?? step?.data?.chainId ?? undefined;
+
+    const current = await getChainId();
+    if (wantedChainId && Number(wantedChainId) !== Number(current)) {
+      await switchChain(Number(wantedChainId));
+    }
+
+    const reqTx = await normalizeTx(tx);
+
+    // Send via EIP-1193
+    const txHash = await request({
+      method: "eth_sendTransaction",
+      params: [reqTx],
+    });
+
+    // Relay SDK usually accepts either string or { txHash }
+    return txHash;
+  };
+
+  return {
+    // Required by RelayKit UI / SDK
+    address,
+    getChainId,
+    request,
+    handleSendTransactionStep,
+
+    // Helpful extras
+    switchChain,
+    getProvider: () => (globalThis as any).ethereum,
+  };
+}
+
 export default function SwapPage() {
-  const { isConnected, chainId, address } = useAccount();
+  const { isConnected, chainId, address: wagmiAddress } = useAccount();
   const { connect, connectors } = useConnect();
-  const { switchChainAsync } = useSwitchChain();
   const { data: walletClient } = useWalletClient();
 
-  // Prevent hydration mismatch in the debug line (server always "not connected")
+  // Prevent hydration mismatch in the debug line
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  // Relay official wallet adapter (fixes: missing wallet, address/getChainId/handleSendTransactionStep, etc.)
-  const relayWallet = useMemo(() => {
-    return walletClient ? (adaptViemWallet(walletClient) as any) : undefined;
-  }, [walletClient]);
+  // Init Relay client once (client-side)
+  useEffect(() => {
+    const g = globalThis as any;
+    if (g.__RELAY_CLIENT_READY__) return;
+    g.__RELAY_CLIENT_READY__ = true;
+
+    try {
+      createClient({
+        baseApiUrl: MAINNET_RELAY_API,
+        source: "donaldtoad.com",
+        chains: [
+          convertViemChainToRelayChain(mainnet),
+          convertViemChainToRelayChain(linea),
+          convertViemChainToRelayChain(base),
+          convertViemChainToRelayChain(arbitrum),
+          convertViemChainToRelayChain(optimism),
+        ],
+      } as any);
+    } catch (e) {
+      console.warn("Relay createClient init failed:", e);
+    }
+  }, []);
+
+  const relayChains = useMemo(
+    () => [
+      convertViemChainToRelayChain(mainnet),
+      convertViemChainToRelayChain(linea),
+      convertViemChainToRelayChain(base),
+      convertViemChainToRelayChain(arbitrum),
+      convertViemChainToRelayChain(optimism),
+    ],
+    []
+  );
+
+  const relayWallet = useMemo(() => toRelayWallet(walletClient), [walletClient]);
 
   // Defaults: ETH (Linea) -> DTC (Linea)
   const [fromToken, setFromToken] = useState<RelayCurrency>(() =>
@@ -125,24 +305,7 @@ export default function SwapPage() {
   const onConnectWallet = () => {
     if (isConnected) return;
     const first = connectors?.[0];
-    if (first) connect({ connector: first });
-  };
-
-  // If Relay complains about chain mismatch, auto-switch to the expected chainId
-  const handleSwapError = async (e: any) => {
-    console.error("Relay swap error:", e);
-
-    const msg = typeof e === "string" ? e : e?.message ?? "";
-    const m = msg.match(/expected chain id:\s*(\d+)/i);
-    const expected = m ? Number(m[1]) : undefined;
-
-    if (expected && expected !== chainId) {
-      try {
-        await switchChainAsync({ chainId: expected });
-      } catch (err) {
-        console.warn("Auto switchChain failed:", err);
-      }
-    }
+    if (first) connect({ connector: first, chainId: LINEA_CHAIN_ID });
   };
 
   return (
@@ -159,34 +322,54 @@ export default function SwapPage() {
                 to any chain/token.
               </p>
 
-              {mounted ? (
-                <div className="mt-2 text-xs text-neutral-400 break-all">
-                  Wallet: {isConnected ? "connected" : "not connected"} • chainId:{" "}
-                  {chainId ?? "—"} • address: {address ?? "—"} • walletClient:{" "}
-                  {walletClient ? "ok" : "—"}
-                </div>
-              ) : null}
+              <div
+                className="mt-2 text-xs text-neutral-400 break-all"
+                suppressHydrationWarning
+              >
+                Wallet:{" "}
+                {mounted ? (isConnected ? "connected" : "not connected") : "—"} •
+                chainId: {mounted ? chainId ?? "—" : "—"} • address:{" "}
+                {mounted ? wagmiAddress ?? "—" : "—"} • walletClient:{" "}
+                {mounted ? (walletClient ? "ok" : "—") : "—"}
+              </div>
             </div>
 
             <div className="text-sm text-neutral-400">
-              Primary: <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
+              Primary:{" "}
+              <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
             </div>
           </div>
 
+          {/* Relay widget */}
           <div className="mt-6 flex justify-center">
-            <div className="w-full max-w-[440px] rounded-3xl border border-neutral-800 bg-neutral-950 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
-              <SwapWidgetNoSSR
-                supportedWalletVMs={["evm"]}
-                wallet={relayWallet}
-                onConnectWallet={onConnectWallet}
-                fromToken={fromToken as any}
-                setFromToken={setFromToken as any}
-                toToken={toToken as any}
-                setToToken={setToToken as any}
-                disableInputAutoFocus
-                onRouteError={(e: any) => console.error("Relay route error:", e)}
-                onSwapError={handleSwapError}
-              />
+            <div className="w-full max-w-[440px] rounded-3xl border border-neutral-800 bg-neutral-950 p-4">
+              <QueryClientProvider client={queryClient}>
+                <RelayKitProviderNoSSR
+                  options={{
+                    appName: "Lilypad Leap",
+                    chains: relayChains,
+                    baseApiUrl: MAINNET_RELAY_API,
+                    themeScheme: "dark",
+                  }}
+                >
+                  <SwapWidgetNoSSR
+                    supportedWalletVMs={["evm"]}
+                    wallet={relayWallet as any}
+                    onConnectWallet={onConnectWallet}
+                    fromToken={fromToken as any}
+                    setFromToken={setFromToken as any}
+                    toToken={toToken as any}
+                    setToToken={setToToken as any}
+                    disableInputAutoFocus
+                    onRouteError={(e: any) =>
+                      console.error("Relay route error:", e)
+                    }
+                    onSwapError={(e: any) =>
+                      console.error("Relay swap error:", e)
+                    }
+                  />
+                </RelayKitProviderNoSSR>
+              </QueryClientProvider>
 
               <div className="mt-3 text-[11px] text-neutral-500 break-all">
                 Default DTC (Linea): {DTC}
@@ -199,6 +382,7 @@ export default function SwapPage() {
             </div>
           </div>
 
+          {/* Chain cards */}
           <div className="mt-8 grid gap-3">
             {CHAIN_LIST.map((c) => {
               const isBaseCard = c.chainId === 8453 || c.key === "base";
@@ -217,7 +401,6 @@ export default function SwapPage() {
                     <div>
                       <div className="flex items-center gap-3">
                         <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
-
                         <div className="flex items-center gap-2">
                           <div className="text-lg font-semibold">{c.name}</div>
 
@@ -244,7 +427,9 @@ export default function SwapPage() {
                       <div className="mt-3 text-sm text-neutral-200">
                         {c.swapLabel}
                       </div>
-                      <div className="mt-2 text-sm text-neutral-300">{c.note}</div>
+                      <div className="mt-2 text-sm text-neutral-300">
+                        {c.note}
+                      </div>
 
                       <div className="mt-3 text-xs text-neutral-500">
                         Chain ID: {c.chainId}
@@ -283,7 +468,9 @@ export default function SwapPage() {
                           disabled
                           className="cursor-not-allowed rounded-xl border border-orange-500/25 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-200"
                           title={
-                            isBaseCard ? "Base swap coming soon" : "Swap unavailable"
+                            isBaseCard
+                              ? "Base swap coming soon"
+                              : "Swap unavailable"
                           }
                         >
                           SOON
@@ -297,7 +484,8 @@ export default function SwapPage() {
           </div>
 
           <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4 text-sm text-neutral-300">
-            <b>Note:</b> Relay widget is full aggregator mode; defaults are ETH → DTC on Linea.
+            <b>Note:</b> Relay widget is full aggregator mode; defaults are ETH →
+            DTC on Linea.
           </div>
         </div>
       </section>

@@ -1,9 +1,8 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-
 import { useAccount, useChainId, useConnect, useDisconnect } from "wagmi";
 
 type PlayMode = "demo" | "token";
@@ -15,7 +14,7 @@ export type TopNavProps = {
   soundOn?: boolean;
   setSoundOn?: React.Dispatch<React.SetStateAction<boolean>>;
 
-  // 🔒 When true: user must not navigate away / disconnect / change mode
+  // Lock changing mode, network (handled in page), and disconnect once game is created
   controlsLocked?: boolean;
 };
 
@@ -59,9 +58,7 @@ export default function TopNav(props: TopNavProps) {
   const pathname = usePathname();
   const { playMode, setPlayMode, soundOn, setSoundOn, controlsLocked } = props;
 
-  // ✅ Hydration-safe mount flag (prevents SSR/CSR mismatches from wallet state)
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
 
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
@@ -76,11 +73,18 @@ export default function TopNav(props: TopNavProps) {
   const demoActive = playMode === "demo";
   const tokenActive = playMode === "token";
 
+  // ✅ When game is active, lock EVERYTHING in the top nav
+  const locked = !!controlsLocked;
+
   // -----------------------------
-  // Mobile-only auto-hide TopNav
+  // Mobile: collapse TopNav on scroll (do NOT disappear)
+  // - At top: full nav
+  // - Scrolled down: compact bar (logo + title + wallet only)
   // -----------------------------
   const [isMobile, setIsMobile] = useState(false);
-  const [hideOnScroll, setHideOnScroll] = useState(false);
+  const [mobileCollapsed, setMobileCollapsed] = useState(false);
+
+  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -93,264 +97,293 @@ export default function TopNav(props: TopNavProps) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    // If not mobile, always show full header.
     if (!isMobile) {
-      setHideOnScroll(false);
+      setMobileCollapsed(false);
       return;
     }
 
     const onScroll = () => {
       const y = window.scrollY || window.pageYOffset || 0;
-      setHideOnScroll(y > 20);
+      // Collapse once you leave the top area
+      setMobileCollapsed(y > 20);
     };
 
     window.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
+
     return () => window.removeEventListener("scroll", onScroll);
   }, [isMobile]);
 
-  const mobileCollapsed = isMobile && hideOnScroll;
+  const WalletPill = ({ compact }: { compact?: boolean }) => (
+    <div
+      className={[
+        "flex items-center gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/30",
+        compact ? "px-2 py-1.5" : "px-2 py-2",
+      ].join(" ")}
+    >
+      {mounted && isConnected && chainKey ? (
+        <img
+          src={`/chains/${chainKey}.png`}
+          alt={chainKey}
+          width={18}
+          height={18}
+          className="h-[18px] w-[18px] rounded-md ring-1 ring-neutral-800"
+          loading="lazy"
+          decoding="async"
+        />
+      ) : null}
 
-  const navPillClass = (active: boolean, locked: boolean) =>
-    [
-      "shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition",
-      "md:px-4 md:py-2 md:text-sm",
-      locked ? "opacity-40 cursor-not-allowed" : "",
-      active
-        ? "border-neutral-700 bg-neutral-800 text-neutral-50"
-        : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
-    ].join(" ");
+      <div className="min-w-0">
+        <div className="text-[10px] font-semibold text-neutral-400 leading-none">Wallet</div>
+        <div className="truncate text-xs font-bold text-neutral-100">
+          {mounted && isConnected && address ? truncateAddr(address) : "Not connected"}
+        </div>
+      </div>
+
+      {mounted && isConnected ? (
+        <button
+          type="button"
+          onClick={() => {
+            if (locked) return;
+            disconnect();
+          }}
+          disabled={locked}
+          title={locked ? "Locked while a game is active" : "Disconnect"}
+          className={[
+            "rounded-xl border px-3 py-2 text-[11px] font-extrabold transition",
+            compact ? "py-1.5" : "py-2",
+            locked
+              ? "border-neutral-800 bg-neutral-900 text-neutral-500 cursor-not-allowed"
+              : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
+          ].join(" ")}
+        >
+          DISCONNECT
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            if (locked) return;
+            connect({ connector: connectors[0] });
+          }}
+          disabled={connectPending || locked}
+          title={locked ? "Locked while a game is active" : "Connect"}
+          className={[
+            "rounded-xl border px-3 text-[11px] font-extrabold tracking-wide transition",
+            compact ? "py-1.5" : "py-2",
+            connectPending || locked
+              ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
+              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15",
+          ].join(" ")}
+        >
+          {connectPending ? "CONNECTING…" : "CONNECT"}
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <header
       className={[
         "sticky top-0 z-40 w-full backdrop-blur",
-        mobileCollapsed ? "border-b border-transparent bg-neutral-950/0" : "border-b border-neutral-800 bg-neutral-950/80",
-        "transition-colors duration-300",
+        "border-b border-neutral-800 bg-neutral-950/80",
+        "transition-[background-color,border-color] duration-300",
       ].join(" ")}
     >
       <div
         className={[
           "mx-auto w-full max-w-6xl px-3 md:px-4",
+          // Slightly tighter padding when collapsed on mobile
+          mobileCollapsed ? "py-2" : "py-3",
           "md:py-4",
-          mobileCollapsed ? "py-0" : "py-3",
           "transition-[padding] duration-300 ease-out",
         ].join(" ")}
       >
-        <div
-          className={[
-            "md:opacity-100 md:max-h-none md:pointer-events-auto",
-            mobileCollapsed ? "max-h-0 opacity-0 pointer-events-none overflow-hidden" : "max-h-[260px] opacity-100",
-            "transition-[max-height,opacity] duration-300 ease-out",
-          ].join(" ")}
-        >
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            {/* Brand */}
-            <div className="flex items-center gap-4">
+        {/* --------------------------------
+            MOBILE (collapsed): compact bar only
+           -------------------------------- */}
+        {isMobile && mobileCollapsed ? (
+          <div className="flex items-center justify-between gap-3">
+            {/* Brand (compact) */}
+            <div className="flex min-w-0 items-center gap-2">
               <img
                 src="/logo/logo.png"
                 alt="Lilypad Leap"
-                className="h-12 w-12 rounded-xl ring-1 ring-neutral-800 md:h-16 md:w-16"
+                className="h-9 w-9 shrink-0 rounded-xl ring-1 ring-neutral-800"
               />
               <div className="min-w-0">
-                <div className="truncate text-lg font-bold leading-tight text-neutral-50 md:text-xl">
-                  Lilypad Leap
-                </div>
-                <div className="truncate text-xs text-neutral-400 md:text-sm">Product v1 (frozen)</div>
+                <div className="truncate text-sm font-bold leading-tight text-neutral-50">Lilypad Leap</div>
+                <div className="truncate text-[10px] text-neutral-400">v1</div>
               </div>
             </div>
 
-            {/* Controls */}
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {/* Wallet pill */}
-              <div className="flex items-center gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/30 px-2 py-2">
-                {/* Render chain icon ONLY after mount to avoid hydration mismatch */}
-                {mounted && isConnected && chainKey ? (
-                  <img
-                    src={`/chains/${chainKey}.png`}
-                    alt={chainKey}
-                    width={18}
-                    height={18}
-                    className="h-[18px] w-[18px] rounded-md ring-1 ring-neutral-800"
-                    loading="lazy"
-                    decoding="async"
-                  />
-                ) : null}
-
-                <div className="min-w-0">
-                  <div className="text-[10px] font-semibold text-neutral-400 leading-none">Wallet</div>
-
-                  {/* Also gate address text behind mounted */}
-                  <div className="truncate text-xs font-bold text-neutral-100" suppressHydrationWarning>
-                    {mounted && isConnected && address ? truncateAddr(address) : "Not connected"}
-                  </div>
-                </div>
-
-                {mounted && isConnected ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (controlsLocked) return;
-                      disconnect();
-                    }}
-                    disabled={!!controlsLocked}
-                    title={controlsLocked ? "Locked while a game is active" : "Disconnect"}
-                    className={[
-                      "rounded-xl border px-3 py-2 text-[11px] font-extrabold transition",
-                      controlsLocked
-                        ? "border-neutral-800 bg-neutral-900 text-neutral-500 cursor-not-allowed"
-                        : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
-                    ].join(" ")}
-                  >
-                    DISCONNECT
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (controlsLocked) return;
-                      const first = connectors?.[0];
-                      if (first) connect({ connector: first });
-                    }}
-                    disabled={connectPending || !!controlsLocked}
-                    title={controlsLocked ? "Locked while a game is active" : "Connect"}
-                    className={[
-                      "rounded-xl border px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
-                      connectPending || controlsLocked
-                        ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
-                        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15",
-                    ].join(" ")}
-                  >
-                    {connectPending ? "CONNECTING…" : "CONNECT"}
-                  </button>
-                )}
-              </div>
-
-              {/* DEMO / TOKEN */}
-              {showPlayControls ? (
-                <div className="flex items-center rounded-2xl border border-neutral-800 bg-neutral-900/30 p-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (controlsLocked) return;
-                      setPlayMode!("demo");
-                    }}
-                    disabled={!!controlsLocked}
-                    className={[
-                      "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
-                      demoActive ? "text-neutral-950" : "text-neutral-200 hover:bg-neutral-800/60",
-                      controlsLocked ? "opacity-60 cursor-not-allowed" : "",
-                      demoActive ? "" : "opacity-80",
-                    ].join(" ")}
-                    style={
-                      demoActive
-                        ? {
-                            background:
-                              "radial-gradient(circle at 50% 10%, rgba(255,255,255,0.22), rgba(255,255,255,0.06) 55%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(250,204,21,0.25), rgba(250,204,21,0.10))",
-                            boxShadow: "0 0 0 1px rgba(250,204,21,0.35), 0 0 22px rgba(250,204,21,0.18)",
-                          }
-                        : undefined
-                    }
-                    title={controlsLocked ? "Locked while a game is active" : "Demo mode"}
-                  >
-                    🎲 DEMO
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (controlsLocked) return;
-                      setPlayMode!("token");
-                    }}
-                    disabled={!!controlsLocked || !(mounted && isConnected)}
-                    title={
-                      !mounted
-                        ? "Loading…"
-                        : !isConnected
-                        ? "Connect wallet to enable TOKEN mode"
-                        : controlsLocked
-                        ? "Locked while a game is active"
-                        : "Token mode"
-                    }
-                    className={[
-                      "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
-                      tokenActive ? "text-emerald-100" : "text-neutral-200 hover:bg-neutral-800/60",
-                      !(mounted && isConnected) ? "opacity-40 cursor-not-allowed" : "",
-                      controlsLocked ? "opacity-60 cursor-not-allowed" : "",
-                      tokenActive ? "" : "opacity-80",
-                    ].join(" ")}
-                    style={
-                      tokenActive
-                        ? {
-                            background:
-                              "radial-gradient(circle at 50% 10%, rgba(16,185,129,0.28), rgba(16,185,129,0.10) 60%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(16,185,129,0.18), rgba(16,185,129,0.07))",
-                            boxShadow: "0 0 0 1px rgba(16,185,129,0.28), 0 0 22px rgba(16,185,129,0.16)",
-                          }
-                        : undefined
-                    }
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      TOKEN <DtcIcon size={14} />
-                    </span>
-                  </button>
-                </div>
-              ) : null}
-
-              {/* Sound */}
-              {showSoundControl ? (
-                <button
-                  type="button"
-                  onClick={() => setSoundOn!((v) => !v)}
-                  className={[
-                    "rounded-2xl border px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
-                    soundOn
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
-                      : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
-                  ].join(" ")}
-                  aria-pressed={!!soundOn}
-                >
-                  {soundOn ? "📢 SOUND: ON" : "🔇 SOUND: OFF"}
-                </button>
-              ) : null}
+            {/* Wallet only (as requested) */}
+            <div className="shrink-0">
+              <WalletPill compact />
             </div>
           </div>
+        ) : (
+          /* --------------------------------
+             FULL HEADER (desktop + mobile at top)
+             -------------------------------- */
+          <div className="transition-opacity duration-300">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              {/* Brand */}
+              <div className="flex items-center gap-4">
+                <img
+                  src="/logo/logo.png"
+                  alt="Lilypad Leap"
+                  className="h-12 w-12 rounded-xl ring-1 ring-neutral-800 md:h-16 md:w-16"
+                />
+                <div className="min-w-0">
+                  <div className="truncate text-lg font-bold leading-tight text-neutral-50 md:text-xl">Lilypad Leap</div>
+                  <div className="truncate text-xs text-neutral-400 md:text-sm">Product v1 (frozen)</div>
+                </div>
+              </div>
 
-          {/* Nav row */}
-          <nav className="mt-2 flex justify-end md:mt-4">
-            <div
-              className={[
-                "flex w-full justify-end gap-2 overflow-x-auto pb-1",
-                "md:flex-wrap md:overflow-visible md:pb-0",
-                "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-              ].join(" ")}
-            >
-              {NAV.map((item) => {
-                const active = pathname === item.href;
-                const label = item.label === "Verify Fairness" ? "Fairness" : item.label;
+              {/* Controls */}
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <WalletPill />
 
-                // 🔒 When game is active, render disabled buttons instead of Links
-                if (controlsLocked) {
-                  return (
+                {/* DEMO / TOKEN */}
+                {showPlayControls ? (
+                  <div className="flex items-center rounded-2xl border border-neutral-800 bg-neutral-900/30 p-1">
                     <button
-                      key={item.href}
                       type="button"
-                      disabled
-                      className={navPillClass(active, true)}
-                      title="Locked while a game is active"
+                      onClick={() => {
+                        if (locked) return;
+                        setPlayMode!("demo");
+                      }}
+                      disabled={locked}
+                      title={locked ? "Locked while a game is active" : "Demo mode"}
+                      className={[
+                        "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
+                        demoActive ? "text-neutral-950" : "text-neutral-200 hover:bg-neutral-800/60",
+                        locked ? "opacity-60 cursor-not-allowed" : "",
+                        demoActive ? "" : "opacity-80",
+                      ].join(" ")}
+                      style={
+                        demoActive
+                          ? {
+                              background:
+                                "radial-gradient(circle at 50% 10%, rgba(255,255,255,0.22), rgba(255,255,255,0.06) 55%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(250,204,21,0.25), rgba(250,204,21,0.10))",
+                              boxShadow: "0 0 0 1px rgba(250,204,21,0.35), 0 0 22px rgba(250,204,21,0.18)",
+                            }
+                          : undefined
+                      }
                     >
-                      {label}
+                      🎲 DEMO
                     </button>
-                  );
-                }
 
-                return (
-                  <Link key={item.href} href={item.href} className={navPillClass(active, false)}>
-                    {label}
-                  </Link>
-                );
-              })}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (locked) return;
+                        setPlayMode!("token");
+                      }}
+                      disabled={locked || !mounted || !isConnected}
+                      title={
+                        locked
+                          ? "Locked while a game is active"
+                          : !mounted || !isConnected
+                          ? "Connect wallet to enable TOKEN mode"
+                          : "Token mode"
+                      }
+                      className={[
+                        "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
+                        tokenActive ? "text-emerald-100" : "text-neutral-200 hover:bg-neutral-800/60",
+                        !mounted || !isConnected ? "opacity-40 cursor-not-allowed" : "",
+                        locked ? "opacity-60 cursor-not-allowed" : "",
+                        tokenActive ? "" : "opacity-80",
+                      ].join(" ")}
+                      style={
+                        tokenActive
+                          ? {
+                              background:
+                                "radial-gradient(circle at 50% 10%, rgba(16,185,129,0.28), rgba(16,185,129,0.10) 60%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(16,185,129,0.18), rgba(16,185,129,0.07))",
+                              boxShadow: "0 0 0 1px rgba(16,185,129,0.28), 0 0 22px rgba(16,185,129,0.16)",
+                            }
+                          : undefined
+                      }
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        TOKEN <DtcIcon size={14} />
+                      </span>
+                    </button>
+                  </div>
+                ) : null}
+
+                {/* Sound */}
+                {showSoundControl ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (locked) return;
+                      setSoundOn!((v) => !v);
+                    }}
+                    disabled={locked}
+                    title={locked ? "Locked while a game is active" : "Toggle sound"}
+                    className={[
+                      "rounded-2xl border px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
+                      locked
+                        ? "cursor-not-allowed border-neutral-800 bg-neutral-900/30 text-neutral-500 opacity-70"
+                        : soundOn
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
+                        : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
+                    ].join(" ")}
+                    aria-pressed={!!soundOn}
+                  >
+                    {soundOn ? "📢 SOUND: ON" : "🔇 SOUND: OFF"}
+                  </button>
+                ) : null}
+              </div>
             </div>
-          </nav>
-        </div>
+
+            {/* Nav row */}
+            <nav className="mt-2 flex justify-end md:mt-4">
+              <div
+                className={[
+                  "flex w-full justify-end gap-2 overflow-x-auto pb-1",
+                  "md:flex-wrap md:overflow-visible md:pb-0",
+                  "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                ].join(" ")}
+              >
+                {NAV.map((item) => {
+                  const active = pathname === item.href;
+                  const label = item.label === "Verify Fairness" ? "Fairness" : item.label;
+
+                  const baseClasses = [
+                    "shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                    "md:px-4 md:py-2 md:text-sm",
+                    active
+                      ? "border-neutral-700 bg-neutral-800 text-neutral-50"
+                      : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
+                  ].join(" ");
+
+                  if (locked) {
+                    return (
+                      <span
+                        key={item.href}
+                        title="Locked while a game is active"
+                        className={[baseClasses, "cursor-not-allowed opacity-60"].join(" ")}
+                      >
+                        {label}
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <Link key={item.href} href={item.href} className={baseClasses}>
+                      {label}
+                    </Link>
+                  );
+                })}
+              </div>
+            </nav>
+          </div>
+        )}
       </div>
     </header>
   );

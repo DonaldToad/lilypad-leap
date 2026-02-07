@@ -1,7 +1,6 @@
-// app/layout.tsx
+﻿import "@relayprotocol/relay-kit-ui/styles.css";
 import "./globals.css";
 import Providers from "./providers";
-import "@relayprotocol/relay-kit-ui/styles.css";
 
 export const metadata = {
   title: "Lilypad Leap",
