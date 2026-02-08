@@ -1,3 +1,4 @@
+// app/play/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -312,14 +313,23 @@ export default function PlayPage() {
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
 
-  const allowed = chainId === 59144 || chainId === 8453;
-  const effectiveChainId = allowed ? chainId : PRIMARY_CHAIN.chainId;
-
-  const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
-  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  // Chain selection (UI-only demo)
+  const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
+  const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   type PlayMode = "demo" | "token";
   const [playMode, setPlayMode] = useState<PlayMode>("demo");
+
+  const allowedForToken = chainId === 59144 || chainId === 8453;
+
+  // ✅ Effective chain:
+  // - TOKEN mode: always use the wallet chain (must be Linea/Base)
+  // - DEMO mode (or disconnected): use the UI-selected chain (purely visual)
+  const effectiveChainId =
+    playMode === "token" && isConnected && allowedForToken ? chainId : selectedChain.chainId;
+
+  const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
 
   // If wallet disconnects, force demo.
   useEffect(() => {
@@ -341,10 +351,6 @@ export default function PlayPage() {
   const [activeRandAnchor, setActiveRandAnchor] = useState<Hex | null>(null);
   const [settledPayoutWei, setSettledPayoutWei] = useState<bigint | null>(null);
   const [settledWon, setSettledWon] = useState<boolean | null>(null);
-
-  // Chain selection (UI-only demo)
-  const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
-  const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   // Mode selection
   const [modeKey, setModeKey] = useState<ModeKey>("safe");
@@ -450,8 +456,17 @@ export default function PlayPage() {
     abi: ERC20_ABI,
     address: tokenAddress,
     functionName: "allowance",
-    args: address && vaultAddress !== zeroAddress ? [address, vaultAddress] : [zeroAddress, zeroAddress],
-    query: { enabled: isConnected && !!address && tokenAddress !== zeroAddress && vaultAddress !== zeroAddress },
+    args:
+      address && vaultAddress !== zeroAddress
+        ? [address, vaultAddress]
+        : [zeroAddress, zeroAddress],
+    query: {
+      enabled:
+        isConnected &&
+        !!address &&
+        tokenAddress !== zeroAddress &&
+        vaultAddress !== zeroAddress,
+    },
   });
 
   const hasEnoughAllowance = useMemo(() => {
@@ -473,7 +488,7 @@ export default function PlayPage() {
 
     // token mode
     if (!isConnected || !address) return false;
-    if (!allowed) return false;
+    if (!allowedForToken) return false;
     if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) return false;
     return hasEnoughAllowance;
   }, [
@@ -484,7 +499,7 @@ export default function PlayPage() {
     playMode,
     isConnected,
     address,
-    allowed,
+    allowedForToken,
     tokenAddress,
     vaultAddress,
     hasEnoughAllowance,
@@ -492,10 +507,20 @@ export default function PlayPage() {
 
   // ✅ IMPORTANT: if cashOutPending is true, lock hopping + cashout click-spam
   const canHop =
-    hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops < MAX_HOPS;
+    hasStarted &&
+    !isFailed &&
+    !isCashedOut &&
+    !cashOutPending &&
+    !actionLocked &&
+    hops < MAX_HOPS;
 
   const canCashOut =
-    hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops > 0; // includes hops==10
+    hasStarted &&
+    !isFailed &&
+    !isCashedOut &&
+    !cashOutPending &&
+    !actionLocked &&
+    hops > 0; // includes hops==10
 
   const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
 
@@ -504,21 +529,11 @@ export default function PlayPage() {
     return stepSuccessPctExact;
   }, [canHop, stepSuccessPctExact]);
 
-  const currentPrize = useMemo(() => {
-    if (!hasStarted) return 0;
-    return Math.floor(amount * (hops === 0 ? 1.0 : currentMult));
-  }, [hasStarted, amount, hops, currentMult]);
-
   const nextMult = useMemo(() => {
     if (!hasStarted) return null;
     if (hops >= MAX_HOPS) return null;
     return multTable[nextHopIndex];
   }, [hasStarted, hops, multTable, nextHopIndex]);
-
-  const nextPrize = useMemo(() => {
-    if (nextMult === null) return null;
-    return Math.floor(amount * nextMult);
-  }, [amount, nextMult]);
 
   // Default table behavior: show all on desktop, collapsed on mobile
   useEffect(() => {
@@ -667,7 +682,7 @@ export default function PlayPage() {
 
   async function approveNow() {
     if (!isConnected || !address) return;
-    if (!allowed) {
+    if (!allowedForToken) {
       setTxError("Unsupported network. Switch to Linea or Base.");
       return;
     }
@@ -734,7 +749,7 @@ export default function PlayPage() {
       setStartPending(false);
       return;
     }
-    if (!allowed) {
+    if (!allowedForToken) {
       setTxError("Unsupported network. Switch to Linea or Base.");
       setStartPending(false);
       return;
@@ -748,8 +763,8 @@ export default function PlayPage() {
       setActiveUserSecret(userSecret);
 
       // Use secret as a UX seed (purely for animation/demo rolls)
-      const seed32 = Number(BigInt(userSecret) & 0xffffffffn);
-      setRngState(seed32 >>> 0);
+      const seed32 = Number((BigInt(userSecret) & 0xffffffffn) as bigint);
+      setRngState((seed32 >>> 0) as number);
 
       const modeEnum = modeKey === "safe" ? 0 : modeKey === "wild" ? 1 : 2;
 
@@ -784,6 +799,8 @@ export default function PlayPage() {
       setActiveGameId(gameId);
       setActiveRandAnchor(randAnchor);
       setHasStarted(true);
+
+      // ✅ FIX: outcome must be a valid union member
       setOutcome("idle");
       setOutcomeText("Game started on-chain. Hop in the UI, then Cash Out to settle.");
 
@@ -879,9 +896,7 @@ export default function PlayPage() {
     // MAX HIT reached
     if (completedHop >= MAX_HOPS) {
       setOutcome("maxhit");
-      setOutcomeText(
-        `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`
-      );
+      setOutcomeText(`MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`);
 
       playSound("maxhit");
       if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
@@ -901,7 +916,7 @@ export default function PlayPage() {
       if (!publicClient) throw new Error("No public client");
       if (playMode !== "token") return;
       if (!isConnected || !address) return;
-      if (!allowed) {
+      if (!allowedForToken) {
         setTxError("Unsupported network. Switch to Linea or Base.");
         return;
       }
@@ -986,9 +1001,7 @@ export default function PlayPage() {
       if (!canCashOut) return;
       setIsCashedOut(true);
       setOutcome("cashout");
-      setOutcomeText(
-        `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`
-      );
+      setOutcomeText(`Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`);
       playSound("cashout");
       triggerAnim("cash_out");
       window.setTimeout(() => scrollToBoard(), 90);
@@ -998,8 +1011,7 @@ export default function PlayPage() {
     // TOKEN MODE: allow cash out even if animation lock, but block spamming
     if (!hasStarted || isFailed || isCashedOut || hops <= 0) return;
 
-    // ✅ This is the key fix:
-    // As soon as player clicks Cash Out, set pending so ALL HOP buttons switch/lock immediately.
+    // ✅ Key fix: set pending immediately so ALL HOP buttons switch/lock immediately.
     setCashOutPending(true);
     setTxStatus("Confirm Cash Out in wallet…");
 
@@ -1038,8 +1050,7 @@ export default function PlayPage() {
 
   // Visible hop rows (mobile-friendly collapse)
   const visibleHopSet = useMemo(() => {
-    if (showAllSteps)
-      return new Set<number>(Array.from({ length: MAX_HOPS }, (_, i) => i + 1));
+    if (showAllSteps) return new Set<number>(Array.from({ length: MAX_HOPS }, (_, i) => i + 1));
 
     const s = new Set<number>();
 
@@ -1087,8 +1098,7 @@ export default function PlayPage() {
       ? "padFxMax"
       : "";
 
-  const modeToneClass =
-    modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
+  const modeToneClass = modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
 
   // ✅ BELOW-CANVAS CTA FIX:
   // - Default: single button that reads START then HOP (normal run flow)
@@ -1096,7 +1106,7 @@ export default function PlayPage() {
   const showPostOutcomeButtons = ended;
 
   const bottomPrimaryLabel = useMemo(() => {
-    // ✅ If cashout is pending, force label to CASH OUT / SETTLING
+    // ✅ If cashout is pending, force label to SETTLING
     if (cashOutPending) return "SETTLING…";
     if (!hasStarted) return "START";
     if (hops >= MAX_HOPS) return "CASH OUT";
@@ -1169,6 +1179,15 @@ export default function PlayPage() {
         }
         .soundPulse { animation: soundPulseGlow 1.35s ease-in-out infinite; }
         @media (prefers-reduced-motion: reduce) { .soundPulse { animation: none !important; } }
+
+        /* ✅ Selected network glow + gentle pulse */
+        @keyframes selectedGlowPulse {
+          0%, 100% { box-shadow: 0 0 0 1px rgba(16,185,129,0.25), 0 0 18px rgba(16,185,129,0.10); }
+          50% { box-shadow: 0 0 0 1px rgba(16,185,129,0.35), 0 0 28px rgba(16,185,129,0.16); }
+        }
+        .selectedGlow { animation: selectedGlowPulse 1.6s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .selectedGlow { animation: none !important; } }
+
         @keyframes padBob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
         @keyframes padRipple {
           0% { transform: translate(-50%, -50%) scale(0.7); opacity: 0; }
@@ -1179,6 +1198,7 @@ export default function PlayPage() {
         @keyframes padFail { 0% { transform: translateY(0) scale(1); filter: saturate(1); } 60% { transform: translateY(2px) scale(0.995); filter: saturate(0.8); } 100% { transform: translateY(0) scale(1); filter: saturate(1); } }
         @keyframes padCash { 0% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); } 50% { box-shadow: 0 0 32px rgba(16, 185, 129, 0.18); } 100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); } }
         @keyframes padMax { 0% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); } 45% { box-shadow: 0 0 48px rgba(250, 204, 21, 0.22); } 100% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); } }
+
         .toneSafe {
           background: radial-gradient(circle at 50% 15%, rgba(56, 189, 248, 0.14), transparent 55%),
             radial-gradient(circle at 25% 85%, rgba(34, 197, 94, 0.12), transparent 55%),
@@ -1238,8 +1258,12 @@ export default function PlayPage() {
               </div>
             </div>
 
+            {/* ✅ REMOVED "PRIMARY" UI wording */}
             <div className="text-sm text-neutral-400">
-              Primary: <span className="text-neutral-100">{PRIMARY_CHAIN.name}</span>
+              Network:{" "}
+              <span className="text-neutral-100">
+                {CHAIN_LIST.find((c) => c.chainId === effectiveChainId)?.name ?? "—"}
+              </span>
             </div>
           </div>
 
@@ -1251,7 +1275,8 @@ export default function PlayPage() {
               <div className="flex w-full max-w-xl items-center justify-between rounded-2xl border border-neutral-800 bg-neutral-900/40 p-1">
                 {CHAIN_LIST.map((c) => {
                   const isSelected = c.key === selectedChainKey;
-                  const isDisabled = c.enabled === false || (hasStarted && !ended) || startPending || cashOutPending;
+                  const isDisabled =
+                    c.enabled === false || (hasStarted && !ended) || startPending || cashOutPending;
 
                   return (
                     <button
@@ -1260,6 +1285,8 @@ export default function PlayPage() {
                       onClick={() => {
                         if (isDisabled) return;
                         setSelectedChainKey(c.key);
+
+                        // If wallet is connected, also try to switch wallet chain to match selection.
                         if (isConnected && switchChain) {
                           try {
                             switchChain({ chainId: c.chainId });
@@ -1271,8 +1298,8 @@ export default function PlayPage() {
                         "flex flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
                         isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-neutral-800/40",
                         isSelected
-                          ? "bg-neutral-950 ring-1 ring-emerald-500/20 border border-emerald-500/20"
-                          : "border border-transparent",
+                          ? "bg-neutral-950 border border-emerald-500/25 selectedGlow"
+                          : "border border-transparent opacity-70 hover:opacity-100",
                       ].join(" ")}
                     >
                       <div className="flex items-center gap-2">
@@ -1284,19 +1311,16 @@ export default function PlayPage() {
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <span
-                          className={
-                            c.statusTag === "LIVE"
-                              ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-200 ring-1 ring-emerald-500/20"
-                              : "rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-200 ring-1 ring-amber-500/20"
-                          }
-                        >
-                          {c.statusTag}
-                        </span>
-
-                        {c.isPrimary ? (
-                          <span className="hidden rounded-full bg-neutral-800/60 px-2 py-0.5 text-[11px] font-semibold text-neutral-200 ring-1 ring-neutral-700 md:inline">
-                            PRIMARY
+                        {/* ✅ Show LIVE/SOON only if selected */}
+                        {isSelected ? (
+                          <span
+                            className={
+                              c.statusTag === "LIVE"
+                                ? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-200 ring-1 ring-emerald-500/25"
+                                : "rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-200 ring-1 ring-amber-500/25"
+                            }
+                          >
+                            {c.statusTag}
                           </span>
                         ) : null}
                       </div>
@@ -1342,8 +1366,9 @@ export default function PlayPage() {
                     </div>
                     {isConnected ? (
                       <div className="mt-0.5 text-[11px] text-neutral-500">
-                        Network: {CHAIN_LIST.find((c) => c.chainId === effectiveChainId)?.name ?? "—"}
-                        {!allowed ? " (unsupported)" : ""}
+                        Network:{" "}
+                        {CHAIN_LIST.find((c) => c.chainId === chainId)?.name ?? "—"}
+                        {!allowedForToken ? " (unsupported)" : ""}
                       </div>
                     ) : null}
                   </div>
@@ -1414,7 +1439,7 @@ export default function PlayPage() {
                   </div>
                 )}
 
-                {isConnected && !allowed ? (
+                {isConnected && playMode === "token" && !allowedForToken ? (
                   <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] text-amber-200">
                     Unsupported network. Switch to Linea or Base.
                   </div>
@@ -1452,9 +1477,7 @@ export default function PlayPage() {
                       </span>
                       Sound
                     </div>
-                    <div className="mt-0.5 text-[11px] text-neutral-500">
-                      {soundOn ? "ON (default)" : "OFF (muted)"}
-                    </div>
+                    <div className="mt-0.5 text-[11px] text-neutral-500">{soundOn ? "ON (default)" : "OFF (muted)"}</div>
                   </div>
 
                   <button
@@ -1592,10 +1615,10 @@ export default function PlayPage() {
                         <button
                           type="button"
                           onClick={approveNow}
-                          disabled={!isConnected || !address || !allowed || hasEnoughAllowance || cashOutPending}
+                          disabled={!isConnected || !address || !allowedForToken || hasEnoughAllowance || cashOutPending}
                           className={[
                             "rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
-                            !isConnected || !address || !allowed || hasEnoughAllowance || cashOutPending
+                            !isConnected || !address || !allowedForToken || hasEnoughAllowance || cashOutPending
                               ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
                               : "border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15",
                           ].join(" ")}
@@ -1611,9 +1634,7 @@ export default function PlayPage() {
                   </>
                 ) : null}
 
-                <div className="mt-1 text-xs text-neutral-600">
-                  {hasStarted ? "Locked after START." : "Set before START."}
-                </div>
+                <div className="mt-1 text-xs text-neutral-600">{hasStarted ? "Locked after START." : "Set before START."}</div>
 
                 {maxClampNotice ? (
                   <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
@@ -1691,9 +1712,7 @@ export default function PlayPage() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Estimated return</span>
-                    <span className="font-semibold">
-                      {hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}
-                    </span>
+                    <span className="font-semibold">{hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}</span>
                   </div>
                 </div>
 
@@ -1712,9 +1731,7 @@ export default function PlayPage() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-neutral-500">Commit hash</span>
-                      <span className="text-neutral-600">
-                        {commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}
-                      </span>
+                      <span className="text-neutral-600">{commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}</span>
                     </div>
 
                     <div className="mt-1 break-all font-mono text-neutral-200">
@@ -1751,11 +1768,10 @@ export default function PlayPage() {
                   </button>
                 ) : (
                   <div className="grid grid-cols-2 gap-2">
-                    {/* ✅ When cashOutPending, this becomes a CASH OUT/SETTLING-style disabled button */}
+                    {/* ✅ When cashOutPending, this becomes a SETTLING-style disabled button */}
                     <button
                       type="button"
                       onClick={() => {
-                        // If cashout pending, do nothing
                         if (cashOutPending) return;
                         hopOnce();
                       }}
@@ -1797,12 +1813,8 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">
-                      Make Your Bags Great Again 🐸💰
-                    </div>
-                    <div className="mt-1 text-xs text-neutral-500">
-                      Donald Toad Coin • community-driven
-                    </div>
+                    <div className="text-sm font-semibold text-neutral-100">Make Your Bags Great Again 🐸💰</div>
+                    <div className="mt-1 text-xs text-neutral-500">Donald Toad Coin • community-driven</div>
                   </div>
                   <div className="text-xs text-neutral-400">
                     Chain: <span className="text-neutral-200">{selectedChain.name}</span> (UI)
@@ -1853,9 +1865,7 @@ export default function PlayPage() {
                           style={{
                             transform: "translate(-50%, -50%)",
                             animation:
-                              animEvent === "hop_ok" || animEvent === "hop_fail"
-                                ? "padRipple 520ms ease-out"
-                                : "none",
+                              animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
                           }}
                         />
                       </div>
@@ -1906,7 +1916,7 @@ export default function PlayPage() {
 
               {/* ✅ PRIMARY CTA under Canvas (FIXED SEQUENCE + Cashout Pending Lock) */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-                {!showPostOutcomeButtons ? (
+                {!ended ? (
                   <button
                     type="button"
                     onClick={onBottomPrimary}
@@ -2006,8 +2016,7 @@ export default function PlayPage() {
                         ? "bg-neutral-900/40"
                         : "bg-neutral-950";
 
-                      const popStyle =
-                        poppedHop === hopNo ? { animation: "rowPop 420ms ease-out" as const } : undefined;
+                      const popStyle = poppedHop === hopNo ? ({ animation: "rowPop 420ms ease-out" } as const) : undefined;
 
                       const showRoll = lastAttemptHop === hopNo && lastRoll !== null && lastRequiredPct !== null;
 
@@ -2069,8 +2078,7 @@ export default function PlayPage() {
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4 text-sm text-neutral-300">
-                  <b>Demo guarantee:</b> The UI does not reveal future outcomes. Rolls are computed and displayed only
-                  after an attempt.
+                  <b>Demo guarantee:</b> The UI does not reveal future outcomes. Rolls are computed and displayed only after an attempt.
                 </div>
               </div>
             </div>
