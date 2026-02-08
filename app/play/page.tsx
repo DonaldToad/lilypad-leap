@@ -1,7 +1,7 @@
 // app/play/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import TopNav from "../components/TopNav";
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 import OutcomeBoard from "../components/OutcomeBoard";
@@ -316,10 +316,16 @@ export default function PlayPage() {
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
 
+  // ✅ HYDRATION-SAFE wagmi-derived values
+  // Server render + first client render will see mounted=false => stable values.
+  const safeIsConnected = mounted ? isConnected : false;
+  const safeAddress = mounted ? address : undefined;
+  const safeChainId = mounted ? chainId : undefined;
+  const safeConnectPending = mounted ? connectPending : false;
+  const safeConnectors = mounted ? connectors : [];
+
   // Chain selection (UI-only demo)
-  const [selectedChainKey, setSelectedChainKey] = useState<string>(
-    PRIMARY_CHAIN.key
-  );
+  const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
   const selectedChain =
     CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
@@ -327,33 +333,26 @@ export default function PlayPage() {
   const [playMode, setPlayMode] = useState<PlayMode>("demo");
 
   // ✅ token-mode is allowed ONLY when wallet is on Linea/Base
-  const tokenChainOk = mounted && isConnected && isTokenChain(chainId);
+  const tokenChainOk = mounted && safeIsConnected && isTokenChain(safeChainId);
   const allowedForToken = tokenChainOk;
 
   const isWrongNetwork =
-    mounted && isConnected && playMode === "token" && !allowedForToken;
+    mounted && safeIsConnected && playMode === "token" && !allowedForToken;
 
   // ✅ Effective chain for READS (wagmi supports chainId override in reads)
-  // - TOKEN mode: read from wallet chain (Linea/Base)
-  // - DEMO mode: read from UI-selected chain (can show that chain's token/vault config)
   const effectiveChainId =
-    playMode === "token" && tokenChainOk ? (chainId as number) : selectedChain.chainId;
+    playMode === "token" && tokenChainOk ? (safeChainId as number) : selectedChain.chainId;
 
-  const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ??
-    zeroAddress) as `0x${string}`;
-  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ??
-    zeroAddress) as `0x${string}`;
+  const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
 
   // If wallet disconnects, force demo.
   useEffect(() => {
-    if (!isConnected) setPlayMode("demo");
-  }, [isConnected]);
+    if (!safeIsConnected) setPlayMode("demo");
+  }, [safeIsConnected]);
 
-  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>({
-    kind: "unlimited",
-  });
-  const approveCapDtc =
-    approvalPolicy.kind === "limited" ? approvalPolicy.capDtc : MAX_AMOUNT;
+  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>({ kind: "unlimited" });
+  const approveCapDtc = approvalPolicy.kind === "limited" ? approvalPolicy.capDtc : MAX_AMOUNT;
 
   const [txStatus, setTxStatus] = useState<string>("");
   const [txError, setTxError] = useState<string>("");
@@ -478,24 +477,23 @@ export default function PlayPage() {
     return parseUnits(String(Math.max(1, Math.floor(approveCapDtc))), 18);
   }, [approvalPolicy, approveCapDtc]);
 
-  // ✅ Reads explicitly target effectiveChainId (avoids “reading on Avalanche by accident”)
+  // ✅ Reads explicitly target effectiveChainId
   const { data: allowanceWei, refetch: refetchAllowance } = useReadContract({
     chainId: effectiveChainId,
     abi: ERC20_ABI,
     address: tokenAddress,
     functionName: "allowance",
     args:
-      address && vaultAddress !== zeroAddress
-        ? [address, vaultAddress]
+      safeAddress && vaultAddress !== zeroAddress
+        ? [safeAddress, vaultAddress]
         : [zeroAddress, zeroAddress],
     query: {
       enabled:
         mounted &&
-        isConnected &&
-        !!address &&
+        safeIsConnected &&
+        !!safeAddress &&
         tokenAddress !== zeroAddress &&
         vaultAddress !== zeroAddress &&
-        // In TOKEN mode, only read if wallet is on supported chain
         (playMode === "demo" || tokenChainOk),
     },
   });
@@ -510,14 +508,13 @@ export default function PlayPage() {
     abi: ERC20_ABI,
     address: tokenAddress,
     functionName: "balanceOf",
-    args: address ? [address] : [zeroAddress],
+    args: safeAddress ? [safeAddress] : [zeroAddress],
     query: {
       enabled:
         mounted &&
-        isConnected &&
-        !!address &&
+        safeIsConnected &&
+        !!safeAddress &&
         tokenAddress !== zeroAddress &&
-        // TOKEN mode: only when Linea/Base
         (playMode === "demo" || tokenChainOk),
     },
   });
@@ -533,22 +530,13 @@ export default function PlayPage() {
 
   const balanceLabel = useMemo(() => {
     if (!mounted) return "—";
-    if (!isConnected || !address) return "—";
+    if (!safeIsConnected || !safeAddress) return "—";
     if (playMode === "token" && !tokenChainOk) return "Wrong network";
     if (tokenAddress === zeroAddress) return "—";
     if (balanceFetching) return "Loading…";
     if (balanceDtc === null) return "—";
     return balanceDtc.toLocaleString("en-US", { maximumFractionDigits: 4 });
-  }, [
-    mounted,
-    isConnected,
-    address,
-    playMode,
-    tokenChainOk,
-    tokenAddress,
-    balanceFetching,
-    balanceDtc,
-  ]);
+  }, [mounted, safeIsConnected, safeAddress, playMode, tokenChainOk, tokenAddress, balanceFetching, balanceDtc]);
 
   const hasEnoughAllowance = useMemo(() => {
     const a = allowanceWei ?? 0n;
@@ -566,9 +554,8 @@ export default function PlayPage() {
 
     if (playMode === "demo") return true;
 
-    // token mode
     if (!mounted) return false;
-    if (!isConnected || !address) return false;
+    if (!safeIsConnected || !safeAddress) return false;
     if (!tokenChainOk) return false;
     if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) return false;
     return hasEnoughAllowance;
@@ -579,15 +566,14 @@ export default function PlayPage() {
     amount,
     playMode,
     mounted,
-    isConnected,
-    address,
+    safeIsConnected,
+    safeAddress,
     tokenChainOk,
     tokenAddress,
     vaultAddress,
     hasEnoughAllowance,
   ]);
 
-  // ✅ IMPORTANT: if cashOutPending is true, lock hopping + cashout click-spam
   const canHop =
     hasStarted &&
     !isFailed &&
@@ -602,12 +588,9 @@ export default function PlayPage() {
     !isCashedOut &&
     !cashOutPending &&
     !actionLocked &&
-    hops > 0; // includes hops==10
+    hops > 0;
 
-  const currentReturn = useMemo(
-    () => Math.floor(amount * currentMult),
-    [amount, currentMult]
-  );
+  const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
 
   const nextHopSuccessExact = useMemo(() => {
     if (!canHop) return null;
@@ -647,49 +630,72 @@ export default function PlayPage() {
     }, ms);
   }
 
-  // Mobile scroll to Outcome Board (MetaMask-friendly)
+  // -----------------------------
+  // ✅ Robust scroll helpers (mobile safe)
+  // -----------------------------
+  const isMobileNow = () =>
+    typeof window !== "undefined" && window.innerWidth < 900;
+
+  const scrollToRefTop = useCallback((ref: React.RefObject<HTMLElement>, offset = 84) => {
+    const el = ref.current;
+    if (!el) return false;
+    const y = el.getBoundingClientRect().top + window.scrollY - offset;
+    window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
+    return true;
+  }, []);
+
+  const scrollToRefTopWithRetry = useCallback(
+    (ref: React.RefObject<HTMLElement>, opts?: { offset?: number; tries?: number; delayMs?: number }) => {
+      const offset = opts?.offset ?? 84;
+      const tries = opts?.tries ?? 10;
+      const delayMs = opts?.delayMs ?? 120;
+
+      if (typeof window === "undefined") return;
+      if (!isMobileNow()) return;
+
+      let attempt = 0;
+      const tick = () => {
+        attempt += 1;
+
+        // Wait for layout + fonts + wallet UI overlays to settle
+        window.requestAnimationFrame(() => {
+          const ok = scrollToRefTop(ref, offset);
+          if (ok) return;
+
+          if (attempt < tries) {
+            window.setTimeout(tick, delayMs);
+          }
+        });
+      };
+
+      // First try after a tiny delay
+      window.setTimeout(tick, 80);
+    },
+    [scrollToRefTop]
+  );
+
   function scrollToBoard() {
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
-    if (!isMobile) return;
-
-    const el = boardScrollRef.current;
-    if (!el) return;
-
-    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    if (!isMobileNow()) return;
+    scrollToRefTopWithRetry(boardScrollRef as any, { offset: 96, tries: 10, delayMs: 140 });
   }
 
-  // Mobile scroll to MODE selection (Route)
   function scrollToMode() {
-    const el = modeScrollRef.current;
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
+    if (!isMobileNow()) return;
+    scrollToRefTopWithRetry(modeScrollRef as any, { offset: 96, tries: 10, delayMs: 140 });
   }
 
-  // ✅ More reliable mobile auto-scroll (retry while layout settles)
+  // ✅ Auto-scroll to MODE on mobile on first paint (reliable)
   useEffect(() => {
     if (!mounted) return;
     if (didAutoScrollModeRef.current) return;
     if (hasStarted) return;
 
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
-    if (!isMobile) return;
+    if (!isMobileNow()) return;
 
-    const tryScroll = (attempt: number) => {
-      const el = modeScrollRef.current;
-      if (el) {
-        el.scrollIntoView({
-          behavior: attempt === 0 ? "auto" : "smooth",
-          block: "start",
-          inline: "nearest",
-        });
-        didAutoScrollModeRef.current = true;
-        return;
-      }
-      if (attempt < 6) window.setTimeout(() => tryScroll(attempt + 1), 180);
-    };
-
-    window.setTimeout(() => tryScroll(0), 250);
-  }, [mounted, hasStarted]);
+    didAutoScrollModeRef.current = true;
+    scrollToMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
 
   function triggerAnim(ev: AnimEvent) {
     setAnimEvent(ev);
@@ -747,11 +753,7 @@ export default function PlayPage() {
 
   // "PLAY AGAIN" uses previous started amount, and starts immediately
   function playAgainSameAmount() {
-    const v = clampInt(
-      lastStartedAmountRef.current || amount,
-      MIN_AMOUNT,
-      MAX_AMOUNT
-    );
+    const v = clampInt(lastStartedAmountRef.current || amount, MIN_AMOUNT, MAX_AMOUNT);
     setAmount(v);
     setAmountRaw(String(v));
     resetRunNewSeed();
@@ -763,7 +765,7 @@ export default function PlayPage() {
   // "CHANGE AMOUNT" ends the run but preserves the last used amount in input for editing
   function changeAmountFlow() {
     resetRunNewSeed();
-    window.setTimeout(() => scrollToMode(), 60);
+    window.setTimeout(() => scrollToMode(), 80);
   }
 
   function sanitizeAndSetAmount(nextRaw: string) {
@@ -798,7 +800,7 @@ export default function PlayPage() {
 
   async function approveNow() {
     if (!mounted) return;
-    if (!isConnected || !address) return;
+    if (!safeIsConnected || !safeAddress) return;
 
     // ✅ Hard gate: no approvals off Linea/Base
     if (!tokenChainOk) {
@@ -815,9 +817,8 @@ export default function PlayPage() {
       setTxError("");
       setTxStatus("Approving DTC…");
 
-      // ✅ Force tx to the connected chainId
       const hash = await writeContractAsync({
-        chainId: chainId as number,
+        chainId: safeChainId as number,
         abi: ERC20_ABI,
         address: tokenAddress,
         functionName: "approve",
@@ -863,14 +864,14 @@ export default function PlayPage() {
       setOutcomeText("");
 
       playSound("start");
-      window.setTimeout(() => scrollToBoard(), 60);
+      window.setTimeout(() => scrollToBoard(), 120);
 
       setStartPending(false);
       return;
     }
 
     // TOKEN MODE: createGame() at START
-    if (!mounted || !isConnected || !address) {
+    if (!mounted || !safeIsConnected || !safeAddress) {
       setTxError("Connect your wallet first.");
       setStartPending(false);
       return;
@@ -896,9 +897,8 @@ export default function PlayPage() {
 
       setTxStatus("Confirm in wallet…");
 
-      // ✅ Force tx to the connected chainId (prevents Rabby “AVAX send” garbage)
       const hash = await writeContractAsync({
-        chainId: chainId as number,
+        chainId: safeChainId as number,
         abi: LILYPAD_VAULT_ABI,
         address: vaultAddress,
         functionName: "createGame",
@@ -940,7 +940,7 @@ export default function PlayPage() {
 
       setTxStatus("On-chain game started.");
       window.setTimeout(() => setTxStatus(""), 1400);
-      window.setTimeout(() => scrollToBoard(), 60);
+      window.setTimeout(() => scrollToBoard(), 140);
       setStartPending(false);
     } catch (e: any) {
       setTxStatus("");
@@ -963,7 +963,6 @@ export default function PlayPage() {
         setTxError("Missing token seed. Please START again.");
         return;
       }
-      // ✅ If wallet is no longer on supported chain, stop immediately
       if (!tokenChainOk) {
         setTxError("Wrong network. Switch back to Linea/Base.");
         return;
@@ -1007,7 +1006,7 @@ export default function PlayPage() {
       playSound("busted");
       triggerAnim("hop_fail");
 
-      window.setTimeout(() => scrollToBoard(), 80);
+      window.setTimeout(() => scrollToBoard(), 140);
       return;
     }
 
@@ -1047,16 +1046,15 @@ export default function PlayPage() {
       triggerAnim("max_hit");
     }
 
-    window.setTimeout(() => scrollToBoard(), 90);
+    window.setTimeout(() => scrollToBoard(), 160);
   }
 
   async function settleOnChain(cashoutHop: number) {
     try {
       if (!publicClient) throw new Error("No public client");
       if (playMode !== "token") return;
-      if (!mounted || !isConnected || !address) return;
+      if (!mounted || !safeIsConnected || !safeAddress) return;
 
-      // ✅ Hard gate: refuse to even attempt if not Linea/Base
       if (!tokenChainOk) {
         setTxError("Wrong network. Switch to Linea or Base.");
         return;
@@ -1069,9 +1067,8 @@ export default function PlayPage() {
       setTxError("");
       setTxStatus("Settling on-chain…");
 
-      // ✅ Force tx to the connected chainId
       const hash = await writeContractAsync({
-        chainId: chainId as number,
+        chainId: safeChainId as number,
         abi: LILYPAD_VAULT_ABI,
         address: vaultAddress,
         functionName: "cashOut",
@@ -1127,13 +1124,12 @@ export default function PlayPage() {
 
       setTxStatus("Settled.");
       window.setTimeout(() => setTxStatus(""), 1400);
-      window.setTimeout(() => scrollToBoard(), 90);
+      window.setTimeout(() => scrollToBoard(), 160);
     } catch (e: any) {
       setTxStatus("");
       setTxError(e?.shortMessage || e?.message || "cashOut failed");
       // IMPORTANT: don’t end run on failure; just unlock the UI
     } finally {
-      // always clear pending flag (success or fail)
       setCashOutPending(false);
       lockActions(0);
     }
@@ -1147,20 +1143,17 @@ export default function PlayPage() {
       setIsCashedOut(true);
       setOutcome("cashout");
       setOutcomeText(
-        `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(
-          currentReturn
-        )} DTC (demo).`
+        `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`
       );
       playSound("cashout");
       triggerAnim("cash_out");
-      window.setTimeout(() => scrollToBoard(), 90);
+      window.setTimeout(() => scrollToBoard(), 160);
       return;
     }
 
     // TOKEN MODE
     if (!hasStarted || isFailed || isCashedOut || hops <= 0) return;
 
-    // ✅ Hard block if user switched away from Linea/Base mid-run
     if (!tokenChainOk) {
       setTxError("Wrong network. Switch back to Linea/Base to Cash Out.");
       return;
@@ -1177,9 +1170,7 @@ export default function PlayPage() {
   useEffect(() => {
     const wrap = tableWrapRef.current;
     if (!wrap) return;
-
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
-    if (!isMobile) return;
+    if (!isMobileNow()) return;
 
     const targetId = isFailed
       ? `hop-row-${lastAttemptHop ?? 1}`
@@ -1190,15 +1181,17 @@ export default function PlayPage() {
     const el = document.getElementById(targetId);
     if (!el) return;
 
+    // Use scrollIntoView inside the table area (works fine)
     el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   }, [hops, isFailed, isCashedOut, lastAttemptHop]);
 
-  // Ensure mobile scroll prefers the OUTCOME BOARD (toad) on key state changes
+  // Ensure mobile scroll prefers the OUTCOME BOARD on key state changes
   useEffect(() => {
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
-    if (!isMobile) return;
-    window.setTimeout(() => scrollToBoard(), 80);
-  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce, cashOutPending]);
+    if (!mounted) return;
+    if (!isMobileNow()) return;
+    window.setTimeout(() => scrollToBoard(), 180);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce, cashOutPending, mounted]);
 
   // Visible hop rows (mobile-friendly collapse)
   const visibleHopSet = useMemo(() => {
@@ -1250,7 +1243,8 @@ export default function PlayPage() {
       ? "padFxMax"
       : "";
 
-  const modeToneClass = modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
+  const modeToneClass =
+    modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
 
   // BELOW-CANVAS CTA FIX:
   const showPostOutcomeButtons = ended;
@@ -1294,32 +1288,31 @@ export default function PlayPage() {
 
   // ✅ Hydration-safe header network label
   const headerNetworkName =
-    mounted && playMode === "token" && isConnected && tokenChainOk
-      ? CHAIN_LIST.find((c) => c.chainId === chainId)?.name ?? "—"
+    mounted && playMode === "token" && safeIsConnected && tokenChainOk
+      ? CHAIN_LIST.find((c) => c.chainId === safeChainId)?.name ?? "—"
       : selectedChain.name;
 
   const balanceNetworkName = useMemo(() => {
     if (!mounted) return "—";
-    if (!isConnected || !address) return "—";
+    if (!safeIsConnected || !safeAddress) return "—";
     if (playMode === "token") {
       if (!tokenChainOk) return "Wrong Network";
-      return CHAIN_LIST.find((c) => c.chainId === chainId)?.name ?? "—";
+      return CHAIN_LIST.find((c) => c.chainId === safeChainId)?.name ?? "—";
     }
     return selectedChain.name;
-  }, [mounted, isConnected, address, playMode, tokenChainOk, chainId, selectedChain.name]);
+  }, [mounted, safeIsConnected, safeAddress, playMode, tokenChainOk, safeChainId, selectedChain.name]);
 
   // ✅ TOKEN mode chooser (hard-gated; auto-switch if possible)
   async function enterTokenMode() {
     if ((hasStarted && !ended) || startPending || cashOutPending) return;
 
-    if (!mounted || !isConnected || !address) {
+    if (!mounted || !safeIsConnected || !safeAddress) {
       setTxError("Connect your wallet to use TOKEN mode.");
       setPlayMode("demo");
       return;
     }
 
-    if (!isTokenChain(chainId)) {
-      // Prefer UI-selected chain if it is Linea/Base; else default to Linea
+    if (!isTokenChain(safeChainId)) {
       const target =
         selectedChain.chainId === 59144 || selectedChain.chainId === 8453
           ? selectedChain.chainId
@@ -1506,7 +1499,7 @@ export default function PlayPage() {
                         setSelectedChainKey(c.key);
 
                         // Optional wallet switch, but DON'T force-switch in TOKEN mode to unsupported chains.
-                        if (mounted && isConnected && switchChain) {
+                        if (mounted && safeIsConnected && switchChain) {
                           if (playMode === "token" && !isTokenChain(c.chainId)) return;
                           try {
                             switchChain({ chainId: c.chainId });
@@ -1516,9 +1509,7 @@ export default function PlayPage() {
                       disabled={isDisabled}
                       className={[
                         "flex flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
-                        isDisabled
-                          ? "opacity-40 cursor-not-allowed"
-                          : "hover:bg-neutral-800/40",
+                        isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-neutral-800/40",
                         isSelected
                           ? "bg-neutral-950 border border-emerald-500/25 selectedGlow"
                           : "border border-transparent opacity-70 hover:opacity-100",
@@ -1585,20 +1576,20 @@ export default function PlayPage() {
                   <div>
                     <div className="text-xs font-semibold text-neutral-200">Wallet</div>
                     <div suppressHydrationWarning className="mt-0.5 text-[11px] text-neutral-500">
-                      {mounted && isConnected && address
-                        ? `Connected: ${address.slice(0, 6)}…${address.slice(-4)}`
+                      {mounted && safeIsConnected && safeAddress
+                        ? `Connected: ${safeAddress.slice(0, 6)}…${safeAddress.slice(-4)}`
                         : "Not connected"}
                     </div>
 
-                    {mounted && isConnected ? (
+                    {mounted && safeIsConnected ? (
                       <div suppressHydrationWarning className="mt-0.5 text-[11px] text-neutral-500">
-                        Network: {CHAIN_LIST.find((c) => c.chainId === chainId)?.name ?? "—"}
+                        Network: {CHAIN_LIST.find((c) => c.chainId === safeChainId)?.name ?? "—"}
                         {!tokenChainOk ? " (unsupported for TOKEN)" : ""}
                       </div>
                     ) : null}
                   </div>
 
-                  {isConnected ? (
+                  {safeIsConnected ? (
                     <button
                       type="button"
                       onClick={() => disconnect()}
@@ -1609,21 +1600,26 @@ export default function PlayPage() {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => connect({ connector: connectors[0] })}
-                      disabled={connectPending}
+                      onClick={() => {
+                        // ✅ hydration-safe: only callable after mounted
+                        const c0 = safeConnectors?.[0];
+                        if (!mounted || !c0) return;
+                        connect({ connector: c0 });
+                      }}
+                      disabled={!mounted || safeConnectPending || safeConnectors.length === 0}
                       className={[
                         "rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
-                        connectPending
+                        !mounted || safeConnectPending || safeConnectors.length === 0
                           ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
                           : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15",
                       ].join(" ")}
                     >
-                      {connectPending ? "CONNECTING…" : "CONNECT"}
+                      {!mounted ? "LOADING…" : safeConnectPending ? "CONNECTING…" : "CONNECT"}
                     </button>
                   )}
                 </div>
 
-                {isConnected ? (
+                {safeIsConnected ? (
                   <div className="mt-3 flex gap-2">
                     <button
                       type="button"
@@ -1662,7 +1658,7 @@ export default function PlayPage() {
                   </div>
                 )}
 
-                {mounted && isConnected && playMode === "token" && !tokenChainOk ? (
+                {mounted && safeIsConnected && playMode === "token" && !tokenChainOk ? (
                   <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[11px] text-red-200">
                     <b>Wrong network.</b> TOKEN mode works only on <b>Linea</b> or <b>Base</b>.
                   </div>
@@ -1740,9 +1736,7 @@ export default function PlayPage() {
                         }}
                         className={[
                           "rounded-xl border px-4 py-2 text-sm font-semibold transition",
-                          hasStarted || startPending || cashOutPending
-                            ? "opacity-60 cursor-not-allowed"
-                            : "",
+                          hasStarted || startPending || cashOutPending ? "opacity-60 cursor-not-allowed" : "",
                           active
                             ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                             : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
@@ -1841,7 +1835,7 @@ export default function PlayPage() {
                   <>
                     <ApprovalToggle
                       chainId={effectiveChainId}
-                      wallet={(address ?? null) as any}
+                      wallet={(safeAddress ?? null) as any}
                       amountDtc={amount}
                       maxAmountDtc={MAX_AMOUNT}
                       onPolicyChange={(p) => setApprovalPolicy(p)}
@@ -1861,8 +1855,8 @@ export default function PlayPage() {
                           onClick={approveNow}
                           disabled={
                             !mounted ||
-                            !isConnected ||
-                            !address ||
+                            !safeIsConnected ||
+                            !safeAddress ||
                             !tokenChainOk ||
                             hasEnoughAllowance ||
                             cashOutPending
@@ -1870,8 +1864,8 @@ export default function PlayPage() {
                           className={[
                             "rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
                             !mounted ||
-                            !isConnected ||
-                            !address ||
+                            !safeIsConnected ||
+                            !safeAddress ||
                             !tokenChainOk ||
                             hasEnoughAllowance ||
                             cashOutPending
@@ -2241,7 +2235,7 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">Steps (demo math table)</div>
+                    <div className="text-sm font-semibold text-neutral-100">Steps Win probability and Cash Out multiplier</div>
                     <div className="mt-1 text-xs text-neutral-500">
                       Success is fixed per mode; UI shows rounded-up whole %, but math uses exact precision.
                     </div>
