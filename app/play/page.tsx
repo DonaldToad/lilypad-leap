@@ -314,30 +314,44 @@ export default function PlayPage() {
   const { writeContractAsync } = useWriteContract();
 
   // Chain selection (UI-only demo)
-  const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
-  const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
+  const [selectedChainKey, setSelectedChainKey] = useState<string>(
+    PRIMARY_CHAIN.key
+  );
+  const selectedChain =
+    CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   type PlayMode = "demo" | "token";
   const [playMode, setPlayMode] = useState<PlayMode>("demo");
 
-  const allowedForToken = chainId === 59144 || chainId === 8453;
+  // ✅ Hydration-safe: don’t let wallet-derived chainId change server vs client output
+  const allowedForToken = mounted && (chainId === 59144 || chainId === 8453);
 
   // ✅ Effective chain:
   // - TOKEN mode: always use the wallet chain (must be Linea/Base)
   // - DEMO mode (or disconnected): use the UI-selected chain (purely visual)
   const effectiveChainId =
-    playMode === "token" && isConnected && allowedForToken ? chainId : selectedChain.chainId;
+    playMode === "token" && mounted && isConnected && allowedForToken
+      ? chainId
+      : selectedChain.chainId;
 
-  const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
-  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ??
+    zeroAddress) as `0x${string}`;
+  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ??
+    zeroAddress) as `0x${string}`;
+
+  const isWrongNetwork =
+    mounted && isConnected && playMode === "token" && !allowedForToken;
 
   // If wallet disconnects, force demo.
   useEffect(() => {
     if (!isConnected) setPlayMode("demo");
   }, [isConnected]);
 
-  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>({ kind: "unlimited" });
-  const approveCapDtc = approvalPolicy.kind === "limited" ? approvalPolicy.capDtc : MAX_AMOUNT;
+  const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>({
+    kind: "unlimited",
+  });
+  const approveCapDtc =
+    approvalPolicy.kind === "limited" ? approvalPolicy.capDtc : MAX_AMOUNT;
 
   const [txStatus, setTxStatus] = useState<string>("");
   const [txError, setTxError] = useState<string>("");
@@ -368,8 +382,14 @@ export default function PlayPage() {
   const [isFailed, setIsFailed] = useState<boolean>(false);
   const [isCashedOut, setIsCashedOut] = useState<boolean>(false);
 
-  // RNG state
-  const [rngState, setRngState] = useState<number>(() => (Date.now() ^ 0x6a41f7f5) >>> 0);
+  // ✅ RNG state MUST be SSR-stable (no Date.now() here)
+  const [rngState, setRngState] = useState<number>(0x6a41f7f5);
+
+  // ✅ After mount, set a time-based seed (client only)
+  useEffect(() => {
+    if (!mounted) return;
+    setRngState((Date.now() ^ 0x6a41f7f5) >>> 0);
+  }, [mounted]);
 
   // Commit hash
   const commitHash = useMemo(() => buildCommitHash(rngState), [rngState]);
@@ -404,6 +424,10 @@ export default function PlayPage() {
   // Scroll helper
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   const boardScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // ✅ NEW: Mode scroll target + one-time auto-scroll flag
+  const modeScrollRef = useRef<HTMLDivElement | null>(null);
+  const didAutoScrollModeRef = useRef<boolean>(false);
 
   // Remember last amount used at START, so PLAY AGAIN can reuse it
   const lastStartedAmountRef = useRef<number>(1000);
@@ -462,12 +486,62 @@ export default function PlayPage() {
         : [zeroAddress, zeroAddress],
     query: {
       enabled:
+        mounted &&
         isConnected &&
         !!address &&
         tokenAddress !== zeroAddress &&
         vaultAddress !== zeroAddress,
     },
   });
+
+  // ✅ NEW: Read DTC balance (wallet chain: Linea/Base in TOKEN mode; selectedChain in DEMO UI)
+  const {
+    data: balanceWei,
+    refetch: refetchBalance,
+    isFetching: balanceFetching,
+  } = useReadContract({
+    abi: ERC20_ABI,
+    address: tokenAddress,
+    functionName: "balanceOf",
+    args: address ? [address] : [zeroAddress],
+    query: {
+      enabled:
+        mounted &&
+        isConnected &&
+        !!address &&
+        tokenAddress !== zeroAddress &&
+        // In TOKEN mode, only query balance on supported networks (Linea/Base).
+        // In DEMO mode we still show the selected-chain token address if available, but only if connected.
+        (playMode === "demo" || allowedForToken),
+    },
+  });
+
+  const balanceDtc = useMemo(() => {
+    if (!balanceWei) return null;
+    try {
+      return Number(formatUnits(balanceWei, 18));
+    } catch {
+      return null;
+    }
+  }, [balanceWei]);
+
+  const balanceLabel = useMemo(() => {
+    if (!mounted) return "—";
+    if (!isConnected || !address) return "—";
+    if (isWrongNetwork) return "—";
+    if (tokenAddress === zeroAddress) return "—";
+    if (balanceFetching) return "Loading…";
+    if (balanceDtc === null) return "—";
+    return balanceDtc.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  }, [
+    mounted,
+    isConnected,
+    address,
+    isWrongNetwork,
+    tokenAddress,
+    balanceFetching,
+    balanceDtc,
+  ]);
 
   const hasEnoughAllowance = useMemo(() => {
     const a = allowanceWei ?? 0n;
@@ -487,6 +561,7 @@ export default function PlayPage() {
     if (playMode === "demo") return true;
 
     // token mode
+    if (!mounted) return false;
     if (!isConnected || !address) return false;
     if (!allowedForToken) return false;
     if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) return false;
@@ -497,6 +572,7 @@ export default function PlayPage() {
     cashOutPending,
     amount,
     playMode,
+    mounted,
     isConnected,
     address,
     allowedForToken,
@@ -522,18 +598,15 @@ export default function PlayPage() {
     !actionLocked &&
     hops > 0; // includes hops==10
 
-  const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
+  const currentReturn = useMemo(
+    () => Math.floor(amount * currentMult),
+    [amount, currentMult]
+  );
 
   const nextHopSuccessExact = useMemo(() => {
     if (!canHop) return null;
     return stepSuccessPctExact;
   }, [canHop, stepSuccessPctExact]);
-
-  const nextMult = useMemo(() => {
-    if (!hasStarted) return null;
-    if (hops >= MAX_HOPS) return null;
-    return multTable[nextHopIndex];
-  }, [hasStarted, hops, multTable, nextHopIndex]);
 
   // Default table behavior: show all on desktop, collapsed on mobile
   useEffect(() => {
@@ -578,6 +651,27 @@ export default function PlayPage() {
 
     el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   }
+
+  // ✅ Mobile scroll to MODE selection (Route)
+  // - used for first-load auto-scroll (mobile gated in effect)
+  // - used by CHANGE AMOUNT (should always go to Route)
+  function scrollToMode() {
+    const el = modeScrollRef.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
+  }
+
+  useEffect(() => {
+    if (!mounted) return;
+    if (didAutoScrollModeRef.current) return;
+    if (hasStarted) return;
+
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
+    if (!isMobile) return;
+
+    didAutoScrollModeRef.current = true;
+    window.setTimeout(() => scrollToMode(), 250);
+  }, [mounted, hasStarted]);
 
   function triggerAnim(ev: AnimEvent) {
     setAnimEvent(ev);
@@ -644,10 +738,11 @@ export default function PlayPage() {
     }, 0);
   }
 
-  // "CHANGE AMOUNT" ends the run but preserves the last used amount in input for editing
+  // ✅ "CHANGE AMOUNT" ends the run but preserves the last used amount in input for editing
+  // ✅ and scrolls back to Route (mode section), not the board
   function changeAmountFlow() {
     resetRunNewSeed();
-    window.setTimeout(() => scrollToBoard(), 60);
+    window.setTimeout(() => scrollToMode(), 60);
   }
 
   function sanitizeAndSetAmount(nextRaw: string) {
@@ -681,6 +776,7 @@ export default function PlayPage() {
   }
 
   async function approveNow() {
+    if (!mounted) return;
     if (!isConnected || !address) return;
     if (!allowedForToken) {
       setTxError("Unsupported network. Switch to Linea or Base.");
@@ -702,6 +798,10 @@ export default function PlayPage() {
       });
       await publicClient.waitForTransactionReceipt({ hash });
       await refetchAllowance();
+      // balance may change from prior txs; harmless to refresh
+      try {
+        await refetchBalance();
+      } catch {}
       setTxStatus("Approved.");
       window.setTimeout(() => setTxStatus(""), 1200);
     } catch (e: any) {
@@ -744,7 +844,7 @@ export default function PlayPage() {
     }
 
     // TOKEN MODE: createGame() at START
-    if (!isConnected || !address) {
+    if (!mounted || !isConnected || !address) {
       setTxError("Connect your wallet first.");
       setStartPending(false);
       return;
@@ -800,11 +900,15 @@ export default function PlayPage() {
       setActiveRandAnchor(randAnchor);
       setHasStarted(true);
 
-      // ✅ FIX: outcome must be a valid union member
       setOutcome("idle");
       setOutcomeText("Game started on-chain. Hop in the UI, then Cash Out to settle.");
 
       playSound("start");
+
+      // after START, balance may change (token transferred into vault)
+      try {
+        await refetchBalance();
+      } catch {}
 
       setTxStatus("On-chain game started.");
       window.setTimeout(() => setTxStatus(""), 1400);
@@ -896,7 +1000,9 @@ export default function PlayPage() {
     // MAX HIT reached
     if (completedHop >= MAX_HOPS) {
       setOutcome("maxhit");
-      setOutcomeText(`MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`);
+      setOutcomeText(
+        `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`
+      );
 
       playSound("maxhit");
       if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
@@ -915,7 +1021,7 @@ export default function PlayPage() {
     try {
       if (!publicClient) throw new Error("No public client");
       if (playMode !== "token") return;
-      if (!isConnected || !address) return;
+      if (!mounted || !isConnected || !address) return;
       if (!allowedForToken) {
         setTxError("Unsupported network. Switch to Linea or Base.");
         return;
@@ -978,6 +1084,11 @@ export default function PlayPage() {
         triggerAnim("hop_fail");
       }
 
+      // refresh balance after settle
+      try {
+        await refetchBalance();
+      } catch {}
+
       setTxStatus("Settled.");
       window.setTimeout(() => setTxStatus(""), 1400);
       window.setTimeout(() => scrollToBoard(), 90);
@@ -1001,7 +1112,11 @@ export default function PlayPage() {
       if (!canCashOut) return;
       setIsCashedOut(true);
       setOutcome("cashout");
-      setOutcomeText(`Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`);
+      setOutcomeText(
+        `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(
+          currentReturn
+        )} DTC (demo).`
+      );
       playSound("cashout");
       triggerAnim("cash_out");
       window.setTimeout(() => scrollToBoard(), 90);
@@ -1143,6 +1258,22 @@ export default function PlayPage() {
 
   const soundEmoji = soundOn ? "📢" : "🔇";
 
+  // ✅ Hydration-safe header network label (don’t derive from wallet on server render)
+  const headerNetworkName =
+    mounted && playMode === "token" && isConnected && allowedForToken
+      ? CHAIN_LIST.find((c) => c.chainId === chainId)?.name ?? "—"
+      : selectedChain.name;
+
+  const balanceNetworkName = useMemo(() => {
+    if (!mounted) return "—";
+    if (!isConnected || !address) return "—";
+    if (playMode === "token") {
+      if (!allowedForToken) return "Wrong Network";
+      return CHAIN_LIST.find((c) => c.chainId === chainId)?.name ?? "—";
+    }
+    return selectedChain.name;
+  }, [mounted, isConnected, address, playMode, allowedForToken, chainId, selectedChain.name]);
+
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
       <style jsx global>{`
@@ -1170,34 +1301,52 @@ export default function PlayPage() {
           100% { transform: scale(1); }
         }
         @keyframes activeGlow {
-          0%,100% { box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12); }
+          0%, 100% { box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12); }
           50% { box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1); }
         }
         @keyframes soundPulseGlow {
-          0%,100% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18), 0 0 0 rgba(16, 185, 129, 0); transform: translateZ(0); }
+          0%, 100% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18), 0 0 0 rgba(16, 185, 129, 0); transform: translateZ(0); }
           50% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.28), 0 0 18px rgba(16, 185, 129, 0.12); }
         }
         .soundPulse { animation: soundPulseGlow 1.35s ease-in-out infinite; }
         @media (prefers-reduced-motion: reduce) { .soundPulse { animation: none !important; } }
 
-        /* ✅ Selected network glow + gentle pulse */
         @keyframes selectedGlowPulse {
-          0%, 100% { box-shadow: 0 0 0 1px rgba(16,185,129,0.25), 0 0 18px rgba(16,185,129,0.10); }
-          50% { box-shadow: 0 0 0 1px rgba(16,185,129,0.35), 0 0 28px rgba(16,185,129,0.16); }
+          0%, 100% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25), 0 0 18px rgba(16, 185, 129, 0.1); }
+          50% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 28px rgba(16, 185, 129, 0.16); }
         }
         .selectedGlow { animation: selectedGlowPulse 1.6s ease-in-out infinite; }
         @media (prefers-reduced-motion: reduce) { .selectedGlow { animation: none !important; } }
 
-        @keyframes padBob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+        @keyframes padBob {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-2px); }
+        }
         @keyframes padRipple {
           0% { transform: translate(-50%, -50%) scale(0.7); opacity: 0; }
           15% { opacity: 0.28; }
           100% { transform: translate(-50%, -50%) scale(1.55); opacity: 0; }
         }
-        @keyframes padOk { 0% { transform: translateY(0) scale(1); } 55% { transform: translateY(-2px) scale(1.01); } 100% { transform: translateY(0) scale(1); } }
-        @keyframes padFail { 0% { transform: translateY(0) scale(1); filter: saturate(1); } 60% { transform: translateY(2px) scale(0.995); filter: saturate(0.8); } 100% { transform: translateY(0) scale(1); filter: saturate(1); } }
-        @keyframes padCash { 0% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); } 50% { box-shadow: 0 0 32px rgba(16, 185, 129, 0.18); } 100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); } }
-        @keyframes padMax { 0% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); } 45% { box-shadow: 0 0 48px rgba(250, 204, 21, 0.22); } 100% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); } }
+        @keyframes padOk {
+          0% { transform: translateY(0) scale(1); }
+          55% { transform: translateY(-2px) scale(1.01); }
+          100% { transform: translateY(0) scale(1); }
+        }
+        @keyframes padFail {
+          0% { transform: translateY(0) scale(1); filter: saturate(1); }
+          60% { transform: translateY(2px) scale(0.995); filter: saturate(0.8); }
+          100% { transform: translateY(0) scale(1); filter: saturate(1); }
+        }
+        @keyframes padCash {
+          0% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
+          50% { box-shadow: 0 0 32px rgba(16, 185, 129, 0.18); }
+          100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
+        }
+        @keyframes padMax {
+          0% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); }
+          45% { box-shadow: 0 0 48px rgba(250, 204, 21, 0.22); }
+          100% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); }
+        }
 
         .toneSafe {
           background: radial-gradient(circle at 50% 15%, rgba(56, 189, 248, 0.14), transparent 55%),
@@ -1258,11 +1407,10 @@ export default function PlayPage() {
               </div>
             </div>
 
-            {/* ✅ REMOVED "PRIMARY" UI wording */}
             <div className="text-sm text-neutral-400">
               Network:{" "}
-              <span className="text-neutral-100">
-                {CHAIN_LIST.find((c) => c.chainId === effectiveChainId)?.name ?? "—"}
+              <span suppressHydrationWarning className="text-neutral-100">
+                {headerNetworkName}
               </span>
             </div>
           </div>
@@ -1276,7 +1424,10 @@ export default function PlayPage() {
                 {CHAIN_LIST.map((c) => {
                   const isSelected = c.key === selectedChainKey;
                   const isDisabled =
-                    c.enabled === false || (hasStarted && !ended) || startPending || cashOutPending;
+                    c.enabled === false ||
+                    (hasStarted && !ended) ||
+                    startPending ||
+                    cashOutPending;
 
                   return (
                     <button
@@ -1287,7 +1438,7 @@ export default function PlayPage() {
                         setSelectedChainKey(c.key);
 
                         // If wallet is connected, also try to switch wallet chain to match selection.
-                        if (isConnected && switchChain) {
+                        if (mounted && isConnected && switchChain) {
                           try {
                             switchChain({ chainId: c.chainId });
                           } catch {}
@@ -1296,7 +1447,9 @@ export default function PlayPage() {
                       disabled={isDisabled}
                       className={[
                         "flex flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
-                        isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-neutral-800/40",
+                        isDisabled
+                          ? "opacity-40 cursor-not-allowed"
+                          : "hover:bg-neutral-800/40",
                         isSelected
                           ? "bg-neutral-950 border border-emerald-500/25 selectedGlow"
                           : "border border-transparent opacity-70 hover:opacity-100",
@@ -1305,13 +1458,16 @@ export default function PlayPage() {
                       <div className="flex items-center gap-2">
                         <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
                         <div className="leading-tight">
-                          <div className="text-sm font-semibold text-neutral-100">{c.name}</div>
-                          <div className="text-[11px] text-neutral-500">Chain ID: {c.chainId}</div>
+                          <div className="text-sm font-semibold text-neutral-100">
+                            {c.name}
+                          </div>
+                          <div className="text-[11px] text-neutral-500">
+                            Chain ID: {c.chainId}
+                          </div>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-2">
-                        {/* ✅ Show LIVE/SOON only if selected */}
                         {isSelected ? (
                           <span
                             className={
@@ -1364,10 +1520,10 @@ export default function PlayPage() {
                         ? `Connected: ${address.slice(0, 6)}…${address.slice(-4)}`
                         : "Not connected"}
                     </div>
-                    {isConnected ? (
-                      <div className="mt-0.5 text-[11px] text-neutral-500">
-                        Network:{" "}
-                        {CHAIN_LIST.find((c) => c.chainId === chainId)?.name ?? "—"}
+
+                    {mounted && isConnected ? (
+                      <div suppressHydrationWarning className="mt-0.5 text-[11px] text-neutral-500">
+                        Network: {CHAIN_LIST.find((c) => c.chainId === chainId)?.name ?? "—"}
                         {!allowedForToken ? " (unsupported)" : ""}
                       </div>
                     ) : null}
@@ -1439,7 +1595,7 @@ export default function PlayPage() {
                   </div>
                 )}
 
-                {isConnected && playMode === "token" && !allowedForToken ? (
+                {mounted && isConnected && playMode === "token" && !allowedForToken ? (
                   <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] text-amber-200">
                     Unsupported network. Switch to Linea or Base.
                   </div>
@@ -1477,7 +1633,9 @@ export default function PlayPage() {
                       </span>
                       Sound
                     </div>
-                    <div className="mt-0.5 text-[11px] text-neutral-500">{soundOn ? "ON (default)" : "OFF (muted)"}</div>
+                    <div className="mt-0.5 text-[11px] text-neutral-500">
+                      {soundOn ? "ON (default)" : "OFF (muted)"}
+                    </div>
                   </div>
 
                   <button
@@ -1499,7 +1657,7 @@ export default function PlayPage() {
               </div>
 
               {/* Mode */}
-              <div className="mt-4">
+              <div ref={modeScrollRef} className="mt-4 scroll-mt-24">
                 <div className="text-xs text-neutral-400">Route</div>
                 <div className="mt-2 flex gap-2">
                   {(Object.keys(MODE) as ModeKey[]).map((k) => {
@@ -1515,7 +1673,9 @@ export default function PlayPage() {
                         }}
                         className={[
                           "rounded-xl border px-4 py-2 text-sm font-semibold transition",
-                          hasStarted || startPending || cashOutPending ? "opacity-60 cursor-not-allowed" : "",
+                          hasStarted || startPending || cashOutPending
+                            ? "opacity-60 cursor-not-allowed"
+                            : "",
                           active
                             ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                             : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
@@ -1532,7 +1692,24 @@ export default function PlayPage() {
 
               {/* Amount */}
               <div className="mt-5">
-                <div className="text-xs text-neutral-400">Amount (DTC)</div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-neutral-400">Amount (DTC)</div>
+
+                  {/* ✅ NEW: Balance near amount input (Linea/Base based on wallet chain in TOKEN mode) */}
+                  <div className="text-[11px] text-neutral-500">
+                    <span className="mr-2 text-neutral-600">{balanceNetworkName}</span>
+                    {isWrongNetwork ? (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-semibold text-amber-200">
+                        ⚠️ Wrong network
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900/60 px-2 py-0.5 font-semibold text-neutral-200">
+                        Balance: <span className="text-neutral-50">{balanceLabel}</span> <DtcIcon size={12} />
+                      </span>
+                    )}
+                  </div>
+                </div>
+
                 <input
                   value={amountRaw}
                   onChange={(e) => sanitizeAndSetAmount(e.target.value)}
@@ -1615,10 +1792,22 @@ export default function PlayPage() {
                         <button
                           type="button"
                           onClick={approveNow}
-                          disabled={!isConnected || !address || !allowedForToken || hasEnoughAllowance || cashOutPending}
+                          disabled={
+                            !mounted ||
+                            !isConnected ||
+                            !address ||
+                            !allowedForToken ||
+                            hasEnoughAllowance ||
+                            cashOutPending
+                          }
                           className={[
                             "rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
-                            !isConnected || !address || !allowedForToken || hasEnoughAllowance || cashOutPending
+                            !mounted ||
+                            !isConnected ||
+                            !address ||
+                            !allowedForToken ||
+                            hasEnoughAllowance ||
+                            cashOutPending
                               ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
                               : "border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15",
                           ].join(" ")}
@@ -1634,7 +1823,9 @@ export default function PlayPage() {
                   </>
                 ) : null}
 
-                <div className="mt-1 text-xs text-neutral-600">{hasStarted ? "Locked after START." : "Set before START."}</div>
+                <div className="mt-1 text-xs text-neutral-600">
+                  {hasStarted ? "Locked after START." : "Set before START."}
+                </div>
 
                 {maxClampNotice ? (
                   <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
@@ -1731,7 +1922,9 @@ export default function PlayPage() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-neutral-500">Commit hash</span>
-                      <span className="text-neutral-600">{commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}</span>
+                      <span className="text-neutral-600">
+                        {commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}
+                      </span>
                     </div>
 
                     <div className="mt-1 break-all font-mono text-neutral-200">
@@ -1768,7 +1961,6 @@ export default function PlayPage() {
                   </button>
                 ) : (
                   <div className="grid grid-cols-2 gap-2">
-                    {/* ✅ When cashOutPending, this becomes a SETTLING-style disabled button */}
                     <button
                       type="button"
                       onClick={() => {
@@ -1813,8 +2005,12 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">Make Your Bags Great Again 🐸💰</div>
-                    <div className="mt-1 text-xs text-neutral-500">Donald Toad Coin • community-driven</div>
+                    <div className="text-sm font-semibold text-neutral-100">
+                      Make Your Bags Great Again 🐸💰
+                    </div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      Donald Toad Coin • community-driven
+                    </div>
                   </div>
                   <div className="text-xs text-neutral-400">
                     Chain: <span className="text-neutral-200">{selectedChain.name}</span> (UI)
@@ -1865,7 +2061,9 @@ export default function PlayPage() {
                           style={{
                             transform: "translate(-50%, -50%)",
                             animation:
-                              animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
+                              animEvent === "hop_ok" || animEvent === "hop_fail"
+                                ? "padRipple 520ms ease-out"
+                                : "none",
                           }}
                         />
                       </div>
@@ -1914,7 +2112,7 @@ export default function PlayPage() {
                 </div>
               </div>
 
-              {/* ✅ PRIMARY CTA under Canvas (FIXED SEQUENCE + Cashout Pending Lock) */}
+              {/* ✅ PRIMARY CTA under Canvas */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
                 {!ended ? (
                   <button
@@ -1996,7 +2194,7 @@ export default function PlayPage() {
                 <div className="mt-4 overflow-hidden rounded-2xl border border-neutral-800">
                   <div className="grid grid-cols-[90px_1fr_140px] bg-neutral-900/60 px-4 py-3 text-xs font-semibold text-neutral-300">
                     <div>Hop</div>
-                    <div className="text-center">Success (fixed)</div>
+                    <div className="text-center">WIN RATE</div>
                     <div className="text-right">Cash Out</div>
                   </div>
 
@@ -2007,7 +2205,11 @@ export default function PlayPage() {
 
                       const isCompleted = hopNo <= hops && !isFailed;
                       const isActive =
-                        hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
+                        hopNo === hops + 1 &&
+                        !isFailed &&
+                        !isCashedOut &&
+                        hasStarted &&
+                        hops < MAX_HOPS;
 
                       const rowBase = "grid grid-cols-[90px_1fr_140px] px-4 py-3 text-sm";
                       const rowBg = isCompleted
@@ -2016,11 +2218,16 @@ export default function PlayPage() {
                         ? "bg-neutral-900/40"
                         : "bg-neutral-950";
 
-                      const popStyle = poppedHop === hopNo ? ({ animation: "rowPop 420ms ease-out" } as const) : undefined;
+                      const popStyle =
+                        poppedHop === hopNo ? ({ animation: "rowPop 420ms ease-out" } as const) : undefined;
 
-                      const showRoll = lastAttemptHop === hopNo && lastRoll !== null && lastRequiredPct !== null;
+                      const showRoll =
+                        lastAttemptHop === hopNo &&
+                        lastRoll !== null &&
+                        lastRequiredPct !== null;
 
-                      const clearedVisible = isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
+                      const clearedVisible =
+                        isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
 
                       const showFailedChip = isFailed && lastAttemptHop === hopNo;
                       const showCashedChip = isCashedOut && hopNo === hops && hops > 0;
@@ -2061,7 +2268,9 @@ export default function PlayPage() {
                           </div>
 
                           <div className="text-center">
-                            <span className="font-semibold text-neutral-100">{ceilPercent(stepSuccessPctExact)}</span>
+                            <span className="font-semibold text-neutral-100">
+                              {ceilPercent(stepSuccessPctExact)}
+                            </span>
 
                             {showRoll ? (
                               <span className="ml-2 text-xs text-neutral-400">
@@ -2070,7 +2279,9 @@ export default function PlayPage() {
                             ) : null}
                           </div>
 
-                          <div className="text-right font-semibold text-neutral-100">{fmtX(multTable[idx])}</div>
+                          <div className="text-right font-semibold text-neutral-100">
+                            {fmtX(multTable[idx])}
+                          </div>
                         </div>
                       );
                     })}
