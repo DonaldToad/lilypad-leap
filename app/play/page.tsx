@@ -2,10 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/TopNav";
-
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 import OutcomeBoard from "../components/OutcomeBoard";
-
 import ApprovalToggle from "../components/ApprovalToggle";
 
 import {
@@ -190,7 +188,6 @@ async function copyText(text: string) {
     }
   } catch {}
   try {
-    // Fallback
     const ta = document.createElement("textarea");
     ta.value = text;
     ta.setAttribute("readonly", "true");
@@ -246,34 +243,47 @@ export default function PlayPage() {
     });
   }
 
+  // ✅ FIX: avoid Runtime NotSupportedError by catching the play() promise
   function playSound(key: SoundKey, opts?: { restart?: boolean }) {
     if (!soundOn) return;
     const bank = soundsRef.current;
     if (!bank) return;
     const a = bank[key];
     if (!a) return;
+
     try {
       if (opts?.restart !== false) a.currentTime = 0;
-      void a.play();
-    } catch {}
+      const p = a.play();
+      if (p && typeof (p as any).catch === "function") {
+        (p as Promise<void>).catch(() => {
+          // swallow NotSupportedError / missing file / autoplay restrictions
+        });
+      }
+    } catch {
+      // swallow
+    }
   }
 
   useEffect(() => {
-    const bank: Record<SoundKey, HTMLAudioElement> = {
-      start: new Audio(SOUND_SRC.start),
-      hop: new Audio(SOUND_SRC.hop),
-      busted: new Audio(SOUND_SRC.busted),
-      cashout: new Audio(SOUND_SRC.cashout),
-      maxhit: new Audio(SOUND_SRC.maxhit),
-      win: new Audio(SOUND_SRC.win),
-    };
+    try {
+      const bank: Record<SoundKey, HTMLAudioElement> = {
+        start: new Audio(SOUND_SRC.start),
+        hop: new Audio(SOUND_SRC.hop),
+        busted: new Audio(SOUND_SRC.busted),
+        cashout: new Audio(SOUND_SRC.cashout),
+        maxhit: new Audio(SOUND_SRC.maxhit),
+        win: new Audio(SOUND_SRC.win),
+      };
 
-    (Object.keys(bank) as SoundKey[]).forEach((k) => {
-      bank[k].preload = "auto";
-      bank[k].volume = 0.9;
-    });
+      (Object.keys(bank) as SoundKey[]).forEach((k) => {
+        bank[k].preload = "auto";
+        bank[k].volume = 0.9;
+      });
 
-    soundsRef.current = bank;
+      soundsRef.current = bank;
+    } catch {
+      soundsRef.current = null;
+    }
 
     return () => {
       if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
@@ -322,6 +332,9 @@ export default function PlayPage() {
   const [txStatus, setTxStatus] = useState<string>("");
   const [txError, setTxError] = useState<string>("");
   const [startPending, setStartPending] = useState<boolean>(false);
+
+  // ✅ NEW: cashout pending state (locks hopping + forces “CASH OUT / SETTLING…” everywhere)
+  const [cashOutPending, setCashOutPending] = useState<boolean>(false);
 
   const [activeGameId, setActiveGameId] = useState<Hex | null>(null);
   const [activeUserSecret, setActiveUserSecret] = useState<Hex | null>(null);
@@ -448,10 +461,12 @@ export default function PlayPage() {
 
   const maxHit = hasStarted && !isFailed && hops >= MAX_HOPS;
 
-  // IMPORTANT: allow Cash Out at hop 10
+  const ended = isFailed || isCashedOut;
+
   const canStart = useMemo(() => {
     if (hasStarted) return false;
     if (startPending) return false;
+    if (cashOutPending) return false;
     if (amount < MIN_AMOUNT) return false;
 
     if (playMode === "demo") return true;
@@ -461,11 +476,26 @@ export default function PlayPage() {
     if (!allowed) return false;
     if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) return false;
     return hasEnoughAllowance;
-  }, [hasStarted, startPending, amount, playMode, isConnected, address, allowed, tokenAddress, vaultAddress, hasEnoughAllowance]);
+  }, [
+    hasStarted,
+    startPending,
+    cashOutPending,
+    amount,
+    playMode,
+    isConnected,
+    address,
+    allowed,
+    tokenAddress,
+    vaultAddress,
+    hasEnoughAllowance,
+  ]);
 
-  const canHop = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops < MAX_HOPS;
-  const canCashOut = hasStarted && !isFailed && !isCashedOut && !actionLocked && hops > 0; // includes hops==10
-  const ended = isFailed || isCashedOut;
+  // ✅ IMPORTANT: if cashOutPending is true, lock hopping + cashout click-spam
+  const canHop =
+    hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops < MAX_HOPS;
+
+  const canCashOut =
+    hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops > 0; // includes hops==10
 
   const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
 
@@ -565,6 +595,9 @@ export default function PlayPage() {
     setIsFailed(false);
     setIsCashedOut(false);
 
+    // ✅ reset pending state
+    setCashOutPending(false);
+
     setLastRoll(null);
     setLastAttemptHop(null);
     setLastRequiredPct(null);
@@ -592,7 +625,7 @@ export default function PlayPage() {
     setAmountRaw(String(v));
     resetRunNewSeed();
     window.setTimeout(() => {
-      startRun();
+      void startRun();
     }, 0);
   }
 
@@ -603,7 +636,7 @@ export default function PlayPage() {
   }
 
   function sanitizeAndSetAmount(nextRaw: string) {
-    if (hasStarted || startPending) return;
+    if (hasStarted || startPending || cashOutPending) return;
 
     const cleaned = nextRaw.replace(/[^\d]/g, "");
     setAmountRaw(cleaned);
@@ -626,7 +659,7 @@ export default function PlayPage() {
   }
 
   function setAmountPreset(v: number) {
-    if (hasStarted || startPending) return;
+    if (hasStarted || startPending || cashOutPending) return;
     const clamped = clampInt(v, MIN_AMOUNT, MAX_AMOUNT);
     setAmount(clamped);
     setAmountRaw(String(clamped));
@@ -679,6 +712,9 @@ export default function PlayPage() {
     setSettledPayoutWei(null);
     setSettledWon(null);
     setTxError("");
+
+    // ensure no leftover pending
+    setCashOutPending(false);
 
     if (playMode === "demo") {
       setHasStarted(true);
@@ -933,24 +969,44 @@ export default function PlayPage() {
     } catch (e: any) {
       setTxStatus("");
       setTxError(e?.shortMessage || e?.message || "cashOut failed");
+      // IMPORTANT: don’t end run on failure; just unlock the UI
+    } finally {
+      // ✅ always clear pending flag (success or fail)
+      setCashOutPending(false);
+      lockActions(0);
     }
   }
 
   function cashOut() {
-    if (!canCashOut) return;
+    // If already pending, ignore extra clicks
+    if (cashOutPending) return;
 
-    if (playMode === "token") {
-      void settleOnChain(hops);
+    // In demo mode, still obey canCashOut
+    if (playMode === "demo") {
+      if (!canCashOut) return;
+      setIsCashedOut(true);
+      setOutcome("cashout");
+      setOutcomeText(
+        `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`
+      );
+      playSound("cashout");
+      triggerAnim("cash_out");
+      window.setTimeout(() => scrollToBoard(), 90);
       return;
     }
 
-    // DEMO
-    setIsCashedOut(true);
-    setOutcome("cashout");
-    setOutcomeText(`Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`);
-    playSound("cashout");
-    triggerAnim("cash_out");
-    window.setTimeout(() => scrollToBoard(), 90);
+    // TOKEN MODE: allow cash out even if animation lock, but block spamming
+    if (!hasStarted || isFailed || isCashedOut || hops <= 0) return;
+
+    // ✅ This is the key fix:
+    // As soon as player clicks Cash Out, set pending so ALL HOP buttons switch/lock immediately.
+    setCashOutPending(true);
+    setTxStatus("Confirm Cash Out in wallet…");
+
+    // hard lock while wallet/tx pending (prevents “hop again”)
+    setActionLocked(true);
+
+    void settleOnChain(hops);
   }
 
   // Auto-scroll to relevant row on mobile (table)
@@ -978,7 +1034,7 @@ export default function PlayPage() {
     const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
     if (!isMobile) return;
     window.setTimeout(() => scrollToBoard(), 80);
-  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce]);
+  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce, cashOutPending]);
 
   // Visible hop rows (mobile-friendly collapse)
   const visibleHopSet = useMemo(() => {
@@ -1040,18 +1096,22 @@ export default function PlayPage() {
   const showPostOutcomeButtons = ended;
 
   const bottomPrimaryLabel = useMemo(() => {
+    // ✅ If cashout is pending, force label to CASH OUT / SETTLING
+    if (cashOutPending) return "SETTLING…";
     if (!hasStarted) return "START";
     if (hops >= MAX_HOPS) return "CASH OUT";
     return "HOP";
-  }, [hasStarted, hops]);
+  }, [cashOutPending, hasStarted, hops]);
 
   const bottomPrimaryDisabled = useMemo(() => {
+    if (cashOutPending) return true;
     if (!hasStarted) return !canStart;
     if (hops >= MAX_HOPS) return !canCashOut;
     return !canHop;
-  }, [hasStarted, canStart, hops, canCashOut, canHop]);
+  }, [cashOutPending, hasStarted, canStart, hops, canCashOut, canHop]);
 
   function onBottomPrimary() {
+    if (cashOutPending) return;
     if (!hasStarted) {
       void startRun();
       return;
@@ -1064,11 +1124,12 @@ export default function PlayPage() {
   }
 
   const bottomHint = useMemo(() => {
+    if (cashOutPending) return "Cash Out pending — confirm in wallet / waiting for tx…";
     if (showPostOutcomeButtons) return "Busted or cashed out — choose your next move.";
     if (!hasStarted) return "Start a run.";
     if (hops >= MAX_HOPS) return "MAX HIT — cash out to lock it in.";
     return actionLocked ? "…" : "Take the Leap!";
-  }, [showPostOutcomeButtons, hasStarted, hops, actionLocked]);
+  }, [cashOutPending, showPostOutcomeButtons, hasStarted, hops, actionLocked]);
 
   const soundEmoji = soundOn ? "📢" : "🔇";
 
@@ -1076,18 +1137,9 @@ export default function PlayPage() {
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
       <style jsx global>{`
         @keyframes rowPop {
-          0% {
-            transform: scale(1);
-            box-shadow: none;
-          }
-          45% {
-            transform: scale(1.02);
-            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.2);
-          }
-          100% {
-            transform: scale(1);
-            box-shadow: none;
-          }
+          0% { transform: scale(1); box-shadow: none; }
+          45% { transform: scale(1.02); box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.2); }
+          100% { transform: scale(1); box-shadow: none; }
         }
         @keyframes failShake {
           0% { transform: translateX(0); }
@@ -1116,38 +1168,17 @@ export default function PlayPage() {
           50% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.28), 0 0 18px rgba(16, 185, 129, 0.12); }
         }
         .soundPulse { animation: soundPulseGlow 1.35s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) {
-          .soundPulse { animation: none !important; }
-        }
-        @keyframes padBob {
-          0%,100% { transform: translateY(0); }
-          50% { transform: translateY(-2px); }
-        }
+        @media (prefers-reduced-motion: reduce) { .soundPulse { animation: none !important; } }
+        @keyframes padBob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
         @keyframes padRipple {
           0% { transform: translate(-50%, -50%) scale(0.7); opacity: 0; }
           15% { opacity: 0.28; }
           100% { transform: translate(-50%, -50%) scale(1.55); opacity: 0; }
         }
-        @keyframes padOk {
-          0% { transform: translateY(0) scale(1); }
-          55% { transform: translateY(-2px) scale(1.01); }
-          100% { transform: translateY(0) scale(1); }
-        }
-        @keyframes padFail {
-          0% { transform: translateY(0) scale(1); filter: saturate(1); }
-          60% { transform: translateY(2px) scale(0.995); filter: saturate(0.8); }
-          100% { transform: translateY(0) scale(1); filter: saturate(1); }
-        }
-        @keyframes padCash {
-          0% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
-          50% { box-shadow: 0 0 32px rgba(16, 185, 129, 0.18); }
-          100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
-        }
-        @keyframes padMax {
-          0% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); }
-          45% { box-shadow: 0 0 48px rgba(250, 204, 21, 0.22); }
-          100% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); }
-        }
+        @keyframes padOk { 0% { transform: translateY(0) scale(1); } 55% { transform: translateY(-2px) scale(1.01); } 100% { transform: translateY(0) scale(1); } }
+        @keyframes padFail { 0% { transform: translateY(0) scale(1); filter: saturate(1); } 60% { transform: translateY(2px) scale(0.995); filter: saturate(0.8); } 100% { transform: translateY(0) scale(1); filter: saturate(1); } }
+        @keyframes padCash { 0% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); } 50% { box-shadow: 0 0 32px rgba(16, 185, 129, 0.18); } 100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); } }
+        @keyframes padMax { 0% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); } 45% { box-shadow: 0 0 48px rgba(250, 204, 21, 0.22); } 100% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); } }
         .toneSafe {
           background: radial-gradient(circle at 50% 15%, rgba(56, 189, 248, 0.14), transparent 55%),
             radial-gradient(circle at 25% 85%, rgba(34, 197, 94, 0.12), transparent 55%),
@@ -1180,12 +1211,12 @@ export default function PlayPage() {
       ) : null}
 
       <TopNav
-  playMode={playMode}
-  setPlayMode={setPlayMode}
-  soundOn={soundOn}
-  setSoundOn={setSoundOn}
-  controlsLocked={(hasStarted && !ended) || startPending}
-/>
+        playMode={playMode}
+        setPlayMode={setPlayMode}
+        soundOn={soundOn}
+        setSoundOn={setSoundOn}
+        controlsLocked={(hasStarted && !ended) || startPending || cashOutPending}
+      />
 
       <section className="mx-auto w-full max-w-6xl px-4 py-10">
         <div className="rounded-3xl border border-neutral-800 bg-neutral-900/30 p-6">
@@ -1220,7 +1251,7 @@ export default function PlayPage() {
               <div className="flex w-full max-w-xl items-center justify-between rounded-2xl border border-neutral-800 bg-neutral-900/40 p-1">
                 {CHAIN_LIST.map((c) => {
                   const isSelected = c.key === selectedChainKey;
-                  const isDisabled = c.enabled === false || (hasStarted && !ended);
+                  const isDisabled = c.enabled === false || (hasStarted && !ended) || startPending || cashOutPending;
 
                   return (
                     <button
@@ -1228,7 +1259,6 @@ export default function PlayPage() {
                       type="button"
                       onClick={() => {
                         if (isDisabled) return;
-                        if ((hasStarted && !ended) || startPending) return;
                         setSelectedChainKey(c.key);
                         if (isConnected && switchChain) {
                           try {
@@ -1236,7 +1266,7 @@ export default function PlayPage() {
                           } catch {}
                         }
                       }}
-                      disabled={isDisabled || ((hasStarted && !ended) || startPending)}
+                      disabled={isDisabled}
                       className={[
                         "flex flex-1 items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition",
                         isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-neutral-800/40",
@@ -1348,10 +1378,10 @@ export default function PlayPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        if ((hasStarted && !ended) || startPending) return;
+                        if ((hasStarted && !ended) || startPending || cashOutPending) return;
                         setPlayMode("demo");
                       }}
-                      disabled={(hasStarted && !ended) || startPending}
+                      disabled={(hasStarted && !ended) || startPending || cashOutPending}
                       className={[
                         "flex-1 rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
                         playMode === "demo"
@@ -1364,10 +1394,10 @@ export default function PlayPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        if ((hasStarted && !ended) || startPending) return;
+                        if ((hasStarted && !ended) || startPending || cashOutPending) return;
                         setPlayMode("token");
                       }}
-                      disabled={(hasStarted && !ended) || startPending}
+                      disabled={(hasStarted && !ended) || startPending || cashOutPending}
                       className={[
                         "flex-1 rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
                         playMode === "token"
@@ -1457,17 +1487,17 @@ export default function PlayPage() {
                         key={r.key}
                         type="button"
                         onClick={() => {
-                          if (hasStarted || startPending) return;
+                          if (hasStarted || startPending || cashOutPending) return;
                           setModeKey(r.key);
                         }}
                         className={[
                           "rounded-xl border px-4 py-2 text-sm font-semibold transition",
-                          hasStarted ? "opacity-60 cursor-not-allowed" : "",
+                          hasStarted || startPending || cashOutPending ? "opacity-60 cursor-not-allowed" : "",
                           active
                             ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                             : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
                         ].join(" ")}
-                        disabled={hasStarted || startPending}
+                        disabled={hasStarted || startPending || cashOutPending}
                       >
                         {r.label}
                       </button>
@@ -1485,10 +1515,10 @@ export default function PlayPage() {
                   onChange={(e) => sanitizeAndSetAmount(e.target.value)}
                   inputMode="numeric"
                   placeholder={`${MIN_AMOUNT}`}
-                  disabled={hasStarted || startPending}
+                  disabled={hasStarted || startPending || cashOutPending}
                   className={[
                     "mt-2 w-full rounded-xl border bg-neutral-900 px-4 py-3 text-sm text-neutral-50 outline-none ring-0 placeholder:text-neutral-600",
-                    hasStarted
+                    hasStarted || startPending || cashOutPending
                       ? "cursor-not-allowed border-neutral-900 opacity-60"
                       : "border-neutral-800 focus:border-neutral-700",
                   ].join(" ")}
@@ -1498,10 +1528,10 @@ export default function PlayPage() {
                   <button
                     type="button"
                     onClick={() => setAmountPreset(1_000)}
-                    disabled={hasStarted || startPending}
+                    disabled={hasStarted || startPending || cashOutPending}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
-                      hasStarted
+                      hasStarted || startPending || cashOutPending
                         ? "cursor-not-allowed border-neutral-900 opacity-60"
                         : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
@@ -1511,10 +1541,10 @@ export default function PlayPage() {
                   <button
                     type="button"
                     onClick={() => setAmountPreset(5_000)}
-                    disabled={hasStarted || startPending}
+                    disabled={hasStarted || startPending || cashOutPending}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
-                      hasStarted
+                      hasStarted || startPending || cashOutPending
                         ? "cursor-not-allowed border-neutral-900 opacity-60"
                         : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
@@ -1524,10 +1554,10 @@ export default function PlayPage() {
                   <button
                     type="button"
                     onClick={() => setAmountPreset(12_000)}
-                    disabled={hasStarted || startPending}
+                    disabled={hasStarted || startPending || cashOutPending}
                     className={[
                       "rounded-xl border bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-100",
-                      hasStarted
+                      hasStarted || startPending || cashOutPending
                         ? "cursor-not-allowed border-neutral-900 opacity-60"
                         : "border-neutral-800 hover:bg-neutral-800/60",
                     ].join(" ")}
@@ -1562,10 +1592,10 @@ export default function PlayPage() {
                         <button
                           type="button"
                           onClick={approveNow}
-                          disabled={!isConnected || !address || !allowed || hasEnoughAllowance}
+                          disabled={!isConnected || !address || !allowed || hasEnoughAllowance || cashOutPending}
                           className={[
                             "rounded-xl border px-3 py-2 text-xs font-extrabold tracking-wide transition",
-                            !isConnected || !address || !allowed || hasEnoughAllowance
+                            !isConnected || !address || !allowed || hasEnoughAllowance || cashOutPending
                               ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
                               : "border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15",
                           ].join(" ")}
@@ -1581,7 +1611,9 @@ export default function PlayPage() {
                   </>
                 ) : null}
 
-                <div className="mt-1 text-xs text-neutral-600">{hasStarted ? "Locked after START." : "Set before START."}</div>
+                <div className="mt-1 text-xs text-neutral-600">
+                  {hasStarted ? "Locked after START." : "Set before START."}
+                </div>
 
                 {maxClampNotice ? (
                   <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
@@ -1612,6 +1644,8 @@ export default function PlayPage() {
                     <span className="font-semibold">
                       {!hasStarted
                         ? "Not started"
+                        : cashOutPending
+                        ? "CASH OUT PENDING…"
                         : isFailed
                         ? "FAILED"
                         : isCashedOut
@@ -1657,7 +1691,9 @@ export default function PlayPage() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Estimated return</span>
-                    <span className="font-semibold">{hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}</span>
+                    <span className="font-semibold">
+                      {hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}
+                    </span>
                   </div>
                 </div>
 
@@ -1715,33 +1751,40 @@ export default function PlayPage() {
                   </button>
                 ) : (
                   <div className="grid grid-cols-2 gap-2">
+                    {/* ✅ When cashOutPending, this becomes a CASH OUT/SETTLING-style disabled button */}
                     <button
                       type="button"
-                      onClick={hopOnce}
-                      disabled={!canHop}
+                      onClick={() => {
+                        // If cashout pending, do nothing
+                        if (cashOutPending) return;
+                        hopOnce();
+                      }}
+                      disabled={!canHop || cashOutPending}
                       className={[
                         "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
-                        canHop
+                        cashOutPending
+                          ? "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500"
+                          : canHop
                           ? "bg-emerald-500 text-neutral-950 hover:bg-emerald-400"
                           : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
                       ].join(" ")}
                       style={hopPulse ? { animation: "hopPulse 160ms ease-out" } : undefined}
                     >
-                      HOP
+                      {cashOutPending ? "SETTLING…" : "HOP"}
                     </button>
 
                     <button
                       type="button"
                       onClick={cashOut}
-                      disabled={!canCashOut}
+                      disabled={!canCashOut || cashOutPending}
                       className={[
                         "rounded-xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
-                        canCashOut
+                        canCashOut && !cashOutPending
                           ? "bg-neutral-50 text-neutral-950 hover:bg-white"
                           : "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500",
                       ].join(" ")}
                     >
-                      CASH OUT
+                      {cashOutPending ? "SETTLING…" : "CASH OUT"}
                     </button>
                   </div>
                 )}
@@ -1754,8 +1797,12 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">Make Your Bags Great Again 🐸💰</div>
-                    <div className="mt-1 text-xs text-neutral-500">Donald Toad Coin • community-driven</div>
+                    <div className="text-sm font-semibold text-neutral-100">
+                      Make Your Bags Great Again 🐸💰
+                    </div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      Donald Toad Coin • community-driven
+                    </div>
                   </div>
                   <div className="text-xs text-neutral-400">
                     Chain: <span className="text-neutral-200">{selectedChain.name}</span> (UI)
@@ -1850,14 +1897,14 @@ export default function PlayPage() {
                         currentReturn={currentReturn}
                         modeKey={modeKey}
                         onCashOut={cashOut}
-                        cashOutEnabled={canCashOut}
+                        cashOutEnabled={canCashOut && !cashOutPending}
                       />
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* ✅ PRIMARY CTA under Canvas (FIXED SEQUENCE) */}
+              {/* ✅ PRIMARY CTA under Canvas (FIXED SEQUENCE + Cashout Pending Lock) */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
                 {!showPostOutcomeButtons ? (
                   <button
