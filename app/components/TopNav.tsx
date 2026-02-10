@@ -46,12 +46,18 @@ function DtcIcon({ size = 14 }: { size?: number }) {
   );
 }
 
+// ✅ Updated nav:
+// - Add Home
+// - Rename Swap -> Swap & Bridge
+// - Add EARN (reserved for referral section)
 const NAV = [
+  { href: "/", label: "Home" },
   { href: "/profile", label: "Profile" },
   { href: "/play", label: "Play" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/verify", label: "Verify Fairness" },
-  { href: "/swap", label: "Swap" },
+  { href: "/swap", label: "Swap & Bridge" },
+  { href: "/earn", label: "EARN" },
 ];
 
 export default function TopNav(props: TopNavProps) {
@@ -239,7 +245,7 @@ export default function TopNav(props: TopNavProps) {
                 />
                 <div className="min-w-0">
                   <div className="truncate text-lg font-bold leading-tight text-neutral-50 md:text-xl">Lilypad Leap</div>
-                  <div className="truncate text-xs text-neutral-400 md:text-sm">Product v1 (frozen)</div>
+                  <div className="truncate text-xs text-neutral-400 md:text-sm">The original multichain DTC game by Donald Toad</div>
                 </div>
               </div>
 
@@ -351,7 +357,10 @@ export default function TopNav(props: TopNavProps) {
                 ].join(" ")}
               >
                 {NAV.map((item) => {
-                  const active = pathname === item.href;
+                  // ✅ Make Home highlight on "/" only (not all routes)
+                  const active = item.href === "/" ? pathname === "/" : pathname === item.href;
+
+                  // Keep your existing Fairness label shortening
                   const label = item.label === "Verify Fairness" ? "Fairness" : item.label;
 
                   const baseClasses = [

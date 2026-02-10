@@ -73,11 +73,9 @@ export default function SwapPage() {
   const { connect, connectors } = useConnect();
   const { data: walletClient } = useWalletClient();
 
-  // Prevent hydration mismatch in that debug line
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  // Init Relay SDK once (client-side)
   useEffect(() => {
     const g = globalThis as any;
     if (g.__RELAY_CLIENT_READY__) return;
@@ -110,7 +108,6 @@ export default function SwapPage() {
     ];
   }, []);
 
-  // ✅ This is what makes the widget “see” your already-connected wallet
   const relayWallet = useMemo(() => {
     if (!walletClient) return undefined;
     return adaptViemWallet(walletClient as any);
@@ -159,7 +156,7 @@ export default function SwapPage() {
         <div className="rounded-3xl border border-neutral-800 bg-neutral-900/30 p-6">
           <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div>
-              <h1 className="text-2xl font-bold">Swap</h1>
+              <h1 className="text-2xl font-bold">Swap & Bridge</h1>
               <p className="mt-2 text-neutral-300">
                 Default: <b>ETH (Linea)</b> → <b>DTC (Linea)</b>. You can switch to any chain/token.
               </p>
@@ -178,8 +175,41 @@ export default function SwapPage() {
             </div>
           </div>
 
+          {/* =========================
+             🌉 DTC MULTICHAIN BRIDGE
+             ========================= */}
+          <div className="mt-6 rounded-2xl border border-emerald-500/20 bg-neutral-950 p-4">
+            <div className="flex items-center gap-4">
+              <img
+                src="/logo/bridge-logo.jpg"
+                alt="DTC Bridge"
+                className="h-14 w-14 rounded-xl ring-1 ring-neutral-800"
+              />
+
+              <div className="flex-1">
+                <div className="text-sm font-bold text-neutral-100">
+                  DTC Multichain Bridge
+                </div>
+
+                <div className="mt-1 text-xs text-neutral-400">
+                  Move DTC across chains using LayerZero’s secure omnichain infrastructure — Linea ⇄ Base.
+                </div>
+              </div>
+
+              <a
+                href="https://bridge.donaldtoad.com/"
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-xl bg-emerald-500 px-4 py-2 text-xs font-extrabold text-neutral-950 hover:bg-emerald-400"
+              >
+                Bridge DTC
+              </a>
+            </div>
+          </div>
+
+          {/* Swap widget */}
           <div className="mt-6 flex justify-center">
-            <div className="w-full max-w-[440px] rounded-3xl border border-neutral-800 bg-neutral-950 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+            <div className="w-full max-w-[440px] rounded-3xl border border-neutral-800 bg-neutral-950 p-4">
               <RelayKitProviderNoSSR
                 options={{
                   appName: "Lilypad Leap",
@@ -204,7 +234,7 @@ export default function SwapPage() {
             </div>
           </div>
 
-          {/* Chain cards */}
+          {/* Chain cards (unchanged) */}
           <div className="mt-8 grid gap-3">
             {CHAIN_LIST.map((c) => {
               const isBaseCard = c.chainId === 8453 || c.key === "base";
@@ -234,12 +264,6 @@ export default function SwapPage() {
                           >
                             {displayStatus}
                           </span>
-
-                          {c.isPrimary ? (
-                            <span className="rounded-full bg-neutral-800/60 px-2 py-0.5 text-xs text-neutral-200 ring-1 ring-neutral-700">
-                              PRIMARY
-                            </span>
-                          ) : null}
                         </div>
                       </div>
 
@@ -278,7 +302,6 @@ export default function SwapPage() {
                         <button
                           disabled
                           className="cursor-not-allowed rounded-xl border border-orange-500/25 bg-orange-500/10 px-4 py-2 text-sm font-semibold text-orange-200"
-                          title={isBaseCard ? "Base swap coming soon" : "Swap unavailable"}
                         >
                           SOON
                         </button>

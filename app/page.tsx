@@ -17,6 +17,7 @@ function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
       height={28}
       className="h-7 w-7 rounded-lg ring-1 ring-neutral-800"
       loading="lazy"
+      decoding="async"
     />
   );
 }
@@ -27,6 +28,92 @@ type TokenChainId = (typeof TOKEN_CHAIN_IDS)[number];
 
 function isTokenChain(id: number | undefined): id is TokenChainId {
   return !!id && (TOKEN_CHAIN_IDS as readonly number[]).includes(id);
+}
+
+const DTC_ICON_SRC = "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
+// Put your file at: public/brands/layerzero/LayerZero_logowhite.svg
+const LZ_ICON_SRC = "/brands/layerzero/LayerZero_logowhite.svg";
+
+function EcosystemList() {
+  const itemClass =
+    "flex items-center gap-3 rounded-2xl border border-neutral-800 bg-neutral-900/30 px-4 py-3 transition hover:bg-neutral-900/50";
+  const titleClass = "text-sm font-semibold text-neutral-100";
+  const subClass = "text-xs text-neutral-400";
+
+  return (
+    <div>
+      <div className="mb-3 text-sm font-semibold text-neutral-100">Powered by / Ecosystem</div>
+
+      <div className="space-y-3">
+        <a href="https://donaldtoad.com" target="_blank" rel="noreferrer" className={itemClass}>
+          <img
+            src={DTC_ICON_SRC}
+            alt="Donald Toad Coin"
+            width={32}
+            height={32}
+            className="h-8 w-8 rounded-lg ring-1 ring-neutral-800"
+            loading="lazy"
+            decoding="async"
+          />
+          <div className="leading-tight">
+            <div className={titleClass}>Donald Toad Coin</div>
+            <div className={subClass}>donaldtoad.com</div>
+          </div>
+        </a>
+
+        <a href="https://linea.build" target="_blank" rel="noreferrer" className={itemClass}>
+          <ChainIcon chainKey="linea" alt="Linea" />
+          <div className="leading-tight">
+            <div className={titleClass}>Linea</div>
+            <div className={subClass}>linea.build</div>
+          </div>
+        </a>
+
+        <a href="https://base.org" target="_blank" rel="noreferrer" className={itemClass}>
+          <ChainIcon chainKey="base" alt="Base" />
+          <div className="leading-tight">
+            <div className={titleClass}>Base</div>
+            <div className={subClass}>base.org</div>
+          </div>
+        </a>
+
+        <a href="https://layerzero.network" target="_blank" rel="noreferrer" className={itemClass}>
+          <div className="grid h-7 w-7 place-items-center overflow-hidden rounded-lg bg-neutral-950 ring-1 ring-neutral-800">
+            <img
+              src={LZ_ICON_SRC}
+              alt="LayerZero"
+              width={28}
+              height={28}
+              className="h-7 w-7"
+              loading="lazy"
+              decoding="async"
+              onError={(e) => {
+                const img = e.currentTarget as HTMLImageElement;
+                img.style.display = "none";
+                const parent = img.parentElement;
+                if (parent && !parent.querySelector("[data-fallback='lz']")) {
+                  const span = document.createElement("span");
+                  span.setAttribute("data-fallback", "lz");
+                  span.className = "text-[11px] font-extrabold text-neutral-200";
+                  span.textContent = "LZ";
+                  parent.appendChild(span);
+                }
+              }}
+            />
+          </div>
+
+          <div className="leading-tight">
+            <div className={titleClass}>LayerZero</div>
+            <div className={subClass}>layerzero.network</div>
+          </div>
+        </a>
+      </div>
+
+      <div className="mt-4 text-[11px] text-neutral-500">
+        Tip: bridge direction can be automatic. Switch your network to change direction (where applicable).
+      </div>
+    </div>
+  );
 }
 
 export default function HomePage() {
@@ -88,12 +175,12 @@ export default function HomePage() {
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
               <div className="flex flex-col gap-4 md:flex-row md:items-center">
-                {/* IMPORTANT: file must exist at /public/logo/logo.png */}
                 <img
                   src="/logo/logo.png"
                   alt="Lilypad Leap logo"
                   className="h-24 w-24 rounded-2xl ring-1 ring-neutral-800 md:h-28 md:w-28"
                   loading="eager"
+                  decoding="async"
                 />
 
                 <div className="min-w-0">
@@ -150,7 +237,7 @@ export default function HomePage() {
           <div className="mt-7 grid gap-3 md:grid-cols-3">
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
               <div className="text-sm font-semibold text-neutral-100">Play</div>
-              <div className="mt-2 text-sm text-neutral-300">Choose a mode, place a stake, then hop or cash out.</div>
+              <div className="mt-2 text-sm text-neutral-300">Place a stake, then hop or cash out.</div>
             </div>
 
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
@@ -169,76 +256,83 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Network toggle (one row: Linea | Base) */}
+          {/* Combined card: on ALL screen sizes, Ecosystem is BELOW Network (prevents tall empty block on desktop) */}
           <div className="mt-7 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-semibold text-neutral-100">Network</div>
-                <div className="mt-1 text-xs text-neutral-500">
-                  Selected: <span className="font-semibold text-neutral-200">{selectedChain?.name ?? "—"}</span>
+            {/* Network */}
+            <div>
+              <div className="flex flex-col gap-4">
+                <div>
+                  <div className="text-sm font-semibold text-neutral-100">Network</div>
+                  <div className="mt-1 text-xs text-neutral-500">
+                    Selected: <span className="font-semibold text-neutral-200">{selectedChain?.name ?? "—"}</span>
+                  </div>
                 </div>
-              </div>
 
-              <div className="w-full max-w-[520px]">
-                <div className="flex w-full overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/40 p-2">
-                  {chains.map((c) => {
-                    const active = c.chainId === selectedChainId;
-                    const showLive = active; // only selected shows LIVE
+                <div className="w-full">
+                  {/* one-row toggle always */}
+                  <div className="flex w-full gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/40 p-2">
+                    {chains.map((c) => {
+                      const active = c.chainId === selectedChainId;
+                      const showLive = active; // only selected shows LIVE
 
-                    return (
-                      <button
-                        key={c.key}
-                        type="button"
-                        onClick={() => void onPickChain(c.chainId)}
-                        className={[
-                          "flex-1 rounded-xl px-3 py-3 text-left transition",
-                          active
-                            ? "border border-emerald-500/30 bg-emerald-500/10 ring-1 ring-emerald-500/10"
-                            : "border border-transparent hover:bg-neutral-900/50",
-                        ].join(" ")}
-                      >
-                        <div className="flex items-center gap-3">
-                          <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
-
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <div className="text-sm font-semibold text-neutral-50">{c.name}</div>
-
-                              {showLive ? (
-                                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-500/20">
-                                  LIVE
-                                </span>
-                              ) : null}
+                      return (
+                        <button
+                          key={c.key}
+                          type="button"
+                          onClick={() => void onPickChain(c.chainId)}
+                          className={[
+                            "min-w-0 flex-1 rounded-xl px-3 py-3 text-left transition",
+                            active
+                              ? "border border-emerald-500/30 bg-emerald-500/10 ring-1 ring-emerald-500/10"
+                              : "border border-transparent hover:bg-neutral-900/50",
+                          ].join(" ")}
+                        >
+                          <div className="flex items-center gap-3">
+                            <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="text-sm font-semibold text-neutral-50">{c.name}</div>
+                                {showLive ? (
+                                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-500/20">
+                                    LIVE
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="mt-0.5 text-[11px] text-neutral-400">Chain ID: {c.chainId}</div>
                             </div>
-
-                            <div className="mt-0.5 text-[11px] text-neutral-400">Chain ID: {c.chainId}</div>
                           </div>
-                        </div>
-                      </button>
-                    );
-                  })}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {switchStatus ? <div className="mt-2 text-[11px] text-amber-200">{switchStatus}</div> : null}
+
+                  {!ready ? (
+                    <div className="mt-2 text-[11px] text-neutral-600">Initializing…</div>
+                  ) : isConnected ? (
+                    <div className="mt-2 text-[11px] text-neutral-600">
+                      Wallet network:{" "}
+                      <span className="text-neutral-300">
+                        {isTokenChain(walletChainId)
+                          ? chains.find((c) => c.chainId === walletChainId)?.name ?? walletChainId
+                          : walletChainId ?? "—"}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-[11px] text-neutral-600">
+                      Not connected. The toggle will switch your wallet network after you connect.
+                    </div>
+                  )}
                 </div>
-
-                {switchStatus ? <div className="mt-2 text-[11px] text-amber-200">{switchStatus}</div> : null}
-
-                {!ready ? (
-                  <div className="mt-2 text-[11px] text-neutral-600">Initializing…</div>
-                ) : isConnected ? (
-                  <div className="mt-2 text-[11px] text-neutral-600">
-                    Wallet network:{" "}
-                    <span className="text-neutral-300">
-                      {isTokenChain(walletChainId)
-                        ? chains.find((c) => c.chainId === walletChainId)?.name ?? walletChainId
-                        : walletChainId ?? "—"}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="mt-2 text-[11px] text-neutral-600">
-                    Not connected. The toggle will switch your wallet network after you connect.
-                  </div>
-                )}
               </div>
             </div>
+
+            {/* Divider */}
+            <div className="my-4 border-t border-neutral-800" />
+
+            {/* Ecosystem */}
+            <EcosystemList />
           </div>
 
           {/* Disclaimers */}
@@ -250,7 +344,7 @@ export default function HomePage() {
                 your jurisdiction, whichever is higher).
               </li>
               <li>
-                <b>Jurisdiction responsibility</b>. You are solely responsible for ensuring that accessing and using
+                <b>Jurisdiction responsibility.</b> You are solely responsible for ensuring that accessing and using
                 strategy-probability games like Lilypad Leap is lawful in your jurisdiction and at your access location.
               </li>
               <li>
