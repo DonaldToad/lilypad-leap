@@ -110,7 +110,7 @@ function EcosystemList() {
       </div>
 
       <div className="mt-4 text-[11px] text-neutral-500">
-        Tip: bridge direction can be automatic. Switch your network to change direction (where applicable).
+        
       </div>
     </div>
   );

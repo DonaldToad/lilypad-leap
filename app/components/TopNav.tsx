@@ -46,10 +46,6 @@ function DtcIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-// ✅ Updated nav:
-// - Add Home
-// - Rename Swap -> Swap & Bridge
-// - Add EARN (reserved for referral section)
 const NAV = [
   { href: "/", label: "Home" },
   { href: "/profile", label: "Profile" },
@@ -201,7 +197,6 @@ export default function TopNav(props: TopNavProps) {
       <div
         className={[
           "mx-auto w-full max-w-6xl px-3 md:px-4",
-          // Slightly tighter padding when collapsed on mobile
           mobileCollapsed ? "py-2" : "py-3",
           "md:py-4",
           "transition-[padding] duration-300 ease-out",
@@ -225,7 +220,7 @@ export default function TopNav(props: TopNavProps) {
               </div>
             </div>
 
-            {/* Wallet only (as requested) */}
+            {/* Wallet only */}
             <div className="shrink-0">
               <WalletPill compact />
             </div>
@@ -347,24 +342,20 @@ export default function TopNav(props: TopNavProps) {
               </div>
             </div>
 
-            {/* Nav row */}
-            <nav className="mt-2 flex justify-end md:mt-4">
+            {/* Nav row (FIXED: WRAPS on mobile, stays clean & accessible) */}
+            <nav className="mt-2 flex md:mt-4">
               <div
                 className={[
-                  "flex w-full justify-end gap-2 overflow-x-auto pb-1",
-                  "md:flex-wrap md:overflow-visible md:pb-0",
-                  "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                  "flex w-full flex-wrap gap-2",
+                  "justify-start md:justify-end",
                 ].join(" ")}
               >
                 {NAV.map((item) => {
-                  // ✅ Make Home highlight on "/" only (not all routes)
-                  const active = item.href === "/" ? pathname === "/" : pathname === item.href;
-
-                  // Keep your existing Fairness label shortening
+                  const active = pathname === item.href;
                   const label = item.label === "Verify Fairness" ? "Fairness" : item.label;
 
                   const baseClasses = [
-                    "shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                    "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
                     "md:px-4 md:py-2 md:text-sm",
                     active
                       ? "border-neutral-700 bg-neutral-800 text-neutral-50"
