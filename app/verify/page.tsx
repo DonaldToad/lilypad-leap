@@ -339,10 +339,14 @@ async function findTxHashesForGame(params: {
 
       for (const log of createdLogs) {
         try {
+          // ✅ Fix TS: viem wants topics as [] OR [signature, ...args]
+          const topics = ((log.topics ?? []) as unknown) as `0x${string}`[];
+          if (topics.length === 0) continue;
+
           const decoded = decodeEventLog({
             abi: EVENTS_ABI,
             data: log.data,
-            topics: log.topics,
+            topics: topics as [`0x${string}`, ...`0x${string}`[]],
           });
           if (decoded.eventName !== "GameCreated") continue;
           const gid = (decoded.args as any).gameId as Hex;
@@ -362,10 +366,14 @@ async function findTxHashesForGame(params: {
 
       for (const log of settledLogs) {
         try {
+          // ✅ Fix TS: viem wants topics as [] OR [signature, ...args]
+          const topics = ((log.topics ?? []) as unknown) as `0x${string}`[];
+          if (topics.length === 0) continue;
+
           const decoded = decodeEventLog({
             abi: EVENTS_ABI,
             data: log.data,
-            topics: log.topics,
+            topics: topics as [`0x${string}`, ...`0x${string}`[]],
           });
           if (decoded.eventName !== "GameSettled") continue;
           const gid = (decoded.args as any).gameId as Hex;
@@ -651,10 +659,14 @@ export default function VerifyPage() {
         if ((log.address ?? "").toLowerCase() !== vaultAddress.toLowerCase()) continue;
 
         try {
+          // ✅ Fix TS: viem wants topics as [] OR [signature, ...args]
+          const topics = ((log.topics ?? []) as unknown) as `0x${string}`[];
+          if (topics.length === 0) continue;
+
           const decoded = decodeEventLog({
             abi: EVENTS_ABI,
             data: log.data,
-            topics: log.topics,
+            topics: topics as [`0x${string}`, ...`0x${string}`[]],
           });
 
           if (decoded.eventName === "GameCreated") {
@@ -1144,7 +1156,12 @@ export default function VerifyPage() {
                         </div>
 
                         <div className="flex flex-col items-end gap-2">
-                          <span className={["rounded-full px-2 py-0.5 text-xs font-semibold ring-1", statusChipClasses(st)].join(" ")}>
+                          <span
+                            className={[
+                              "rounded-full px-2 py-0.5 text-xs font-semibold ring-1",
+                              statusChipClasses(st),
+                            ].join(" ")}
+                          >
                             {st}
                           </span>
 
@@ -1172,9 +1189,7 @@ export default function VerifyPage() {
                 </div>
               </div>
             ) : (
-              <div className="mt-3 text-[11px] text-neutral-600">
-                Tip: select the correct network first (Linea/Base), then import.
-              </div>
+              <div className="mt-3 text-[11px] text-neutral-600">Tip: select the correct network first (Linea/Base), then import.</div>
             )}
           </div>
 
@@ -1237,9 +1252,7 @@ export default function VerifyPage() {
                 </div>
 
                 {err ? (
-                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[11px] text-red-200">
-                    {err}
-                  </div>
+                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[11px] text-red-200">{err}</div>
                 ) : null}
 
                 <button
