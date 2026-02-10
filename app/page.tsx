@@ -38,17 +38,16 @@ export default function HomePage() {
   useEffect(() => setMounted(true), []);
   const ready = mounted;
 
-  // Only show Linea + Base
+  // Only show Linea + Base (stable order: Linea then Base)
   const chains = useMemo(() => {
     const filtered = CHAIN_LIST.filter((c) => TOKEN_CHAIN_IDS.includes(c.chainId as any));
-    // In case CHAIN_LIST changes, keep stable order: Linea then Base
     const order: Record<number, number> = { 59144: 0, 8453: 1 };
     return [...filtered].sort((a, b) => (order[a.chainId] ?? 99) - (order[b.chainId] ?? 99));
   }, []);
 
   const [selectedChainId, setSelectedChainId] = useState<number>(PRIMARY_CHAIN.chainId);
 
-  // When wallet is on a supported chain, mirror it
+  // Mirror wallet network when wallet is on a supported chain
   useEffect(() => {
     if (!ready) return;
     if (isTokenChain(walletChainId)) setSelectedChainId(walletChainId);
@@ -64,7 +63,7 @@ export default function HomePage() {
     setSwitchStatus("");
     setSelectedChainId(chainId);
 
-    // Must switch the wallet chain (same behavior as /play)
+    // Switch the wallet chain (same behavior as /play)
     if (!ready) return;
     if (!isConnected) {
       setSwitchStatus("Connect your wallet to switch network.");
@@ -172,7 +171,7 @@ export default function HomePage() {
 
           {/* Network toggle (one row: Linea | Base) */}
           <div className="mt-7 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-semibold text-neutral-100">Network</div>
                 <div className="mt-1 text-xs text-neutral-500">
@@ -184,7 +183,8 @@ export default function HomePage() {
                 <div className="flex w-full overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/40 p-2">
                   {chains.map((c) => {
                     const active = c.chainId === selectedChainId;
-                    const showLive = active; // ✅ only selected shows LIVE
+                    const showLive = active; // only selected shows LIVE
+
                     return (
                       <button
                         key={c.key}
@@ -199,6 +199,7 @@ export default function HomePage() {
                       >
                         <div className="flex items-center gap-3">
                           <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
+
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <div className="text-sm font-semibold text-neutral-50">{c.name}</div>
@@ -206,12 +207,6 @@ export default function HomePage() {
                               {showLive ? (
                                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-500/20">
                                   LIVE
-                                </span>
-                              ) : null}
-
-                              {c.isPrimary ? (
-                                <span className="rounded-full bg-neutral-800/60 px-2 py-0.5 text-[11px] text-neutral-200 ring-1 ring-neutral-700">
-                                  PRIMARY
                                 </span>
                               ) : null}
                             </div>
@@ -255,7 +250,7 @@ export default function HomePage() {
                 your jurisdiction, whichever is higher).
               </li>
               <li>
-                <b>Jurisdiction responsibility.</b> You are solely responsible for ensuring that accessing and using
+                <b>Jurisdiction responsibility</b>. You are solely responsible for ensuring that accessing and using
                 strategy-probability games like Lilypad Leap is lawful in your jurisdiction and at your access location.
               </li>
               <li>
