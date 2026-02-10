@@ -31,6 +31,7 @@ import {
   type Hex,
   zeroAddress,
   decodeEventLog,
+  isHex,
 } from "viem";
 
 type ModeKey = "safe" | "wild" | "insane";
@@ -150,8 +151,7 @@ function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
 }
 
 // DTC icon (served from your assets repo via jsdelivr)
-const DTC_ICON_SRC =
-  "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
+const DTC_ICON_SRC = "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
 
 function DtcIcon({ size = 14 }: { size?: number }) {
   return (
@@ -227,6 +227,46 @@ function randomSecret32(): Hex {
 
 type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
+
+/**
+ * ✅ Local storage for secrets (so /verify can load them on same device)
+ * key: `${chainId}:${vault}:${gameId}` -> userSecret
+ */
+const SECRET_STORE_KEY = "lilypadLeapSecretsV1";
+function secretStoreKey(chainId: number, vault: Hex, gameId: Hex) {
+  return `${chainId}:${vault.toLowerCase()}:${gameId.toLowerCase()}`;
+}
+function setStoredSecret(chainId: number, vault: Hex, gameId: Hex, userSecret: Hex) {
+  try {
+    const raw = localStorage.getItem(SECRET_STORE_KEY);
+    const obj = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    obj[secretStoreKey(chainId, vault, gameId)] = userSecret;
+    localStorage.setItem(SECRET_STORE_KEY, JSON.stringify(obj));
+  } catch {}
+}
+
+/**
+ * ✅ A shareable bundle for cross-device verification.
+ * User can paste it into /verify (bundle import) or keep it safe.
+ */
+function buildVerifyBundle(params: {
+  chainId: number;
+  vault: Hex;
+  gameId: Hex;
+  userSecret: Hex;
+  cashoutHop?: number;
+  createTxHash?: Hex;
+}) {
+  const b = {
+    chainId: params.chainId,
+    vault: params.vault,
+    gameId: params.gameId,
+    userSecret: params.userSecret,
+    cashoutHop: params.cashoutHop ?? 1,
+    txHash: params.createTxHash,
+  };
+  return JSON.stringify(b, null, 2);
+}
 
 export default function PlayPage() {
   // Prevent hydration mismatch (wallet state differs server vs client)
@@ -317,7 +357,6 @@ export default function PlayPage() {
   const { writeContractAsync } = useWriteContract();
 
   // ✅ HYDRATION-SAFE wagmi-derived values
-  // Server render + first client render will see mounted=false => stable values.
   const safeIsConnected = mounted ? isConnected : false;
   const safeAddress = mounted ? address : undefined;
   const safeChainId = mounted ? chainId : undefined;
@@ -326,8 +365,7 @@ export default function PlayPage() {
 
   // Chain selection (UI-only demo)
   const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
-  const selectedChain =
-    CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
+  const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   type PlayMode = "demo" | "token";
   const [playMode, setPlayMode] = useState<PlayMode>("demo");
@@ -336,10 +374,9 @@ export default function PlayPage() {
   const tokenChainOk = mounted && safeIsConnected && isTokenChain(safeChainId);
   const allowedForToken = tokenChainOk;
 
-  const isWrongNetwork =
-    mounted && safeIsConnected && playMode === "token" && !allowedForToken;
+  const isWrongNetwork = mounted && safeIsConnected && playMode === "token" && !allowedForToken;
 
-  // ✅ Effective chain for READS (wagmi supports chainId override in reads)
+  // ✅ Effective chain for READS
   const effectiveChainId =
     playMode === "token" && tokenChainOk ? (safeChainId as number) : selectedChain.chainId;
 
@@ -358,7 +395,7 @@ export default function PlayPage() {
   const [txError, setTxError] = useState<string>("");
   const [startPending, setStartPending] = useState<boolean>(false);
 
-  // ✅ NEW: cashout pending state (locks hopping + forces “CASH OUT / SETTLING…” everywhere)
+  // ✅ cashout pending state (locks hopping + forces “SETTLING…” everywhere)
   const [cashOutPending, setCashOutPending] = useState<boolean>(false);
 
   const [activeGameId, setActiveGameId] = useState<Hex | null>(null);
@@ -366,6 +403,10 @@ export default function PlayPage() {
   const [activeRandAnchor, setActiveRandAnchor] = useState<Hex | null>(null);
   const [settledPayoutWei, setSettledPayoutWei] = useState<bigint | null>(null);
   const [settledWon, setSettledWon] = useState<boolean | null>(null);
+
+  // ✅ verification bundle (copy/paste into /verify)
+  const [verifyBundle, setVerifyBundle] = useState<string>("");
+  const [verifyBundleCopied, setVerifyBundleCopied] = useState<boolean>(false);
 
   // Mode selection
   const [modeKey, setModeKey] = useState<ModeKey>("safe");
@@ -392,7 +433,7 @@ export default function PlayPage() {
     setRngState((Date.now() ^ 0x6a41f7f5) >>> 0);
   }, [mounted]);
 
-  // Commit hash
+  // Commit hash (UI-only demo placeholder)
   const commitHash = useMemo(() => buildCommitHash(rngState), [rngState]);
   const [commitExpanded, setCommitExpanded] = useState(false);
   const [commitCopied, setCommitCopied] = useState(false);
@@ -422,7 +463,7 @@ export default function PlayPage() {
   // Table expansion (mobile-friendly)
   const [showAllSteps, setShowAllSteps] = useState<boolean>(true);
 
-  // Scroll helper
+  // Scroll helper refs
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   const boardScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -434,7 +475,7 @@ export default function PlayPage() {
   const lastStartedAmountRef = useRef<number>(1000);
 
   // Derived tables for this mode (fixed)
-  const multTable = useMemo(() => mode.mults, [modeKey]);
+  const multTable = useMemo(() => mode.mults, [modeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Exact per-step success % used by game math
   const stepSuccessPctExact = useMemo(() => mode.pStep * 100, [mode.pStep]);
@@ -499,11 +540,7 @@ export default function PlayPage() {
   });
 
   // ✅ Read DTC balance
-  const {
-    data: balanceWei,
-    refetch: refetchBalance,
-    isFetching: balanceFetching,
-  } = useReadContract({
+  const { data: balanceWei, refetch: refetchBalance, isFetching: balanceFetching } = useReadContract({
     chainId: effectiveChainId,
     abi: ERC20_ABI,
     address: tokenAddress,
@@ -574,21 +611,10 @@ export default function PlayPage() {
     hasEnoughAllowance,
   ]);
 
-  const canHop =
-    hasStarted &&
-    !isFailed &&
-    !isCashedOut &&
-    !cashOutPending &&
-    !actionLocked &&
-    hops < MAX_HOPS;
+  const canHop = hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops < MAX_HOPS;
 
   const canCashOut =
-    hasStarted &&
-    !isFailed &&
-    !isCashedOut &&
-    !cashOutPending &&
-    !actionLocked &&
-    hops > 0;
+    hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops > 0;
 
   const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
 
@@ -633,10 +659,9 @@ export default function PlayPage() {
   // -----------------------------
   // ✅ Robust scroll helpers (mobile safe)
   // -----------------------------
-  const isMobileNow = () =>
-    typeof window !== "undefined" && window.innerWidth < 900;
+  const isMobileNow = () => (typeof window !== "undefined" ? window.innerWidth < 900 : false);
 
-  const scrollToRefTop = useCallback((ref: React.RefObject<HTMLElement>, offset = 84) => {
+  const scrollToRefTop = useCallback((ref: { current: HTMLElement | null }, offset = 84) => {
     const el = ref.current;
     if (!el) return false;
     const y = el.getBoundingClientRect().top + window.scrollY - offset;
@@ -645,7 +670,7 @@ export default function PlayPage() {
   }, []);
 
   const scrollToRefTopWithRetry = useCallback(
-    (ref: React.RefObject<HTMLElement>, opts?: { offset?: number; tries?: number; delayMs?: number }) => {
+    (ref: { current: HTMLElement | null }, opts?: { offset?: number; tries?: number; delayMs?: number }) => {
       const offset = opts?.offset ?? 84;
       const tries = opts?.tries ?? 10;
       const delayMs = opts?.delayMs ?? 120;
@@ -657,7 +682,6 @@ export default function PlayPage() {
       const tick = () => {
         attempt += 1;
 
-        // Wait for layout + fonts + wallet UI overlays to settle
         window.requestAnimationFrame(() => {
           const ok = scrollToRefTop(ref, offset);
           if (ok) return;
@@ -668,7 +692,6 @@ export default function PlayPage() {
         });
       };
 
-      // First try after a tiny delay
       window.setTimeout(tick, 80);
     },
     [scrollToRefTop]
@@ -728,7 +751,6 @@ export default function PlayPage() {
     setIsFailed(false);
     setIsCashedOut(false);
 
-    // reset pending state
     setCashOutPending(false);
 
     setLastRoll(null);
@@ -749,6 +771,19 @@ export default function PlayPage() {
     setAnimNonce((n) => n + 1);
 
     lockActions(0);
+
+    // clear game-specific states
+    setActiveGameId(null);
+    setActiveUserSecret(null);
+    setActiveRandAnchor(null);
+    setSettledPayoutWei(null);
+    setSettledWon(null);
+
+    setVerifyBundle("");
+    setVerifyBundleCopied(false);
+
+    setTxStatus("");
+    setTxError("");
   }
 
   // "PLAY AGAIN" uses previous started amount, and starts immediately
@@ -853,9 +888,11 @@ export default function PlayPage() {
     setActiveRandAnchor(null);
     setSettledPayoutWei(null);
     setSettledWon(null);
-    setTxError("");
 
-    // ensure no leftover pending
+    setVerifyBundle("");
+    setVerifyBundleCopied(false);
+
+    setTxError("");
     setCashOutPending(false);
 
     if (playMode === "demo") {
@@ -884,13 +921,19 @@ export default function PlayPage() {
 
     try {
       if (!publicClient) throw new Error("No public client");
+      if (vaultAddress === zeroAddress) throw new Error("Missing vault address for this chain.");
+      if (tokenAddress === zeroAddress) throw new Error("Missing token address for this chain.");
 
       const userSecret = randomSecret32();
+
+      // NOTE: Solidity usually stores commit = keccak256(abi.encodePacked(userSecret)).
+      // If your contract uses keccak256(bytes32) directly, keccak256(userSecret) is fine.
       const userCommit = keccak256(userSecret);
+
       setActiveUserSecret(userSecret);
 
       // Use secret as a UX seed (purely for animation/demo rolls)
-      const seed32 = Number((BigInt(userSecret) & 0xffffffffn) as bigint);
+      const seed32 = Number(BigInt(userSecret) & 0xffffffffn);
       setRngState((seed32 >>> 0) as number);
 
       const modeEnum = modeKey === "safe" ? 0 : modeKey === "wild" ? 1 : 2;
@@ -907,9 +950,12 @@ export default function PlayPage() {
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
 
+      // ✅ robust: only decode vault logs
       let gameId: Hex | null = null;
       let randAnchor: Hex | null = null;
+
       for (const log of receipt.logs) {
+        if ((log.address ?? "").toLowerCase() !== vaultAddress.toLowerCase()) continue;
         try {
           const decoded = decodeEventLog({
             abi: LILYPAD_VAULT_ABI,
@@ -917,16 +963,35 @@ export default function PlayPage() {
             topics: log.topics,
           });
           if (decoded.eventName === "GameCreated") {
-            gameId = decoded.args.gameId as Hex;
-            randAnchor = (decoded.args.randAnchor as Hex) ?? null;
+            gameId = (decoded.args as any).gameId as Hex;
+            randAnchor = ((decoded.args as any).randAnchor as Hex) ?? null;
             break;
           }
         } catch {}
       }
-      if (!gameId) throw new Error("GameCreated event not found in receipt.");
+
+      if (!gameId || !isHex(gameId) || gameId.length !== 66) {
+        throw new Error("GameCreated event not found in receipt.");
+      }
 
       setActiveGameId(gameId);
       setActiveRandAnchor(randAnchor);
+
+      // ✅ CRITICAL: store secret locally so /verify can find it on same device
+      setStoredSecret(effectiveChainId, vaultAddress as Hex, gameId, userSecret);
+
+      // ✅ Build a shareable verification bundle for cross-device
+      setVerifyBundle(
+        buildVerifyBundle({
+          chainId: effectiveChainId,
+          vault: vaultAddress as Hex,
+          gameId,
+          userSecret,
+          createTxHash: hash as Hex,
+          cashoutHop: 1,
+        })
+      );
+
       setHasStarted(true);
 
       setOutcome("idle");
@@ -996,9 +1061,7 @@ export default function PlayPage() {
     if (!passed) {
       setIsFailed(true);
       setOutcome("bust");
-      setOutcomeText(
-        `Failed on hop ${nextHopNo}. Roll ${rollPct.toFixed(3)} > ${requiredPct.toFixed(6)}%.`
-      );
+      setOutcomeText(`Failed on hop ${nextHopNo}. Roll ${rollPct.toFixed(3)} > ${requiredPct.toFixed(6)}%.`);
 
       setFailFlash(true);
       window.setTimeout(() => setFailFlash(false), 380);
@@ -1019,9 +1082,9 @@ export default function PlayPage() {
 
     setOutcome("success");
     setOutcomeText(
-      `Hop ${completedHop} cleared. Roll ${rollPct.toFixed(3)} ≤ ${requiredPct.toFixed(
-        6
-      )}%. Cash Out now: ${fmtX(newMult)}.`
+      `Hop ${completedHop} cleared. Roll ${rollPct.toFixed(3)} ≤ ${requiredPct.toFixed(6)}%. Cash Out now: ${fmtX(
+        newMult
+      )}.`
     );
 
     setPoppedHop(completedHop);
@@ -1032,9 +1095,7 @@ export default function PlayPage() {
     // MAX HIT reached
     if (completedHop >= MAX_HOPS) {
       setOutcome("maxhit");
-      setOutcomeText(
-        `MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`
-      );
+      setOutcomeText(`MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`);
 
       playSound("maxhit");
       if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
@@ -1079,7 +1140,9 @@ export default function PlayPage() {
 
       let payout: bigint | null = null;
       let won: boolean | null = null;
+
       for (const log of receipt.logs) {
+        if ((log.address ?? "").toLowerCase() !== vaultAddress.toLowerCase()) continue;
         try {
           const decoded = decodeEventLog({
             abi: LILYPAD_VAULT_ABI,
@@ -1087,8 +1150,8 @@ export default function PlayPage() {
             topics: log.topics,
           });
           if (decoded.eventName === "GameSettled") {
-            payout = decoded.args.payout as bigint;
-            won = decoded.args.won as boolean;
+            payout = (decoded.args as any).payout as bigint;
+            won = (decoded.args as any).won as boolean;
             break;
           }
         } catch {}
@@ -1101,6 +1164,16 @@ export default function PlayPage() {
 
       // Mark as ended only after settle succeeds
       setIsCashedOut(true);
+
+      // ✅ Update bundle with cashout hop + settle tx hash
+      if (activeGameId && activeUserSecret && verifyBundle) {
+        try {
+          const b = JSON.parse(verifyBundle);
+          b.cashoutHop = cashoutHop;
+          b.txHash = hash;
+          setVerifyBundle(JSON.stringify(b, null, 2));
+        } catch {}
+      }
 
       if (payout && payout > 0n) {
         setOutcome("cashout");
@@ -1142,9 +1215,7 @@ export default function PlayPage() {
       if (!canCashOut) return;
       setIsCashedOut(true);
       setOutcome("cashout");
-      setOutcomeText(
-        `Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`
-      );
+      setOutcomeText(`Cash Out at ${fmtX(currentMult)}. Estimated return: ${fmtInt(currentReturn)} DTC (demo).`);
       playSound("cashout");
       triggerAnim("cash_out");
       window.setTimeout(() => scrollToBoard(), 160);
@@ -1181,7 +1252,6 @@ export default function PlayPage() {
     const el = document.getElementById(targetId);
     if (!el) return;
 
-    // Use scrollIntoView inside the table area (works fine)
     el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   }, [hops, isFailed, isCashedOut, lastAttemptHop]);
 
@@ -1231,7 +1301,6 @@ export default function PlayPage() {
     return s;
   }, [showAllSteps, hasStarted, isFailed, lastAttemptHop, hops]);
 
-  // 2 lilypads “no assets” look classes
   const padFxClass =
     animEvent === "hop_ok"
       ? "padFxOk"
@@ -1243,10 +1312,8 @@ export default function PlayPage() {
       ? "padFxMax"
       : "";
 
-  const modeToneClass =
-    modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
+  const modeToneClass = modeKey === "safe" ? "toneSafe" : modeKey === "wild" ? "toneWild" : "toneInsane";
 
-  // BELOW-CANVAS CTA FIX:
   const showPostOutcomeButtons = ended;
 
   const bottomPrimaryLabel = useMemo(() => {
@@ -1286,7 +1353,6 @@ export default function PlayPage() {
 
   const soundEmoji = soundOn ? "📢" : "🔇";
 
-  // ✅ Hydration-safe header network label
   const headerNetworkName =
     mounted && playMode === "token" && safeIsConnected && tokenChainOk
       ? CHAIN_LIST.find((c) => c.chainId === safeChainId)?.name ?? "—"
@@ -1314,9 +1380,7 @@ export default function PlayPage() {
 
     if (!isTokenChain(safeChainId)) {
       const target =
-        selectedChain.chainId === 59144 || selectedChain.chainId === 8453
-          ? selectedChain.chainId
-          : 59144;
+        selectedChain.chainId === 59144 || selectedChain.chainId === 8453 ? selectedChain.chainId : 59144;
 
       try {
         setTxError("");
@@ -1338,75 +1402,187 @@ export default function PlayPage() {
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
       <style jsx global>{`
+        /* Hide scrollbars but keep scrolling */
+        .noScrollbars {
+          scrollbar-width: none; /* Firefox */
+          -ms-overflow-style: none; /* IE/Edge legacy */
+        }
+        .noScrollbars::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          display: none; /* Chrome/Safari */
+        }
+
         @keyframes rowPop {
-          0% { transform: scale(1); box-shadow: none; }
-          45% { transform: scale(1.02); box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.2); }
-          100% { transform: scale(1); box-shadow: none; }
+          0% {
+            transform: scale(1);
+            box-shadow: none;
+          }
+          45% {
+            transform: scale(1.02);
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.2);
+          }
+          100% {
+            transform: scale(1);
+            box-shadow: none;
+          }
         }
         @keyframes failShake {
-          0% { transform: translateX(0); }
-          20% { transform: translateX(-6px); }
-          40% { transform: translateX(6px); }
-          60% { transform: translateX(-5px); }
-          80% { transform: translateX(5px); }
-          100% { transform: translateX(0); }
+          0% {
+            transform: translateX(0);
+          }
+          20% {
+            transform: translateX(-6px);
+          }
+          40% {
+            transform: translateX(6px);
+          }
+          60% {
+            transform: translateX(-5px);
+          }
+          80% {
+            transform: translateX(5px);
+          }
+          100% {
+            transform: translateX(0);
+          }
         }
         @keyframes failFlash {
-          0% { opacity: 0; }
-          25% { opacity: 0.55; }
-          100% { opacity: 0; }
+          0% {
+            opacity: 0;
+          }
+          25% {
+            opacity: 0.55;
+          }
+          100% {
+            opacity: 0;
+          }
         }
         @keyframes hopPulse {
-          0% { transform: scale(1); }
-          50% { transform: scale(1.03); }
-          100% { transform: scale(1); }
+          0% {
+            transform: scale(1);
+          }
+          50% {
+            transform: scale(1.03);
+          }
+          100% {
+            transform: scale(1);
+          }
         }
         @keyframes activeGlow {
-          0%, 100% { box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12); }
-          50% { box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1); }
+          0%,
+          100% {
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12);
+          }
+          50% {
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18), 0 0 18px rgba(148, 163, 184, 0.1);
+          }
         }
         @keyframes soundPulseGlow {
-          0%, 100% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18), 0 0 0 rgba(16, 185, 129, 0); transform: translateZ(0); }
-          50% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.28), 0 0 18px rgba(16, 185, 129, 0.12); }
+          0%,
+          100% {
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18), 0 0 0 rgba(16, 185, 129, 0);
+            transform: translateZ(0);
+          }
+          50% {
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.28), 0 0 18px rgba(16, 185, 129, 0.12);
+          }
         }
-        .soundPulse { animation: soundPulseGlow 1.35s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) { .soundPulse { animation: none !important; } }
+        .soundPulse {
+          animation: soundPulseGlow 1.35s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .soundPulse {
+            animation: none !important;
+          }
+        }
 
         @keyframes selectedGlowPulse {
-          0%, 100% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25), 0 0 18px rgba(16, 185, 129, 0.1); }
-          50% { box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 28px rgba(16, 185, 129, 0.16); }
+          0%,
+          100% {
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25), 0 0 18px rgba(16, 185, 129, 0.1);
+          }
+          50% {
+            box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 28px rgba(16, 185, 129, 0.16);
+          }
         }
-        .selectedGlow { animation: selectedGlowPulse 1.6s ease-in-out infinite; }
-        @media (prefers-reduced-motion: reduce) { .selectedGlow { animation: none !important; } }
+        .selectedGlow {
+          animation: selectedGlowPulse 1.6s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .selectedGlow {
+            animation: none !important;
+          }
+        }
 
         @keyframes padBob {
-          0%, 100% { transform: translateY(0); }
-          50% { transform: translateY(-2px); }
+          0%,
+          100% {
+            transform: translateY(0);
+          }
+          50% {
+            transform: translateY(-2px);
+          }
         }
         @keyframes padRipple {
-          0% { transform: translate(-50%, -50%) scale(0.7); opacity: 0; }
-          15% { opacity: 0.28; }
-          100% { transform: translate(-50%, -50%) scale(1.55); opacity: 0; }
+          0% {
+            transform: translate(-50%, -50%) scale(0.7);
+            opacity: 0;
+          }
+          15% {
+            opacity: 0.28;
+          }
+          100% {
+            transform: translate(-50%, -50%) scale(1.55);
+            opacity: 0;
+          }
         }
         @keyframes padOk {
-          0% { transform: translateY(0) scale(1); }
-          55% { transform: translateY(-2px) scale(1.01); }
-          100% { transform: translateY(0) scale(1); }
+          0% {
+            transform: translateY(0) scale(1);
+          }
+          55% {
+            transform: translateY(-2px) scale(1.01);
+          }
+          100% {
+            transform: translateY(0) scale(1);
+          }
         }
         @keyframes padFail {
-          0% { transform: translateY(0) scale(1); filter: saturate(1); }
-          60% { transform: translateY(2px) scale(0.995); filter: saturate(0.8); }
-          100% { transform: translateY(0) scale(1); filter: saturate(1); }
+          0% {
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+          }
+          60% {
+            transform: translateY(2px) scale(0.995);
+            filter: saturate(0.8);
+          }
+          100% {
+            transform: translateY(0) scale(1);
+            filter: saturate(1);
+          }
         }
         @keyframes padCash {
-          0% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
-          50% { box-shadow: 0 0 32px rgba(16, 185, 129, 0.18); }
-          100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0); }
+          0% {
+            box-shadow: 0 0 0 rgba(16, 185, 129, 0);
+          }
+          50% {
+            box-shadow: 0 0 32px rgba(16, 185, 129, 0.18);
+          }
+          100% {
+            box-shadow: 0 0 0 rgba(16, 185, 129, 0);
+          }
         }
         @keyframes padMax {
-          0% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); }
-          45% { box-shadow: 0 0 48px rgba(250, 204, 21, 0.22); }
-          100% { box-shadow: 0 0 0 rgba(250, 204, 21, 0); }
+          0% {
+            box-shadow: 0 0 0 rgba(250, 204, 21, 0);
+          }
+          45% {
+            box-shadow: 0 0 48px rgba(250, 204, 21, 0.22);
+          }
+          100% {
+            box-shadow: 0 0 0 rgba(250, 204, 21, 0);
+          }
         }
 
         .toneSafe {
@@ -1424,10 +1600,18 @@ export default function PlayPage() {
             radial-gradient(circle at 25% 85%, rgba(250, 204, 21, 0.12), transparent 55%),
             linear-gradient(180deg, rgba(2, 6, 23, 0.55), rgba(2, 6, 23, 0.25));
         }
-        .padFxOk { animation: padOk 260ms ease-out; }
-        .padFxFail { animation: padFail 520ms ease-out; }
-        .padFxCash { animation: padCash 520ms ease-out; }
-        .padFxMax { animation: padMax 680ms ease-out; }
+        .padFxOk {
+          animation: padOk 260ms ease-out;
+        }
+        .padFxFail {
+          animation: padFail 520ms ease-out;
+        }
+        .padFxCash {
+          animation: padCash 520ms ease-out;
+        }
+        .padFxMax {
+          animation: padMax 680ms ease-out;
+        }
       `}</style>
 
       {failFlash ? (
@@ -1454,8 +1638,7 @@ export default function PlayPage() {
             <div>
               <h1 className="text-2xl font-bold">Play</h1>
               <p className="mt-2 text-neutral-300">
-                Choose a route, set an amount, then decide: <b>HOP</b> or <b>CASH OUT</b> — up to{" "}
-                <b>10 hops</b>.
+                Choose a route, set an amount, then decide: <b>HOP</b> or <b>CASH OUT</b> — up to <b>10 hops</b>.
               </p>
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -1484,11 +1667,7 @@ export default function PlayPage() {
               <div className="flex w-full max-w-xl items-center justify-between rounded-2xl border border-neutral-800 bg-neutral-900/40 p-1">
                 {CHAIN_LIST.map((c) => {
                   const isSelected = c.key === selectedChainKey;
-                  const isDisabled =
-                    c.enabled === false ||
-                    (hasStarted && !ended) ||
-                    startPending ||
-                    cashOutPending;
+                  const isDisabled = c.enabled === false || (hasStarted && !ended) || startPending || cashOutPending;
 
                   return (
                     <button
@@ -1518,12 +1697,8 @@ export default function PlayPage() {
                       <div className="flex items-center gap-2">
                         <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
                         <div className="leading-tight">
-                          <div className="text-sm font-semibold text-neutral-100">
-                            {c.name}
-                          </div>
-                          <div className="text-[11px] text-neutral-500">
-                            Chain ID: {c.chainId}
-                          </div>
+                          <div className="text-sm font-semibold text-neutral-100">{c.name}</div>
+                          <div className="text-[11px] text-neutral-500">Chain ID: {c.chainId}</div>
                         </div>
                       </div>
 
@@ -1601,7 +1776,6 @@ export default function PlayPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        // ✅ hydration-safe: only callable after mounted
                         const c0 = safeConnectors?.[0];
                         if (!mounted || !c0) return;
                         connect({ connector: c0 });
@@ -1674,6 +1848,38 @@ export default function PlayPage() {
               {txError ? (
                 <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[11px] text-red-200">
                   {txError}
+                </div>
+              ) : null}
+
+              {/* ✅ Verify bundle UI (only appears after TOKEN start) */}
+              {playMode === "token" && verifyBundle ? (
+                <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-neutral-200">Verify bundle</div>
+                      <div className="mt-0.5 text-[11px] text-neutral-500">
+                        Save this. Paste into /verify on any device.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const ok = await copyText(verifyBundle);
+                        if (ok) {
+                          setVerifyBundleCopied(true);
+                          window.setTimeout(() => setVerifyBundleCopied(false), 900);
+                        }
+                      }}
+                      className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-extrabold text-neutral-100 hover:bg-neutral-800/60"
+                    >
+                      {verifyBundleCopied ? "COPIED" : "COPY JSON"}
+                    </button>
+                  </div>
+
+                  {/* ✅ CLEAN: hide scrollbars, keep vertical scroll, prevent horizontal bar */}
+                  <pre className="noScrollbars mt-3 max-h-40 overflow-auto rounded-2xl border border-neutral-800 bg-neutral-950 p-3 text-[11px] text-neutral-200 whitespace-pre-wrap break-words">
+                    {verifyBundle}
+                  </pre>
                 </div>
               ) : null}
 
@@ -1764,8 +1970,7 @@ export default function PlayPage() {
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900/60 px-2 py-0.5 font-semibold text-neutral-200">
-                        Balance: <span className="text-neutral-50">{balanceLabel}</span>{" "}
-                        <DtcIcon size={12} />
+                        Balance: <span className="text-neutral-50">{balanceLabel}</span> <DtcIcon size={12} />
                       </span>
                     )}
                   </div>
@@ -1983,9 +2188,7 @@ export default function PlayPage() {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-neutral-500">Commit hash</span>
-                      <span className="text-neutral-600">
-                        {commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}
-                      </span>
+                      <span className="text-neutral-600">{commitCopied ? "copied" : commitExpanded ? "▴" : "▾"}</span>
                     </div>
 
                     <div className="mt-1 break-all font-mono text-neutral-200">
@@ -2066,12 +2269,8 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">
-                      Make Your Bags Great Again 🐸💰
-                    </div>
-                    <div className="mt-1 text-xs text-neutral-500">
-                      Donald Toad Coin • community-driven
-                    </div>
+                    <div className="text-sm font-semibold text-neutral-100">Make Your Bags Great Again 🐸💰</div>
+                    <div className="mt-1 text-xs text-neutral-500">Donald Toad Coin • community-driven</div>
                   </div>
                   <div className="text-xs text-neutral-400">
                     Chain: <span className="text-neutral-200">{selectedChain.name}</span> (UI)
@@ -2082,10 +2281,7 @@ export default function PlayPage() {
                   <div
                     ref={boardScrollRef}
                     className={`relative w-full ${modeToneClass}`}
-                    style={{
-                      paddingTop: "64%",
-                      minHeight: 420,
-                    }}
+                    style={{ paddingTop: "64%", minHeight: 420 }}
                   >
                     <div className="absolute inset-0">
                       <div className="absolute inset-0 bg-gradient-to-b from-neutral-950/20 via-neutral-950/10 to-neutral-950/30" />
@@ -2105,8 +2301,7 @@ export default function PlayPage() {
                           style={{
                             background:
                               "radial-gradient(circle at 35% 35%, rgba(34,197,94,0.22), rgba(34,197,94,0.10) 45%, rgba(16,185,129,0.05) 70%, rgba(0,0,0,0) 100%)",
-                            boxShadow:
-                              "inset 0 0 0 1px rgba(16,185,129,0.08), 0 10px 30px rgba(0,0,0,0.35)",
+                            boxShadow: "inset 0 0 0 1px rgba(16,185,129,0.08), 0 10px 30px rgba(0,0,0,0.35)",
                             animation: "padBob 1.8s ease-in-out infinite",
                           }}
                         />
@@ -2122,9 +2317,7 @@ export default function PlayPage() {
                           style={{
                             transform: "translate(-50%, -50%)",
                             animation:
-                              animEvent === "hop_ok" || animEvent === "hop_fail"
-                                ? "padRipple 520ms ease-out"
-                                : "none",
+                              animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
                           }}
                         />
                       </div>
@@ -2136,8 +2329,7 @@ export default function PlayPage() {
                           style={{
                             background:
                               "radial-gradient(circle at 40% 40%, rgba(34,197,94,0.18), rgba(34,197,94,0.08) 50%, rgba(16,185,129,0.03) 75%, rgba(0,0,0,0) 100%)",
-                            boxShadow:
-                              "inset 0 0 0 1px rgba(16,185,129,0.06), 0 8px 24px rgba(0,0,0,0.32)",
+                            boxShadow: "inset 0 0 0 1px rgba(16,185,129,0.06), 0 8px 24px rgba(0,0,0,0.32)",
                             animation: "padBob 2.1s ease-in-out infinite",
                           }}
                         />
@@ -2235,9 +2427,11 @@ export default function PlayPage() {
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">Steps Win probability and Cash Out multiplier</div>
+                    <div className="text-sm font-semibold text-neutral-100">
+                      Steps, Win probability and Cash Out multiplier
+                    </div>
                     <div className="mt-1 text-xs text-neutral-500">
-                      Success is fixed per mode; UI shows rounded-up whole %, but math uses exact precision.
+                      Success is fixed per mode; UI shows whole % and math uses exact precision.
                     </div>
                   </div>
 
@@ -2255,7 +2449,7 @@ export default function PlayPage() {
                 <div className="mt-4 overflow-hidden rounded-2xl border border-neutral-800">
                   <div className="grid grid-cols-[90px_1fr_140px] bg-neutral-900/60 px-4 py-3 text-xs font-semibold text-neutral-300">
                     <div>Hop</div>
-                    <div className="text-center">Win Rate</div>
+                    <div className="text-center">Success Probability</div>
                     <div className="text-right">Cash Out</div>
                   </div>
 
@@ -2266,29 +2460,16 @@ export default function PlayPage() {
 
                       const isCompleted = hopNo <= hops && !isFailed;
                       const isActive =
-                        hopNo === hops + 1 &&
-                        !isFailed &&
-                        !isCashedOut &&
-                        hasStarted &&
-                        hops < MAX_HOPS;
+                        hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
 
                       const rowBase = "grid grid-cols-[90px_1fr_140px] px-4 py-3 text-sm";
-                      const rowBg = isCompleted
-                        ? "bg-emerald-500/10"
-                        : isActive
-                        ? "bg-neutral-900/40"
-                        : "bg-neutral-950";
+                      const rowBg = isCompleted ? "bg-emerald-500/10" : isActive ? "bg-neutral-900/40" : "bg-neutral-950";
 
-                      const popStyle =
-                        poppedHop === hopNo ? ({ animation: "rowPop 420ms ease-out" } as const) : undefined;
+                      const popStyle = poppedHop === hopNo ? ({ animation: "rowPop 420ms ease-out" } as const) : undefined;
 
-                      const showRoll =
-                        lastAttemptHop === hopNo &&
-                        lastRoll !== null &&
-                        lastRequiredPct !== null;
+                      const showRoll = lastAttemptHop === hopNo && lastRoll !== null && lastRequiredPct !== null;
 
-                      const clearedVisible =
-                        isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
+                      const clearedVisible = isCompleted && hops >= 2 && hopNo > Math.max(0, hops - 3);
 
                       const showFailedChip = isFailed && lastAttemptHop === hopNo;
                       const showCashedChip = isCashedOut && hopNo === hops && hops > 0;
@@ -2329,9 +2510,7 @@ export default function PlayPage() {
                           </div>
 
                           <div className="text-center">
-                            <span className="font-semibold text-neutral-100">
-                              {ceilPercent(stepSuccessPctExact)}
-                            </span>
+                            <span className="font-semibold text-neutral-100">{ceilPercent(stepSuccessPctExact)}</span>
 
                             {showRoll ? (
                               <span className="ml-2 text-xs text-neutral-400">
@@ -2340,9 +2519,7 @@ export default function PlayPage() {
                             ) : null}
                           </div>
 
-                          <div className="text-right font-semibold text-neutral-100">
-                            {fmtX(multTable[idx])}
-                          </div>
+                          <div className="text-right font-semibold text-neutral-100">{fmtX(multTable[idx])}</div>
                         </div>
                       );
                     })}
