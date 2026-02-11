@@ -53,7 +53,7 @@ const NAV = [
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/verify", label: "Verify Fairness" },
   { href: "/swap", label: "Swap & Bridge" },
-  { href: "/earn", label: "EARN" },
+  { href: "/earn", label: "Earn" },
 ];
 
 export default function TopNav(props: TopNavProps) {
