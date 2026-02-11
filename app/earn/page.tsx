@@ -2,14 +2,14 @@
 "use client";
 
 import TopNav from "../components/TopNav";
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useAccount,
   useChainId,
+  usePublicClient,
   useReadContract,
   useSwitchChain,
   useWriteContract,
-  usePublicClient,
 } from "wagmi";
 import { zeroAddress, type Hex, isHex, formatUnits } from "viem";
 
@@ -22,18 +22,6 @@ import {
 } from "../lib/addresses";
 
 const SITE_ORIGIN = "https://hop.donaldtoad.com";
-
-/**
- * ==========================
- * Option C: GitHub RAW bundles
- * ==========================
- * Put bundles in a public repo and serve via raw.githubusercontent.com
- *
- * Example:
- * https://raw.githubusercontent.com/DonaldToad/lilypad-claims/main/claims/59144/12/0xabc....json
- */
-const CLAIMS_BASE_URL =
-  "https://raw.githubusercontent.com/DonaldToad/lilypad-claims/main/claims"; // <-- CHANGE ME
 
 // Token-mode chains you support (Linea + Base)
 const TOKEN_CHAIN_IDS = [59144, 8453] as const;
@@ -78,66 +66,106 @@ function fmtNum(n: number, maxFrac = 6) {
 }
 
 /**
- * WeeklyRewardsDistributor ABI (minimal: reads + claim)
+ * ==========================
+ * Option C: GitHub RAW bundle URL
+ * ==========================
+ * Put claim bundles somewhere public, e.g.:
+ *   https://raw.githubusercontent.com/<OWNER>/<REPO>/<BRANCH>/claims/<chainId>/<user>.json
+ *
+ * Example structure:
+ *   claims/59144/0xabc....json
+ *   claims/8453/0xabc....json
+ *
+ * The JSON must be:
+ * {
+ *   "epochId": 12,
+ *   "amount": "123000000000000000000",        // uint256 as string (wei)
+ *   "generatedLoss": "456000000000000000000", // uint256 as string (wei)
+ *   "proof": ["0x...", "0x..."]
+ * }
  */
+const CLAIMS_GITHUB_RAW_BASE =
+  "https://raw.githubusercontent.com/DonaldToad/lilypad-leap-claims/main/claims";
+
+function claimBundleUrl(chainId: number, user: string) {
+  return `${CLAIMS_GITHUB_RAW_BASE}/${chainId}/${user}.json`;
+}
+
+// Minimal ABI for WeeklyRewardsDistributor (just what Earn needs)
 const WEEKLY_REWARDS_DISTRIBUTOR_ABI = [
   {
     type: "function",
     name: "currentEpoch",
     stateMutability: "view",
     inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  {
+    type: "function",
+    name: "epochs",
+    stateMutability: "view",
+    inputs: [{ type: "uint256", name: "" }],
+    outputs: [
+      { type: "bytes32", name: "merkleRoot" },
+      { type: "uint256", name: "start" },
+      { type: "uint256", name: "end" },
+      { type: "uint256", name: "totalFunded" },
+    ],
   },
   {
     type: "function",
     name: "claimed",
     stateMutability: "view",
     inputs: [
-      { name: "", type: "uint256" },
-      { name: "", type: "address" },
+      { type: "uint256", name: "" },
+      { type: "address", name: "" },
     ],
-    outputs: [{ name: "", type: "bool" }],
+    outputs: [{ type: "bool", name: "" }],
   },
   {
     type: "function",
     name: "claim",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "epochId", type: "uint256" },
-      { name: "amount", type: "uint256" },
-      { name: "generatedLoss", type: "uint256" },
-      { name: "proof", type: "bytes32[]" },
+      { type: "uint256", name: "epochId" },
+      { type: "uint256", name: "amount" },
+      { type: "uint256", name: "generatedLoss" },
+      { type: "bytes32[]", name: "proof" },
     ],
     outputs: [],
   },
 ] as const;
 
 type ClaimBundle = {
-  epochId: number | string;
-  amount: string; // uint256 as string
-  generatedLoss: string; // uint256 as string
-  proof: `0x${string}`[];
+  epochId: number;
+  amount: string; // uint256 string
+  generatedLoss: string; // uint256 string
+  proof: string[]; // bytes32[]
 };
+
+function isHex32(x: string) {
+  return typeof x === "string" && x.startsWith("0x") && x.length === 66;
+}
 
 export default function EarnPage() {
   const { address, isConnected } = useAccount();
   const walletChainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
-  const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
 
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
   const ready = mounted;
 
-  // Only show Linea + Base (stable order)
+  // Only show Linea + Base (stable order: Linea then Base)
   const chains = useMemo(() => {
     const filtered = CHAIN_LIST.filter((c) => TOKEN_CHAIN_IDS.includes(c.chainId as any));
     const order: Record<number, number> = { 59144: 0, 8453: 1 };
     return [...filtered].sort((a, b) => (order[a.chainId] ?? 99) - (order[b.chainId] ?? 99));
   }, []);
 
-  const [selectedChainId, setSelectedChainId] = useState<number>(59144);
+  const [selectedChainId, setSelectedChainId] = useState<number>(TOKEN_CHAIN_IDS[0]);
 
   // Mirror wallet network when wallet is on a supported chain
   useEffect(() => {
@@ -149,34 +177,67 @@ export default function EarnPage() {
     return chains.find((c) => c.chainId === selectedChainId) ?? chains[0];
   }, [chains, selectedChainId]);
 
-  const chainName = selectedChain?.name ?? "—";
+  const effectiveChainId = ready ? selectedChainId : undefined;
 
   const registryAddress = useMemo(() => {
-    return (REF_REGISTRY_BY_CHAIN[selectedChainId] ?? zeroAddress) as `0x${string}`;
-  }, [selectedChainId]);
+    if (!effectiveChainId) return zeroAddress as `0x${string}`;
+    return (REF_REGISTRY_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  }, [effectiveChainId]);
 
   const distributorAddress = useMemo(() => {
-    return (WEEKLY_REWARDS_DISTRIBUTOR_BY_CHAIN[selectedChainId] ?? zeroAddress) as `0x${string}`;
-  }, [selectedChainId]);
+    if (!effectiveChainId) return zeroAddress as `0x${string}`;
+    return (WEEKLY_REWARDS_DISTRIBUTOR_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  }, [effectiveChainId]);
 
-  const tokenAddress = useMemo(() => {
-    return (DTC_BY_CHAIN[selectedChainId] ?? zeroAddress) as `0x${string}`;
-  }, [selectedChainId]);
+  // IMPORTANT: chain-scoped public client (fixes your build error)
+  const publicClient = usePublicClient({ chainId: effectiveChainId });
+
+  const walletNetworkName = useMemo(() => {
+    if (!ready || !walletChainId) return "—";
+    return CHAIN_LIST.find((c) => c.chainId === walletChainId)?.name ?? String(walletChainId);
+  }, [ready, walletChainId]);
 
   const wrongWalletForSelected = useMemo(() => {
     if (!ready || !isConnected) return false;
-    if (!walletChainId) return false;
-    return walletChainId !== selectedChainId;
-  }, [ready, isConnected, walletChainId, selectedChainId]);
+    if (!effectiveChainId || !walletChainId) return false;
+    return walletChainId !== effectiveChainId;
+  }, [ready, isConnected, walletChainId, effectiveChainId]);
 
+  const [switchStatus, setSwitchStatus] = useState<string>("");
+
+  async function onPickChain(chainId: number) {
+    setSwitchStatus("");
+    setSelectedChainId(chainId);
+
+    if (!ready) return;
+    if (!isConnected) {
+      setSwitchStatus("Connect your wallet to switch network.");
+      return;
+    }
+
+    try {
+      await switchChainAsync?.({ chainId });
+      setSwitchStatus("");
+    } catch (e: any) {
+      setSwitchStatus(e?.shortMessage || e?.message || "Network switch failed.");
+    }
+  }
+
+  /**
+   * ==========================
+   * Referral Registry reads
+   * ==========================
+   */
   const readsEnabled =
-    ready && isConnected && !!address && registryAddress !== zeroAddress && distributorAddress !== zeroAddress;
+    ready &&
+    !!effectiveChainId &&
+    isConnected &&
+    !!address &&
+    registryAddress !== zeroAddress &&
+    !wrongWalletForSelected; // reads from selected chain; keep strict to avoid confusing state
 
-  // -------------------------
-  // Referral registry reads
-  // -------------------------
   const { data: referrerOfMe, refetch: refetchReferrer } = useReadContract({
-    chainId: selectedChainId,
+    chainId: effectiveChainId,
     abi: REFERRAL_REGISTRY_ABI,
     address: registryAddress,
     functionName: "referrerOf",
@@ -185,7 +246,7 @@ export default function EarnPage() {
   });
 
   const { data: myPublicCode, refetch: refetchMyCode } = useReadContract({
-    chainId: selectedChainId,
+    chainId: effectiveChainId,
     abi: REFERRAL_REGISTRY_ABI,
     address: registryAddress,
     functionName: "publicCodeOf",
@@ -193,8 +254,8 @@ export default function EarnPage() {
     query: { enabled: readsEnabled },
   });
 
-  const { data: frensLossRaw, refetch: refetchLoss } = useReadContract({
-    chainId: selectedChainId,
+  const { data: myLossTotal, refetch: refetchLoss } = useReadContract({
+    chainId: effectiveChainId,
     abi: REFERRAL_REGISTRY_ABI,
     address: registryAddress,
     functionName: "referrer_total_generated_loss",
@@ -202,8 +263,8 @@ export default function EarnPage() {
     query: { enabled: readsEnabled },
   });
 
-  const { data: totalRewardsRaw, refetch: refetchRewards } = useReadContract({
-    chainId: selectedChainId,
+  const { data: myRewardsTotal, refetch: refetchRewards } = useReadContract({
+    chainId: effectiveChainId,
     abi: REFERRAL_REGISTRY_ABI,
     address: registryAddress,
     functionName: "referrer_total_rewards",
@@ -211,46 +272,61 @@ export default function EarnPage() {
     query: { enabled: readsEnabled },
   });
 
-  // -------------------------
-  // Distributor reads (epoch + claimed)
-  // -------------------------
+  /**
+   * ==========================
+   * Weekly distributor reads
+   * ==========================
+   */
+  const distributorReadsEnabled =
+    ready &&
+    !!effectiveChainId &&
+    isConnected &&
+    !!address &&
+    distributorAddress !== zeroAddress &&
+    !wrongWalletForSelected;
+
   const { data: currentEpochRaw, refetch: refetchEpoch } = useReadContract({
-    chainId: selectedChainId,
+    chainId: effectiveChainId,
     abi: WEEKLY_REWARDS_DISTRIBUTOR_ABI,
     address: distributorAddress,
     functionName: "currentEpoch",
-    args: [],
-    query: { enabled: ready && distributorAddress !== zeroAddress },
+    query: { enabled: distributorReadsEnabled },
   });
 
   const currentEpoch = useMemo(() => {
     const v = currentEpochRaw as any;
+    if (typeof v === "bigint") return v;
     try {
-      if (typeof v === "bigint") return Number(v);
-      if (v?.toString) return Number(v.toString());
+      if (v?.toString) return BigInt(v.toString());
     } catch {}
-    return 0;
+    return 0n;
   }, [currentEpochRaw]);
 
+  const { data: epochMetaRaw } = useReadContract({
+    chainId: effectiveChainId,
+    abi: WEEKLY_REWARDS_DISTRIBUTOR_ABI,
+    address: distributorAddress,
+    functionName: "epochs",
+    args: [currentEpoch],
+    query: { enabled: distributorReadsEnabled && currentEpoch > 0n },
+  });
+
   const { data: alreadyClaimedRaw, refetch: refetchClaimed } = useReadContract({
-    chainId: selectedChainId,
+    chainId: effectiveChainId,
     abi: WEEKLY_REWARDS_DISTRIBUTOR_ABI,
     address: distributorAddress,
     functionName: "claimed",
-    args: [BigInt(currentEpoch || 0), (address ?? zeroAddress) as `0x${string}`],
-    query: { enabled: ready && !!address && distributorAddress !== zeroAddress && currentEpoch > 0 },
+    args: [currentEpoch, (address ?? zeroAddress) as `0x${string}`],
+    query: { enabled: distributorReadsEnabled && currentEpoch > 0n },
   });
 
-  const alreadyClaimed = !!alreadyClaimedRaw;
+  const alreadyClaimed = Boolean(alreadyClaimedRaw);
 
-  // -------------------------
-  // UI state
-  // -------------------------
-  const [status, setStatus] = useState("");
-  const [err, setErr] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [bundleCopied, setBundleCopied] = useState(false);
-
+  /**
+   * ==========================
+   * Referral link + status
+   * ==========================
+   */
   const myCodeHex = (myPublicCode as Hex | undefined) ?? null;
   const haveCode = !!myCodeHex && isHex(myCodeHex) && myCodeHex.length === 66;
 
@@ -259,95 +335,146 @@ export default function EarnPage() {
     return `${SITE_ORIGIN}/play?ref=${myCodeHex}`;
   }, [haveCode, myCodeHex]);
 
-  const isBound = (referrerOfMe as string | undefined) && (referrerOfMe as string) !== zeroAddress;
+  const isBound =
+    (referrerOfMe as string | undefined) && (referrerOfMe as string) !== zeroAddress;
 
-  // -------------------------
-  // Claim bundle handling
-  // -------------------------
+  /**
+   * ==========================
+   * Weekly claim bundle (GitHub raw)
+   * ==========================
+   */
+  const [bundleStatus, setBundleStatus] = useState<string>("");
+  const [bundleErr, setBundleErr] = useState<string>("");
   const [bundle, setBundle] = useState<ClaimBundle | null>(null);
-  const [bundleState, setBundleState] = useState<
-    "idle" | "loading" | "found" | "missing" | "badjson"
-  >("idle");
 
-  const bundleUrl = useMemo(() => {
-    if (!address || !currentEpoch || !selectedChainId) return "";
-    const user = address.toLowerCase();
-    return `${CLAIMS_BASE_URL}/${selectedChainId}/${currentEpoch}/${user}.json`;
-  }, [address, currentEpoch, selectedChainId]);
+  const amountBig = useMemo(() => {
+    if (!bundle?.amount) return 0n;
+    try {
+      return BigInt(bundle.amount);
+    } catch {
+      return 0n;
+    }
+  }, [bundle]);
 
-  async function loadBundle() {
-    setErr("");
-    setStatus("");
+  const genLossBig = useMemo(() => {
+    if (!bundle?.generatedLoss) return 0n;
+    try {
+      return BigInt(bundle.generatedLoss);
+    } catch {
+      return 0n;
+    }
+  }, [bundle]);
+
+  const amountLabel = useMemo(() => {
+    // DTC is 18 decimals on both chains
+    return fmtNum(Number(formatUnits(amountBig, 18)), 6);
+  }, [amountBig]);
+
+  const genLossLabel = useMemo(() => {
+    return fmtNum(Number(formatUnits(genLossBig, 18)), 6);
+  }, [genLossBig]);
+
+  async function fetchBundle() {
+    setBundleErr("");
     setBundle(null);
 
-    if (!bundleUrl) {
-      setErr("Connect wallet and wait for current epoch to load.");
+    if (!ready || !effectiveChainId || !address) {
+      setBundleStatus("Connect wallet to load your weekly bundle.");
+      return;
+    }
+    if (wrongWalletForSelected) {
+      setBundleStatus("Switch wallet network to match the selected chain to load bundle.");
       return;
     }
 
+    const url = claimBundleUrl(effectiveChainId, address);
+    setBundleStatus(`Checking GitHub bundle…`);
+
     try {
-      setBundleState("loading");
-      const r = await fetch(bundleUrl, { cache: "no-store" });
-      if (!r.ok) {
-        setBundleState("missing");
+      const res = await fetch(url, { cache: "no-store" });
+
+      if (!res.ok) {
+        setBundleStatus("");
+        setBundleErr(`No bundle found yet for this week. (HTTP ${res.status})`);
         return;
       }
-      const j = (await r.json()) as ClaimBundle;
-      if (!j || !j.amount || !j.generatedLoss || !Array.isArray(j.proof)) {
-        setBundleState("badjson");
+
+      const json = (await res.json()) as ClaimBundle;
+
+      // Minimal validation
+      const ok =
+        typeof json?.epochId === "number" &&
+        typeof json?.amount === "string" &&
+        typeof json?.generatedLoss === "string" &&
+        Array.isArray(json?.proof) &&
+        json.proof.every((p) => isHex32(p));
+
+      if (!ok) {
+        setBundleStatus("");
+        setBundleErr("Bundle JSON exists but is malformed. Check fields: epochId, amount, generatedLoss, proof[].");
         return;
       }
-      setBundle(j);
-      setBundleState("found");
-    } catch {
-      setBundleState("badjson");
+
+      setBundle(json);
+      setBundleStatus("Bundle loaded ✅");
+      window.setTimeout(() => setBundleStatus(""), 1200);
+    } catch (e: any) {
+      setBundleStatus("");
+      setBundleErr(e?.message || "Failed to fetch bundle.");
     }
   }
 
-  const canMutate =
-    ready &&
-    isConnected &&
-    !!address &&
-    registryAddress !== zeroAddress &&
-    distributorAddress !== zeroAddress &&
-    !wrongWalletForSelected;
-
-  async function onPickChain(chainId: number) {
-    setErr("");
-    setStatus("");
-    setBundle(null);
-    setBundleState("idle");
-    setSelectedChainId(chainId);
-
-    // Same behavior as Home: try to switch wallet if connected
+  // Auto-fetch bundle when chain + address becomes ready
+  useEffect(() => {
     if (!ready) return;
-    if (!isConnected) return;
+    if (!address) return;
+    if (!effectiveChainId) return;
+    // keep it light; user can press refresh too
+    void fetchBundle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, address, effectiveChainId, wrongWalletForSelected]);
 
-    try {
-      await switchChainAsync?.({ chainId });
-    } catch {
-      // user may reject; still allow viewing
-    }
-  }
+  /**
+   * ==========================
+   * Actions
+   * ==========================
+   */
+  const [status, setStatus] = useState<string>("");
+  const [err, setErr] = useState<string>("");
+  const [copied, setCopied] = useState(false);
 
   async function registerCode() {
     setErr("");
     setStatus("");
 
-    if (!ready || !isConnected || !address) return setErr("Connect your wallet first.");
-    if (registryAddress === zeroAddress) return setErr("Referral registry not deployed on this chain.");
-    if (!publicClient) return setErr("No public client.");
-    if (wrongWalletForSelected) return setErr(`Switch wallet network to ${chainName} to register on this chain.`);
+    if (!ready || !isConnected || !address) {
+      setErr("Connect your wallet first.");
+      return;
+    }
+    if (!effectiveChainId || registryAddress === zeroAddress) {
+      setErr("Unsupported chain for referrals.");
+      return;
+    }
+    if (!publicClient) {
+      setErr("No public client for selected chain.");
+      return;
+    }
+    if (wrongWalletForSelected) {
+      setErr(`Switch wallet network to ${selectedChain?.name ?? "selected chain"} first.`);
+      return;
+    }
 
     try {
       setStatus("Confirm in wallet…");
+
       const hash = await writeContractAsync({
-        chainId: selectedChainId,
+        chainId: effectiveChainId,
         abi: REFERRAL_REGISTRY_ABI,
         address: registryAddress,
         functionName: "registerMyPublicCode",
         args: [],
       });
+
       await publicClient.waitForTransactionReceipt({ hash });
 
       setStatus("Public code registered ✅");
@@ -360,55 +487,66 @@ export default function EarnPage() {
     }
   }
 
-  async function claimRewards() {
+  async function claimWeeklyRewards() {
     setErr("");
     setStatus("");
 
-    if (!ready || !isConnected || !address) return setErr("Connect your wallet first.");
-    if (!publicClient) return setErr("No public client.");
-    if (distributorAddress === zeroAddress) return setErr("Rewards distributor not deployed on this chain.");
-    if (wrongWalletForSelected) return setErr(`Switch wallet network to ${chainName} to claim on this chain.`);
-    if (!bundle) return setErr("Load your claim bundle first.");
-    if (alreadyClaimed) return setErr("Already claimed for this epoch.");
-    if (Number(bundle.epochId) !== currentEpoch) return setErr("Bundle epoch does not match current epoch.");
+    if (!ready || !isConnected || !address) {
+      setErr("Connect your wallet first.");
+      return;
+    }
+    if (!effectiveChainId || distributorAddress === zeroAddress) {
+      setErr("Unsupported chain for weekly claims.");
+      return;
+    }
+    if (!publicClient) {
+      setErr("No public client for selected chain.");
+      return;
+    }
+    if (wrongWalletForSelected) {
+      setErr(`Switch wallet network to ${selectedChain?.name ?? "selected chain"} first.`);
+      return;
+    }
+    if (!bundle) {
+      setErr("No bundle loaded. Click “REFRESH BUNDLE” first.");
+      return;
+    }
+    if (alreadyClaimed) {
+      setErr("Already claimed for the current epoch.");
+      return;
+    }
+    if (bundle.epochId <= 0) {
+      setErr("Invalid epochId in bundle.");
+      return;
+    }
 
     try {
       setStatus("Confirm claim in wallet…");
 
       const hash = await writeContractAsync({
-        chainId: selectedChainId,
+        chainId: effectiveChainId,
         abi: WEEKLY_REWARDS_DISTRIBUTOR_ABI,
         address: distributorAddress,
         functionName: "claim",
-        args: [
-          BigInt(currentEpoch),
-          BigInt(bundle.amount),
-          BigInt(bundle.generatedLoss),
-          bundle.proof,
-        ],
+        args: [BigInt(bundle.epochId), BigInt(bundle.amount), BigInt(bundle.generatedLoss), bundle.proof as any],
       });
 
       await publicClient.waitForTransactionReceipt({ hash });
 
-      setStatus("Rewards claimed ✅");
-      window.setTimeout(() => setStatus(""), 1200);
+      setStatus("Weekly claim successful ✅");
+      window.setTimeout(() => setStatus(""), 1500);
 
-      await Promise.allSettled([refetchClaimed(), refetchLoss(), refetchRewards()]);
+      await Promise.allSettled([
+        refetchClaimed(),
+        refetchEpoch(),
+        refetchLoss(),
+        refetchRewards(),
+      ]);
     } catch (e: any) {
       setStatus("");
       setErr(e?.shortMessage || e?.message || "Claim failed.");
     }
   }
-
-  const pendingAmountLabel = useMemo(() => {
-    if (!bundle) return "—";
-    try {
-      const asToken = Number(formatUnits(BigInt(bundle.amount), 18));
-      return `${fmtNum(asToken, 6)} DTC`;
-    } catch {
-      return bundle.amount;
-    }
-  }, [bundle]);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -420,202 +558,215 @@ export default function EarnPage() {
             <div>
               <h1 className="text-2xl font-bold">Earn</h1>
               <p className="mt-2 text-neutral-300">
-                Referrals are wallet-bound. Weekly rewards are claimable per chain via Merkle proofs.
+                Referrals are permanent (wallet-bound). Weekly rewards are claimed on-chain from the distributor.
               </p>
             </div>
 
             <div className="text-sm text-neutral-400">
-              Viewing: <span className="text-neutral-100">{chainName}</span>
+              Selected: <span className="text-neutral-100">{selectedChain?.name ?? "—"}</span>
+              {ready && isConnected ? (
+                <span className="ml-2 text-neutral-500">
+                  (wallet: <span className="text-neutral-300">{walletNetworkName}</span>)
+                </span>
+              ) : null}
             </div>
           </div>
 
-          {/* Home-style chain toggle */}
-          <div className="mt-6">
-            <div className="flex w-full gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/40 p-2">
-              {chains.map((c) => {
-                const active = c.chainId === selectedChainId;
-                const showLive = active;
-                return (
-                  <button
-                    key={c.key}
-                    type="button"
-                    onClick={() => void onPickChain(c.chainId)}
-                    className={[
-                      "min-w-0 flex-1 rounded-xl px-3 py-3 text-left transition",
-                      active
-                        ? "border border-emerald-500/30 bg-emerald-500/10 ring-1 ring-emerald-500/10"
-                        : "border border-transparent hover:bg-neutral-900/50",
-                    ].join(" ")}
-                  >
-                    <div className="flex items-center gap-3">
-                      <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="text-sm font-semibold text-neutral-50">{c.name}</div>
-                          {showLive ? (
-                            <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-500/20">
-                              LIVE
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-neutral-400">Chain ID: {c.chainId}</div>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+          {/* Network toggle (same style as Home) */}
+          <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+            <div className="flex flex-col gap-4">
+              <div>
+                <div className="text-sm font-semibold text-neutral-100">Network</div>
+                <div className="mt-1 text-xs text-neutral-500">
+                  Selected: <span className="font-semibold text-neutral-200">{selectedChain?.name ?? "—"}</span>
+                </div>
+              </div>
 
-            {!ready ? (
-              <div className="mt-2 text-[11px] text-neutral-600">Initializing…</div>
-            ) : isConnected ? (
-              <div className="mt-2 text-[11px] text-neutral-600">
-                Wallet network:{" "}
-                <span className="text-neutral-300">
-                  {isTokenChain(walletChainId)
-                    ? chains.find((c) => c.chainId === walletChainId)?.name ?? walletChainId
-                    : walletChainId ?? "—"}
-                </span>
-                {wrongWalletForSelected ? (
-                  <span className="ml-2 text-amber-200">
-                    (switch to {chainName} to register/claim)
-                  </span>
-                ) : null}
+              <div className="w-full">
+                <div className="flex w-full gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/40 p-2">
+                  {chains.map((c) => {
+                    const active = c.chainId === selectedChainId;
+                    const showLive = active;
+
+                    return (
+                      <button
+                        key={c.key}
+                        type="button"
+                        onClick={() => void onPickChain(c.chainId)}
+                        className={[
+                          "min-w-0 flex-1 rounded-xl px-3 py-3 text-left transition",
+                          active
+                            ? "border border-emerald-500/30 bg-emerald-500/10 ring-1 ring-emerald-500/10"
+                            : "border border-transparent hover:bg-neutral-900/50",
+                        ].join(" ")}
+                      >
+                        <div className="flex items-center gap-3">
+                          <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-sm font-semibold text-neutral-50">{c.name}</div>
+                              {showLive ? (
+                                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-500/20">
+                                  LIVE
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-neutral-400">Chain ID: {c.chainId}</div>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {switchStatus ? <div className="mt-2 text-[11px] text-amber-200">{switchStatus}</div> : null}
+
+                {!ready ? (
+                  <div className="mt-2 text-[11px] text-neutral-600">Initializing…</div>
+                ) : isConnected ? (
+                  <div className="mt-2 text-[11px] text-neutral-600">
+                    Wallet network:{" "}
+                    <span className="text-neutral-300">
+                      {isTokenChain(walletChainId)
+                        ? chains.find((c) => c.chainId === walletChainId)?.name ?? walletChainId
+                        : walletChainId ?? "—"}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-[11px] text-neutral-600">
+                    Not connected. The toggle will switch your wallet network after you connect.
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="mt-2 text-[11px] text-neutral-600">
-                Not connected. Connect wallet to register and claim.
-              </div>
-            )}
+            </div>
           </div>
 
           {/* Wallet card */}
-          <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+          <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="text-sm font-semibold text-neutral-100">Wallet</div>
             <div className="mt-1 text-sm text-neutral-300">
               {ready && isConnected && address ? `Connected: ${truncateAddr(address)}` : "Not connected"}
             </div>
 
-            <div className="mt-2 text-[12px] text-neutral-500">
-              Token: <span className="font-mono text-neutral-300">{tokenAddress}</span>
-            </div>
-            <div className="mt-1 text-[12px] text-neutral-500">
-              Registry: <span className="font-mono text-neutral-300">{registryAddress}</span>
-            </div>
-            <div className="mt-1 text-[12px] text-neutral-500">
-              Distributor: <span className="font-mono text-neutral-300">{distributorAddress}</span>
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <div className="text-[12px] text-neutral-500">
+                Registry:{" "}
+                <span className="font-mono text-neutral-300">
+                  {registryAddress !== zeroAddress ? registryAddress : "—"}
+                </span>
+              </div>
+              <div className="text-[12px] text-neutral-500">
+                Distributor:{" "}
+                <span className="font-mono text-neutral-300">
+                  {distributorAddress !== zeroAddress ? distributorAddress : "—"}
+                </span>
+              </div>
             </div>
           </div>
 
-          {/* 💰 Rewards box */}
+          {/* Weekly claim */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <div className="text-sm font-semibold text-neutral-100">💰 Rewards</div>
+                <div className="text-sm font-semibold text-neutral-100">💰 Weekly rewards</div>
                 <div className="mt-1 text-[12px] text-neutral-500">
-                  Current epoch: <span className="font-mono text-neutral-300">{currentEpoch || "—"}</span>
-                  {ready && isConnected && alreadyClaimed ? (
-                    <span className="ml-2 rounded-full bg-neutral-50/10 px-2 py-0.5 text-[11px] font-semibold text-neutral-200 ring-1 ring-neutral-200/20">
-                      ALREADY CLAIMED
-                    </span>
-                  ) : null}
+                  Bundle is fetched from GitHub raw and claimed on-chain via the distributor.
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => void loadBundle()}
-                  disabled={!ready || !isConnected || !address || !currentEpoch}
-                  className={[
-                    "rounded-xl border px-4 py-2 text-xs font-extrabold transition",
-                    !ready || !isConnected || !address || !currentEpoch
-                      ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
-                      : "border-neutral-800 bg-neutral-900 text-neutral-100 hover:bg-neutral-800/60",
-                  ].join(" ")}
-                >
-                  LOAD BUNDLE
-                </button>
-
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const txt = bundleUrl ? bundleUrl : "—";
-                    const ok = await copyText(txt);
-                    if (ok) {
-                      setBundleCopied(true);
-                      window.setTimeout(() => setBundleCopied(false), 900);
-                    }
-                  }}
+                  onClick={() => void fetchBundle()}
                   className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-extrabold text-neutral-100 hover:bg-neutral-800/60"
+                  disabled={!ready || !address || !effectiveChainId || wrongWalletForSelected}
+                  title={wrongWalletForSelected ? "Switch wallet network to match selected chain" : undefined}
                 >
-                  {bundleCopied ? "COPIED" : "COPY URL"}
+                  REFRESH BUNDLE
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => void claimRewards()}
-                  disabled={!canMutate || !bundle || alreadyClaimed}
+                  onClick={() => void claimWeeklyRewards()}
+                  disabled={
+                    !ready ||
+                    !address ||
+                    !effectiveChainId ||
+                    wrongWalletForSelected ||
+                    distributorAddress === zeroAddress ||
+                    !bundle ||
+                    alreadyClaimed
+                  }
                   className={[
                     "rounded-xl border px-4 py-2 text-xs font-extrabold transition",
-                    !canMutate || !bundle || alreadyClaimed
+                    !ready ||
+                    !address ||
+                    !effectiveChainId ||
+                    wrongWalletForSelected ||
+                    distributorAddress === zeroAddress ||
+                    !bundle ||
+                    alreadyClaimed
                       ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
                       : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15",
                   ].join(" ")}
                 >
-                  CLAIM
+                  {alreadyClaimed ? "CLAIMED" : "CLAIM"}
                 </button>
               </div>
             </div>
 
-            <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
-              <div className="text-[12px] text-neutral-400">Bundle source (GitHub raw)</div>
-              <div className="mt-1 break-all font-mono text-[12px] text-neutral-200">
-                {bundleUrl || "—"}
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="text-[12px] text-neutral-400">Current epoch</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">{currentEpoch.toString()}</div>
               </div>
 
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
-                <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Status</div>
-                  <div className="mt-1 text-sm font-semibold text-neutral-100">
-                    {bundleState === "idle"
-                      ? "—"
-                      : bundleState === "loading"
-                      ? "Loading…"
-                      : bundleState === "found"
-                      ? "Found ✅"
-                      : bundleState === "missing"
-                      ? "Not found"
-                      : "Bad JSON"}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Pending reward</div>
-                  <div className="mt-1 font-mono text-sm text-neutral-200">{pendingAmountLabel}</div>
-                </div>
-
-                <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Proof items</div>
-                  <div className="mt-1 font-mono text-sm text-neutral-200">
-                    {bundle?.proof?.length ?? 0}
-                  </div>
-                </div>
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="text-[12px] text-neutral-400">Bundle amount (DTC)</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">{bundle ? amountLabel : "—"}</div>
               </div>
 
-              {bundleState === "missing" ? (
-                <div className="mt-3 text-[12px] text-amber-200">
-                  No bundle published for your address yet. If you expected rewards, your weekly output hasn’t been pushed to GitHub.
-                </div>
-              ) : null}
-
-              <div className="mt-3 text-[12px] text-neutral-500">
-                Tip: publish bundles under{" "}
-                <span className="font-mono text-neutral-300">
-                  {`claims/${selectedChainId}/${currentEpoch}/${address ? address.toLowerCase() : "0x…"} .json`}
-                </span>
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="text-[12px] text-neutral-400">Bundle generatedLoss (DTC)</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">{bundle ? genLossLabel : "—"}</div>
               </div>
             </div>
+
+            {epochMetaRaw ? (
+              <div className="mt-3 text-[12px] text-neutral-500">
+                Epoch window (unix):{" "}
+                <span className="font-mono text-neutral-300">
+                  {(epochMetaRaw as any)?.[1]?.toString?.() ?? "—"} → {(epochMetaRaw as any)?.[2]?.toString?.() ?? "—"}
+                </span>
+              </div>
+            ) : null}
+
+            {bundleStatus ? (
+              <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-200">
+                {bundleStatus}
+              </div>
+            ) : null}
+
+            {bundleErr ? (
+              <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">
+                {bundleErr}
+                {ready && effectiveChainId && address ? (
+                  <div className="mt-2 text-[11px] text-red-200/80">
+                    Expected URL:{" "}
+                    <span className="break-all font-mono">
+                      {claimBundleUrl(effectiveChainId, address)}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {wrongWalletForSelected ? (
+              <div className="mt-3 text-[12px] text-amber-200/90">
+                You’re viewing <b>{selectedChain?.name ?? "—"}</b>, but your wallet is on <b>{walletNetworkName}</b>.
+                Switch wallet network using the toggle above.
+              </div>
+            ) : null}
           </div>
 
           {/* Referrer binding */}
@@ -644,7 +795,7 @@ export default function EarnPage() {
               <div>
                 <div className="text-sm font-semibold text-neutral-100">Your referral link</div>
                 <div className="mt-1 text-[12px] text-neutral-500">
-                  Share this link. Users will bind automatically on their first bet.
+                  Share this link. Users bind automatically on their first token game.
                 </div>
               </div>
 
@@ -652,8 +803,8 @@ export default function EarnPage() {
                 type="button"
                 onClick={() => void registerCode()}
                 className="rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-xs font-extrabold text-neutral-100 hover:bg-neutral-800/60"
-                disabled={!ready || !isConnected || registryAddress === zeroAddress || wrongWalletForSelected}
-                title={wrongWalletForSelected ? `Switch wallet to ${chainName}` : undefined}
+                disabled={!ready || !isConnected || !address || registryAddress === zeroAddress || wrongWalletForSelected}
+                title={wrongWalletForSelected ? `Switch wallet to ${selectedChain?.name ?? "selected chain"}` : undefined}
               >
                 {haveCode ? "RE-REGISTER (optional)" : "REGISTER MY CODE"}
               </button>
@@ -701,23 +852,22 @@ export default function EarnPage() {
 
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
-                <div className="text-[12px] text-neutral-400">Frens loss</div>
+                <div className="text-[12px] text-neutral-400">referrer_total_generated_loss</div>
                 <div className="mt-1 font-mono text-sm text-neutral-200">
-                  {(frensLossRaw as any)?.toString?.() ?? "0"}
+                  {(myLossTotal as any)?.toString?.() ?? "0"}
                 </div>
               </div>
 
               <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
-                <div className="text-[12px] text-neutral-400">Frens won</div>
+                <div className="text-[12px] text-neutral-400">referrer_total_rewards</div>
                 <div className="mt-1 font-mono text-sm text-neutral-200">
-                  {(totalRewardsRaw as any)?.toString?.() ?? "0"}
+                  {(myRewardsTotal as any)?.toString?.() ?? "0"}
                 </div>
-                <div className="mt-1 text-[11px] text-neutral-500">Mapped to referrer_total_rewards</div>
               </div>
             </div>
 
             <div className="mt-3 text-[12px] text-neutral-500">
-              These update after weekly epochs are posted and users claim.
+              Registry totals update as claims are processed. Weekly claims happen via the distributor contract.
             </div>
           </div>
 
