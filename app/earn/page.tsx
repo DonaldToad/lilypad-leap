@@ -88,8 +88,11 @@ const CLAIMS_GITHUB_RAW_BASE =
   "https://raw.githubusercontent.com/DonaldToad/lilypad-leap-claims/main/claims";
 
 function claimBundleUrl(chainId: number, user: string) {
-  return `${CLAIMS_GITHUB_RAW_BASE}/${chainId}/${user}.json`;
+  // IMPORTANT: filenames in the repo are lowercase; GitHub paths are case-sensitive
+  const u = (user || "").toLowerCase();
+  return `${CLAIMS_GITHUB_RAW_BASE}/${chainId}/${u}.json`;
 }
+
 
 // Minimal ABI for WeeklyRewardsDistributor (just what Earn needs)
 const WEEKLY_REWARDS_DISTRIBUTOR_ABI = [
