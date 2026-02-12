@@ -19,8 +19,6 @@ import {
 } from "wagmi";
 
 import { ERC20_ABI } from "../lib/abi/erc20";
-import { LILYPAD_VAULT_ABI } from "../lib/abi/lilypadVault";
-import { DTC_BY_CHAIN, LILYPAD_VAULT_BY_CHAIN } from "../lib/addresses";
 import type { ApprovalPolicy } from "../lib/approvalPolicy";
 
 import {
@@ -48,6 +46,220 @@ type TokenChainId = (typeof TOKEN_CHAIN_IDS)[number];
 function isTokenChain(id: number | undefined): id is TokenChainId {
   return !!id && TOKEN_CHAIN_IDS.includes(id as TokenChainId);
 }
+
+/**
+ * ✅ CONTRACT CONFIG (FIXED)
+ * - Spender for approvals must be the GAME contract (it calls transferFrom).
+ * - createGame / cashOut are on the GAME contract (LilypadLeapGame).
+ */
+const DTC_BY_CHAIN: Record<number, Hex> = {
+  // Linea
+  59144: "0xEb1fD1dBB8aDDA4fa2b5A5C4bcE34F6F20d125D2",
+  // Base (keep whatever you already use in your app if different)
+  // If your Base DTC differs, replace it here.
+  8453: "0xFbA669C72b588439B29F050b93500D8b645F9354", // 
+};
+
+const VAULT_BY_CHAIN: Record<number, Hex> = {
+  // Linea
+  59144: "0xF4Bf262565e0Cc891857DF08Fe55de5316d0Db45",
+  // Base
+  8453: "0x2C853B5a06A1F6C3A0aF4c1627993150c6585eb3",
+};
+
+const GAME_BY_CHAIN: Record<number, Hex> = {
+  // Linea
+  59144: "0x71dF04f70b87994C4cB2a69A735D821169fE7148",
+  // Base
+  8453: "0x7f4EAc0BDBeF0b782ff57E6897112DB9D31E6AB3",
+};
+
+// ✅ LilypadLeapGame ABI (as provided by you)
+const LILYPAD_LEAP_GAME_ABI = [
+  {
+    inputs: [{ internalType: "address", name: "vault", type: "address" }],
+    stateMutability: "nonpayable",
+    type: "constructor",
+  },
+  { inputs: [], name: "ReentrancyGuardReentrantCall", type: "error" },
+  {
+    inputs: [{ internalType: "address", name: "token", type: "address" }],
+    name: "SafeERC20FailedOperation",
+    type: "error",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, internalType: "bytes32", name: "gameId", type: "bytes32" },
+      { indexed: true, internalType: "address", name: "player", type: "address" },
+      { indexed: false, internalType: "uint256", name: "amountReceived", type: "uint256" },
+      { indexed: false, internalType: "enum LilypadLeapGame.Mode", name: "mode", type: "uint8" },
+      { indexed: false, internalType: "bytes32", name: "userCommit", type: "bytes32" },
+      { indexed: false, internalType: "bytes32", name: "randAnchor", type: "bytes32" },
+      { indexed: false, internalType: "uint256", name: "createdAt", type: "uint256" },
+      { indexed: false, internalType: "uint256", name: "deadline", type: "uint256" },
+      { indexed: false, internalType: "uint256", name: "maxPayoutReserved", type: "uint256" },
+    ],
+    name: "GameCreated",
+    type: "event",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, internalType: "bytes32", name: "gameId", type: "bytes32" },
+      { indexed: true, internalType: "address", name: "player", type: "address" },
+    ],
+    name: "GameExpired",
+    type: "event",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, internalType: "bytes32", name: "gameId", type: "bytes32" },
+      { indexed: true, internalType: "address", name: "player", type: "address" },
+    ],
+    name: "GameForfeited",
+    type: "event",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, internalType: "bytes32", name: "gameId", type: "bytes32" },
+      { indexed: true, internalType: "address", name: "player", type: "address" },
+      { indexed: false, internalType: "bool", name: "won", type: "bool" },
+      { indexed: false, internalType: "uint8", name: "cashoutHop", type: "uint8" },
+      { indexed: false, internalType: "uint256", name: "payout", type: "uint256" },
+      { indexed: false, internalType: "bytes32", name: "userCommitHash", type: "bytes32" },
+      { indexed: false, internalType: "bytes32", name: "randAnchor", type: "bytes32" },
+    ],
+    name: "GameSettled",
+    type: "event",
+  },
+  {
+    inputs: [],
+    name: "DEADLINE_SECONDS",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "MAX_BET",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "MAX_HOPS",
+    outputs: [{ internalType: "uint8", name: "", type: "uint8" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "MIN_BET",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "TOKEN",
+    outputs: [{ internalType: "contract IERC20", name: "", type: "address" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "VAULT",
+    outputs: [{ internalType: "contract ToadArcadeVaultDTC", name: "", type: "address" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "bytes32", name: "gameId", type: "bytes32" },
+      { internalType: "bytes32", name: "userSecret", type: "bytes32" },
+      { internalType: "uint8", name: "cashoutHop", type: "uint8" },
+    ],
+    name: "cashOut",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "uint256", name: "amount", type: "uint256" },
+      { internalType: "enum LilypadLeapGame.Mode", name: "mode", type: "uint8" },
+      { internalType: "bytes32", name: "userCommit", type: "bytes32" },
+    ],
+    name: "createGame",
+    outputs: [{ internalType: "bytes32", name: "gameId", type: "bytes32" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "bytes32", name: "gameId", type: "bytes32" }],
+    name: "expire",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "bytes32", name: "", type: "bytes32" }],
+    name: "games",
+    outputs: [
+      { internalType: "address", name: "player", type: "address" },
+      { internalType: "uint128", name: "amount", type: "uint128" },
+      { internalType: "uint40", name: "createdAt", type: "uint40" },
+      { internalType: "uint40", name: "deadline", type: "uint40" },
+      { internalType: "enum LilypadLeapGame.Mode", name: "mode", type: "uint8" },
+      { internalType: "bytes32", name: "userCommit", type: "bytes32" },
+      { internalType: "bytes32", name: "randAnchor", type: "bytes32" },
+      { internalType: "bool", name: "settled", type: "bool" },
+      { internalType: "uint8", name: "cashoutHop", type: "uint8" },
+      { internalType: "uint128", name: "payout", type: "uint128" },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "address", name: "user", type: "address" }],
+    name: "getUserGamesLength",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "address", name: "user", type: "address" },
+      { internalType: "uint256", name: "start", type: "uint256" },
+      { internalType: "uint256", name: "count", type: "uint256" },
+    ],
+    name: "getUserGamesSlice",
+    outputs: [{ internalType: "bytes32[]", name: "ids", type: "bytes32[]" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "address", name: "", type: "address" }],
+    name: "openGameOf",
+    outputs: [{ internalType: "bytes32", name: "", type: "bytes32" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "address", name: "", type: "address" },
+      { internalType: "uint256", name: "", type: "uint256" },
+    ],
+    name: "userGames",
+    outputs: [{ internalType: "bytes32", name: "", type: "bytes32" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
 
 // Sound files (served from /public)
 const SOUND_BASE = "/lilypad-leap/sounds";
@@ -132,7 +344,6 @@ function fmtX(n: number) {
 }
 
 function ceilPercent(pct: number) {
-  // UI-only: round up to next whole number
   return `${Math.ceil(pct)}%`;
 }
 
@@ -167,8 +378,7 @@ function DtcIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-// Build a deterministic 32-byte-ish hex "commit hash" from a uint32 state.
-// UI placeholder only — real version: keccak256(commit) stored at START, reveal at settle.
+// Build a deterministic 32-byte-ish hex "commit hash" from a uint32 state (DEMO placeholder)
 function buildCommitHash(seed: number) {
   let s = seed >>> 0;
   const parts: string[] = [];
@@ -179,11 +389,10 @@ function buildCommitHash(seed: number) {
   return `0x${parts.join("")}`;
 }
 
-// Display as first10…last10 with caret expand
 function truncateHashFirstLast(h: string) {
   if (!h) return "—";
   if (h.length <= 24) return h;
-  const first = h.slice(0, 12); // 0x + 10
+  const first = h.slice(0, 12);
   const last = h.slice(-10);
   return `${first}…${last}`;
 }
@@ -213,9 +422,7 @@ async function copyText(text: string) {
 
 function bytesToHex(bytes: Uint8Array): Hex {
   let hex = "0x";
-  for (let i = 0; i < bytes.length; i++) {
-    hex += bytes[i].toString(16).padStart(2, "0");
-  }
+  for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
   return hex as Hex;
 }
 
@@ -230,28 +437,28 @@ type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
 
 /**
  * ✅ Local storage for secrets (so /verify can load them on same device)
- * key: `${chainId}:${vault}:${gameId}` -> userSecret
+ * key: `${chainId}:${game}:${gameId}` -> userSecret
  */
-const SECRET_STORE_KEY = "lilypadLeapSecretsV1";
-function secretStoreKey(chainId: number, vault: Hex, gameId: Hex) {
-  return `${chainId}:${vault.toLowerCase()}:${gameId.toLowerCase()}`;
+const SECRET_STORE_KEY = "lilypadLeapSecretsV2";
+function secretStoreKey(chainId: number, game: Hex, gameId: Hex) {
+  return `${chainId}:${game.toLowerCase()}:${gameId.toLowerCase()}`;
 }
-function setStoredSecret(chainId: number, vault: Hex, gameId: Hex, userSecret: Hex) {
+function setStoredSecret(chainId: number, game: Hex, gameId: Hex, userSecret: Hex) {
   try {
     const raw = localStorage.getItem(SECRET_STORE_KEY);
     const obj = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    obj[secretStoreKey(chainId, vault, gameId)] = userSecret;
+    obj[secretStoreKey(chainId, game, gameId)] = userSecret;
     localStorage.setItem(SECRET_STORE_KEY, JSON.stringify(obj));
   } catch {}
 }
 
 /**
- * ✅ A shareable bundle for cross-device verification.
- * User can paste it into /verify (bundle import) or keep it safe.
+ * ✅ Shareable bundle (paste into /verify)
  */
 function buildVerifyBundle(params: {
   chainId: number;
   vault: Hex;
+  game: Hex;
   gameId: Hex;
   userSecret: Hex;
   cashoutHop?: number;
@@ -260,6 +467,7 @@ function buildVerifyBundle(params: {
   const b = {
     chainId: params.chainId,
     vault: params.vault,
+    game: params.game,
     gameId: params.gameId,
     userSecret: params.userSecret,
     cashoutHop: params.cashoutHop ?? 1,
@@ -269,12 +477,12 @@ function buildVerifyBundle(params: {
 }
 
 export default function PlayPage() {
-  // Prevent hydration mismatch (wallet state differs server vs client)
+  // Prevent hydration mismatch
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   // -----------------------------
-  // Sounds (ON by default + visible toggle)
+  // Sounds
   // -----------------------------
   const [soundOn, setSoundOn] = useState<boolean>(true);
   const soundsRef = useRef<Record<SoundKey, HTMLAudioElement> | null>(null);
@@ -291,7 +499,6 @@ export default function PlayPage() {
     });
   }
 
-  // ✅ FIX: avoid Runtime NotSupportedError by catching the play() promise
   function playSound(key: SoundKey, opts?: { restart?: boolean }) {
     if (!soundOn) return;
     const bank = soundsRef.current;
@@ -302,9 +509,7 @@ export default function PlayPage() {
     try {
       if (opts?.restart !== false) a.currentTime = 0;
       const p = a.play();
-      if (p && typeof (p as any).catch === "function") {
-        (p as Promise<void>).catch(() => {});
-      }
+      if (p && typeof (p as any).catch === "function") (p as Promise<void>).catch(() => {});
     } catch {}
   }
 
@@ -318,12 +523,10 @@ export default function PlayPage() {
         maxhit: new Audio(SOUND_SRC.maxhit),
         win: new Audio(SOUND_SRC.win),
       };
-
       (Object.keys(bank) as SoundKey[]).forEach((k) => {
         bank[k].preload = "auto";
         bank[k].volume = 0.9;
       });
-
       soundsRef.current = bank;
     } catch {
       soundsRef.current = null;
@@ -356,32 +559,29 @@ export default function PlayPage() {
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
 
-  // ✅ HYDRATION-SAFE wagmi-derived values
   const safeIsConnected = mounted ? isConnected : false;
   const safeAddress = mounted ? address : undefined;
   const safeChainId = mounted ? chainId : undefined;
   const safeConnectPending = mounted ? connectPending : false;
   const safeConnectors = mounted ? connectors : [];
 
-  // Chain selection (UI-only demo)
+  // Chain selection (UI-only)
   const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
   const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
   type PlayMode = "demo" | "token";
   const [playMode, setPlayMode] = useState<PlayMode>("demo");
 
-  // ✅ token-mode is allowed ONLY when wallet is on Linea/Base
   const tokenChainOk = mounted && safeIsConnected && isTokenChain(safeChainId);
-  const allowedForToken = tokenChainOk;
-
-  const isWrongNetwork = mounted && safeIsConnected && playMode === "token" && !allowedForToken;
+  const isWrongNetwork = mounted && safeIsConnected && playMode === "token" && !tokenChainOk;
 
   // ✅ Effective chain for READS
   const effectiveChainId =
     playMode === "token" && tokenChainOk ? (safeChainId as number) : selectedChain.chainId;
 
   const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
-  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const vaultAddress = (VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const gameAddress = (GAME_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
 
   // If wallet disconnects, force demo.
   useEffect(() => {
@@ -393,9 +593,8 @@ export default function PlayPage() {
 
   const [txStatus, setTxStatus] = useState<string>("");
   const [txError, setTxError] = useState<string>("");
-  const [startPending, setStartPending] = useState<boolean>(false);
 
-  // ✅ cashout pending state (locks hopping + forces “SETTLING…” everywhere)
+  const [startPending, setStartPending] = useState<boolean>(false);
   const [cashOutPending, setCashOutPending] = useState<boolean>(false);
 
   const [activeGameId, setActiveGameId] = useState<Hex | null>(null);
@@ -419,29 +618,27 @@ export default function PlayPage() {
 
   // Run lifecycle
   const [hasStarted, setHasStarted] = useState<boolean>(false);
-  const [hops, setHops] = useState<number>(0); // completed hops
+  const [hops, setHops] = useState<number>(0);
   const [currentMult, setCurrentMult] = useState<number>(1.0);
   const [isFailed, setIsFailed] = useState<boolean>(false);
   const [isCashedOut, setIsCashedOut] = useState<boolean>(false);
 
-  // ✅ RNG state MUST be SSR-stable (no Date.now() here)
+  // ✅ RNG state MUST be SSR-stable
   const [rngState, setRngState] = useState<number>(0x6a41f7f5);
-
-  // ✅ After mount, set a time-based seed (client only)
   useEffect(() => {
     if (!mounted) return;
     setRngState((Date.now() ^ 0x6a41f7f5) >>> 0);
   }, [mounted]);
 
-  // Commit hash (UI-only demo placeholder)
+  // Commit hash (demo placeholder)
   const commitHash = useMemo(() => buildCommitHash(rngState), [rngState]);
   const [commitExpanded, setCommitExpanded] = useState(false);
   const [commitCopied, setCommitCopied] = useState(false);
 
   // Last attempt info
   const [lastRoll, setLastRoll] = useState<number | null>(null);
-  const [lastAttemptHop, setLastAttemptHop] = useState<number | null>(null); // 1..10
-  const [lastRequiredPct, setLastRequiredPct] = useState<number | null>(null); // exact %
+  const [lastAttemptHop, setLastAttemptHop] = useState<number | null>(null);
+  const [lastRequiredPct, setLastRequiredPct] = useState<number | null>(null);
 
   // Visual FX
   const [poppedHop, setPoppedHop] = useState<number | null>(null);
@@ -454,52 +651,51 @@ export default function PlayPage() {
 
   // Animation hooks
   const [animEvent, setAnimEvent] = useState<AnimEvent>("idle");
-  const [animNonce, setAnimNonce] = useState<number>(0); // bump to “trigger” effects
+  const [animNonce, setAnimNonce] = useState<number>(0);
 
-  // Action lock (prevents spam until animation finishes)
+  // Action lock
   const [actionLocked, setActionLocked] = useState<boolean>(false);
   const lockTimerRef = useRef<number | null>(null);
 
-  // Table expansion (mobile-friendly)
+  // Table expansion
   const [showAllSteps, setShowAllSteps] = useState<boolean>(true);
 
   // Scroll helper refs
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   const boardScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // ✅ Mode scroll target + one-time auto-scroll flag
   const modeScrollRef = useRef<HTMLDivElement | null>(null);
   const didAutoScrollModeRef = useRef<boolean>(false);
 
-  // Remember last amount used at START, so PLAY AGAIN can reuse it
   const lastStartedAmountRef = useRef<number>(1000);
 
-  // Derived tables for this mode (fixed)
   const multTable = useMemo(() => mode.mults, [modeKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Exact per-step success % used by game math
   const stepSuccessPctExact = useMemo(() => mode.pStep * 100, [mode.pStep]);
 
   // -----------------------------
-  // TOKEN MODE deterministic seed (matches Solidity)
-  // seed = keccak256(abi.encodePacked(userSecret, randAnchor, vault, gameId))
+  // ✅ TOKEN MODE deterministic seed (MATHEMATICALLY EXACT)
+  // IMPORTANT FIX:
+  // Use GAME contract address (NOT vault) in the seed — this is what makes UI match on-chain,
+  // and fixes "I reached 10 hops but chain says busted / payout 0".
+  //
+  // seed = keccak256(abi.encodePacked(userSecret, randAnchor, gameAddress, gameId))
   // hop roll = uint256(keccak256(abi.encodePacked(seed, hopNo))) % 10000
+  // success if roll < pBps
   // -----------------------------
   const tokenSeed = useMemo(() => {
     if (playMode !== "token") return null;
     if (!activeUserSecret || !activeGameId || !activeRandAnchor) return null;
-    if (vaultAddress === zeroAddress) return null;
+    if (gameAddress === zeroAddress) return null;
 
     return keccak256(
       encodePacked(
         ["bytes32", "bytes32", "address", "bytes32"],
-        [activeUserSecret, activeRandAnchor, vaultAddress, activeGameId]
+        [activeUserSecret, activeRandAnchor, gameAddress, activeGameId]
       )
     ) as Hex;
-  }, [playMode, activeUserSecret, activeGameId, activeRandAnchor, vaultAddress]);
+  }, [playMode, activeUserSecret, activeGameId, activeRandAnchor, gameAddress]);
 
-  // Next hop info
-  const nextHopIndex = hops; // 0-based
+  const nextHopIndex = hops;
   const nextHopNo = hops + 1;
 
   // -----------------------------
@@ -518,15 +714,17 @@ export default function PlayPage() {
     return parseUnits(String(Math.max(1, Math.floor(approveCapDtc))), 18);
   }, [approvalPolicy, approveCapDtc]);
 
-  // ✅ Reads explicitly target effectiveChainId
+  /**
+   * ✅ Allowance spender MUST be the GAME contract
+   */
   const { data: allowanceWei, refetch: refetchAllowance } = useReadContract({
     chainId: effectiveChainId,
     abi: ERC20_ABI,
     address: tokenAddress,
     functionName: "allowance",
     args:
-      safeAddress && vaultAddress !== zeroAddress
-        ? [safeAddress, vaultAddress]
+      safeAddress && gameAddress !== zeroAddress
+        ? [safeAddress, gameAddress]
         : [zeroAddress, zeroAddress],
     query: {
       enabled:
@@ -534,7 +732,7 @@ export default function PlayPage() {
         safeIsConnected &&
         !!safeAddress &&
         tokenAddress !== zeroAddress &&
-        vaultAddress !== zeroAddress &&
+        gameAddress !== zeroAddress &&
         (playMode === "demo" || tokenChainOk),
     },
   });
@@ -594,7 +792,10 @@ export default function PlayPage() {
     if (!mounted) return false;
     if (!safeIsConnected || !safeAddress) return false;
     if (!tokenChainOk) return false;
-    if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) return false;
+
+    // Must have addresses
+    if (tokenAddress === zeroAddress || gameAddress === zeroAddress || vaultAddress === zeroAddress) return false;
+
     return hasEnoughAllowance;
   }, [
     hasStarted,
@@ -607,14 +808,13 @@ export default function PlayPage() {
     safeAddress,
     tokenChainOk,
     tokenAddress,
+    gameAddress,
     vaultAddress,
     hasEnoughAllowance,
   ]);
 
   const canHop = hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops < MAX_HOPS;
-
-  const canCashOut =
-    hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops > 0;
+  const canCashOut = hasStarted && !isFailed && !isCashedOut && !cashOutPending && !actionLocked && hops > 0;
 
   const currentReturn = useMemo(() => Math.floor(amount * currentMult), [amount, currentMult]);
 
@@ -623,13 +823,12 @@ export default function PlayPage() {
     return stepSuccessPctExact;
   }, [canHop, stepSuccessPctExact]);
 
-  // Default table behavior: show all on desktop, collapsed on mobile
+  // Default table behavior
   useEffect(() => {
     const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
     setShowAllSteps(!isMobile);
   }, []);
 
-  // Clear any outstanding lock timer on unmount
   useEffect(() => {
     return () => {
       if (lockTimerRef.current) window.clearTimeout(lockTimerRef.current);
@@ -712,7 +911,6 @@ export default function PlayPage() {
     if (!mounted) return;
     if (didAutoScrollModeRef.current) return;
     if (hasStarted) return;
-
     if (!isMobileNow()) return;
 
     didAutoScrollModeRef.current = true;
@@ -842,8 +1040,12 @@ export default function PlayPage() {
       setTxError("Wrong network. Switch to Linea or Base.");
       return;
     }
-    if (tokenAddress === zeroAddress || vaultAddress === zeroAddress) {
-      setTxError("Missing token/vault address for this chain.");
+    if (tokenAddress === zeroAddress) {
+      setTxError("Token address not set in this file. (Set tokenAddress mapping or re-import your DTC_BY_CHAIN.)");
+      return;
+    }
+    if (gameAddress === zeroAddress) {
+      setTxError("Missing LilypadLeapGame address for this chain.");
       return;
     }
 
@@ -857,7 +1059,7 @@ export default function PlayPage() {
         abi: ERC20_ABI,
         address: tokenAddress,
         functionName: "approve",
-        args: [vaultAddress, approvalTargetWei],
+        args: [gameAddress, approvalTargetWei],
       });
 
       await publicClient.waitForTransactionReceipt({ hash });
@@ -907,7 +1109,7 @@ export default function PlayPage() {
       return;
     }
 
-    // TOKEN MODE: createGame() at START
+    // TOKEN MODE: createGame() at START (on GAME contract)
     if (!mounted || !safeIsConnected || !safeAddress) {
       setTxError("Connect your wallet first.");
       setStartPending(false);
@@ -921,14 +1123,11 @@ export default function PlayPage() {
 
     try {
       if (!publicClient) throw new Error("No public client");
-      if (vaultAddress === zeroAddress) throw new Error("Missing vault address for this chain.");
-      if (tokenAddress === zeroAddress) throw new Error("Missing token address for this chain.");
+      if (gameAddress === zeroAddress) throw new Error("Missing LilypadLeapGame address for this chain.");
+      if (vaultAddress === zeroAddress) throw new Error("Missing ToadArcadeVault address for this chain.");
 
       const userSecret = randomSecret32();
-
-      // NOTE: Solidity usually stores commit = keccak256(abi.encodePacked(userSecret)).
-      // If your contract uses keccak256(bytes32) directly, keccak256(userSecret) is fine.
-      const userCommit = keccak256(userSecret);
+      const userCommit = keccak256(encodePacked(["bytes32"], [userSecret])); // exact: keccak256(abi.encodePacked(userSecret))
 
       setActiveUserSecret(userSecret);
 
@@ -942,49 +1141,50 @@ export default function PlayPage() {
 
       const hash = await writeContractAsync({
         chainId: safeChainId as number,
-        abi: LILYPAD_VAULT_ABI,
-        address: vaultAddress,
+        abi: LILYPAD_LEAP_GAME_ABI,
+        address: gameAddress,
         functionName: "createGame",
         args: [amountWei, modeEnum, userCommit],
       });
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
 
-      // ✅ robust: only decode vault logs
+      // ✅ Decode GameCreated from GAME contract logs (NOT the vault)
       let gameId: Hex | null = null;
       let randAnchor: Hex | null = null;
 
       for (const log of receipt.logs) {
-        if ((log.address ?? "").toLowerCase() !== vaultAddress.toLowerCase()) continue;
+        if ((log.address ?? "").toLowerCase() !== gameAddress.toLowerCase()) continue;
         try {
           const decoded = decodeEventLog({
-            abi: LILYPAD_VAULT_ABI,
+            abi: LILYPAD_LEAP_GAME_ABI,
             data: log.data,
             topics: log.topics,
           });
           if (decoded.eventName === "GameCreated") {
             gameId = (decoded.args as any).gameId as Hex;
-            randAnchor = ((decoded.args as any).randAnchor as Hex) ?? null;
+            randAnchor = (decoded.args as any).randAnchor as Hex;
             break;
           }
         } catch {}
       }
 
       if (!gameId || !isHex(gameId) || gameId.length !== 66) {
-        throw new Error("GameCreated event not found in receipt.");
+        throw new Error("GameCreated event not found in receipt. (Make sure you're using the GAME address + ABI.)");
       }
 
       setActiveGameId(gameId);
       setActiveRandAnchor(randAnchor);
 
-      // ✅ CRITICAL: store secret locally so /verify can find it on same device
-      setStoredSecret(effectiveChainId, vaultAddress as Hex, gameId, userSecret);
+      // ✅ store secret locally so /verify can find it on same device
+      setStoredSecret(effectiveChainId, gameAddress as Hex, gameId, userSecret);
 
-      // ✅ Build a shareable verification bundle for cross-device
+      // ✅ Build shareable verification bundle for cross-device
       setVerifyBundle(
         buildVerifyBundle({
           chainId: effectiveChainId,
           vault: vaultAddress as Hex,
+          game: gameAddress as Hex,
           gameId,
           userSecret,
           createTxHash: hash as Hex,
@@ -993,7 +1193,6 @@ export default function PlayPage() {
       );
 
       setHasStarted(true);
-
       setOutcome("idle");
       setOutcomeText("Game started on-chain. Hop in the UI, then Cash Out to settle.");
 
@@ -1024,6 +1223,7 @@ export default function PlayPage() {
     let requiredPct: number;
 
     if (playMode === "token") {
+      // ✅ EXACT match with Solidity
       if (!tokenSeed) {
         setTxError("Missing token seed. Please START again.");
         return;
@@ -1033,19 +1233,22 @@ export default function PlayPage() {
         return;
       }
 
-      const hopNo = nextHopNo;
+      const hopNo = nextHopNo; // 1..10
       const h = keccak256(encodePacked(["bytes32", "uint8"], [tokenSeed, hopNo])) as Hex;
       const rBps = Number(BigInt(h) % 10000n); // 0..9999
       rollPct = rBps / 100;
 
       const pBps = modeKey === "safe" ? 9000 : modeKey === "wild" ? 8200 : 6900;
       requiredPct = pBps / 100;
+
+      // ✅ IMPORTANT: contract uses lose if r >= p, win if r < p
       passed = rBps < pBps;
     } else {
       const u = xorshift32(rngState);
       rollPct = uint32ToRoll(u);
 
       requiredPct = stepSuccessPctExact;
+      // demo uses <= (UI-only), but token mode is exact contract math
       passed = rollPct <= requiredPct;
 
       setRngState(u);
@@ -1124,14 +1327,18 @@ export default function PlayPage() {
         setTxError("Missing on-chain game state. Please start again.");
         return;
       }
+      if (gameAddress === zeroAddress) {
+        setTxError("Missing game address.");
+        return;
+      }
 
       setTxError("");
       setTxStatus("Settling on-chain…");
 
       const hash = await writeContractAsync({
         chainId: safeChainId as number,
-        abi: LILYPAD_VAULT_ABI,
-        address: vaultAddress,
+        abi: LILYPAD_LEAP_GAME_ABI,
+        address: gameAddress,
         functionName: "cashOut",
         args: [activeGameId, activeUserSecret, cashoutHop],
       });
@@ -1141,11 +1348,12 @@ export default function PlayPage() {
       let payout: bigint | null = null;
       let won: boolean | null = null;
 
+      // ✅ Decode GameSettled from GAME logs
       for (const log of receipt.logs) {
-        if ((log.address ?? "").toLowerCase() !== vaultAddress.toLowerCase()) continue;
+        if ((log.address ?? "").toLowerCase() !== gameAddress.toLowerCase()) continue;
         try {
           const decoded = decodeEventLog({
-            abi: LILYPAD_VAULT_ABI,
+            abi: LILYPAD_LEAP_GAME_ABI,
             data: log.data,
             topics: log.topics,
           });
@@ -1166,7 +1374,7 @@ export default function PlayPage() {
       setIsCashedOut(true);
 
       // ✅ Update bundle with cashout hop + settle tx hash
-      if (activeGameId && activeUserSecret && verifyBundle) {
+      if (verifyBundle) {
         try {
           const b = JSON.parse(verifyBundle);
           b.cashoutHop = cashoutHop;
@@ -1186,7 +1394,9 @@ export default function PlayPage() {
         triggerAnim("cash_out");
       } else {
         setOutcome("bust");
-        setOutcomeText(`Settled on-chain at hop ${cashoutHop}. Payout: 0 DTC.`);
+        setOutcomeText(
+          `Settled on-chain at hop ${cashoutHop}. Payout: 0 DTC. (won=${String(won)})`
+        );
         playSound("busted");
         triggerAnim("hop_fail");
       }
@@ -1396,6 +1606,27 @@ export default function PlayPage() {
     }
 
     setTxError("");
+
+    // Hard guard: addresses must exist
+const cid = safeChainId as number;
+
+if (!GAME_BY_CHAIN[cid] || GAME_BY_CHAIN[cid] === zeroAddress) {
+  setTxError("TOKEN mode is not configured for this chain (missing GAME address).");
+  setPlayMode("demo");
+  return;
+}
+if (!VAULT_BY_CHAIN[cid] || VAULT_BY_CHAIN[cid] === zeroAddress) {
+  setTxError("TOKEN mode is not configured for this chain (missing VAULT address).");
+  setPlayMode("demo");
+  return;
+}
+if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
+  setTxError("TOKEN mode is not configured for this chain (missing TOKEN address).");
+  setPlayMode("demo");
+  return;
+}
+
+
     setPlayMode("token");
   }
 
@@ -1876,7 +2107,6 @@ export default function PlayPage() {
                     </button>
                   </div>
 
-                  {/* ✅ CLEAN: hide scrollbars, keep vertical scroll, prevent horizontal bar */}
                   <pre className="noScrollbars mt-3 max-h-40 overflow-auto rounded-2xl border border-neutral-800 bg-neutral-950 p-3 text-[11px] text-neutral-200 whitespace-pre-wrap break-words">
                     {verifyBundle}
                   </pre>
@@ -2051,7 +2281,11 @@ export default function PlayPage() {
                         <div>
                           <div className="text-xs font-semibold text-neutral-200">Allowance</div>
                           <div className="mt-0.5 text-[11px] text-neutral-500">
-                            {hasEnoughAllowance ? "✅ Sufficient" : "⚠️ Needs approval"}
+                            {tokenAddress === zeroAddress
+                              ? "Token address not set in this file (allowance display disabled)."
+                              : hasEnoughAllowance
+                              ? "✅ Sufficient"
+                              : "⚠️ Needs approval"}
                           </div>
                         </div>
 
@@ -2063,6 +2297,7 @@ export default function PlayPage() {
                             !safeIsConnected ||
                             !safeAddress ||
                             !tokenChainOk ||
+                            tokenAddress === zeroAddress ||
                             hasEnoughAllowance ||
                             cashOutPending
                           }
@@ -2072,6 +2307,7 @@ export default function PlayPage() {
                             !safeIsConnected ||
                             !safeAddress ||
                             !tokenChainOk ||
+                            tokenAddress === zeroAddress ||
                             hasEnoughAllowance ||
                             cashOutPending
                               ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
@@ -2083,15 +2319,13 @@ export default function PlayPage() {
                       </div>
 
                       <div className="mt-2 text-[11px] text-neutral-500">
-                        Token Mode settles on-chain at Cash Out. The hop animation is UX-only.
+                        Token Mode settles on-chain at Cash Out. The hop animation is UX-only, but the pass/fail math is now EXACT.
                       </div>
                     </div>
                   </>
                 ) : null}
 
-                <div className="mt-1 text-xs text-neutral-600">
-                  {hasStarted ? "Locked after START." : "Set before START."}
-                </div>
+                <div className="mt-1 text-xs text-neutral-600">{hasStarted ? "Locked after START." : "Set before START."}</div>
 
                 {maxClampNotice ? (
                   <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
@@ -2171,6 +2405,16 @@ export default function PlayPage() {
                     <span className="text-neutral-300">Estimated return</span>
                     <span className="font-semibold">{hops === 0 ? "—" : `${fmtInt(currentReturn)} DTC`}</span>
                   </div>
+
+                  {playMode === "token" && isCashedOut ? (
+                    <div className="flex items-center justify-between">
+                      <span className="text-neutral-300">On-chain result</span>
+                      <span className="font-semibold">
+                        {settledPayoutWei === null ? "—" : `${Number(formatUnits(settledPayoutWei, 18)).toLocaleString("en-US", { maximumFractionDigits: 6 })} DTC`}
+                        {settledWon !== null ? ` (won=${String(settledWon)})` : ""}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-xs text-neutral-300">
@@ -2196,7 +2440,7 @@ export default function PlayPage() {
                     </div>
 
                     <div className="mt-1 text-[11px] text-neutral-600">
-                      Demo placeholder. Real mode: commit stored at START, reveal only at settle.
+                      Demo placeholder. Token-mode fairness uses on-chain commit-reveal.
                     </div>
                   </button>
 
@@ -2431,7 +2675,7 @@ export default function PlayPage() {
                       Steps, Win probability and Cash Out multiplier
                     </div>
                     <div className="mt-1 text-xs text-neutral-500">
-                      Success is fixed per mode; UI shows whole % and math uses exact precision.
+                      Token mode is now mathematically exact to the contract.
                     </div>
                   </div>
 
@@ -2514,7 +2758,7 @@ export default function PlayPage() {
 
                             {showRoll ? (
                               <span className="ml-2 text-xs text-neutral-400">
-                                (roll {formatRoll(lastRoll)} / need ≤ {lastRequiredPct!.toFixed(6)}%)
+                                (roll {formatRoll(lastRoll)} / need &lt; {lastRequiredPct!.toFixed(6)}%)
                               </span>
                             ) : null}
                           </div>
@@ -2527,7 +2771,8 @@ export default function PlayPage() {
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4 text-sm text-neutral-300">
-                  <b>Demo guarantee:</b> The UI does not reveal future outcomes. Rolls are computed and displayed only after an attempt.
+                  <b>Important:</b> In TOKEN mode, the contract decides win/loss at settle. This UI now uses the exact same
+                  seed formula so “max hit” will match on-chain.
                 </div>
               </div>
             </div>

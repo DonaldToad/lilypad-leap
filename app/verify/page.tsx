@@ -4,7 +4,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import TopNav from "../components/TopNav";
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
-import { LILYPAD_VAULT_BY_CHAIN } from "../lib/addresses";
+import { LILYPAD_GAME_BY_CHAIN } from "../lib/addresses";
 
 import { useAccount, useChainId, usePublicClient } from "wagmi";
 import {
@@ -414,7 +414,7 @@ export default function VerifyPage() {
 
   const publicClient = usePublicClient({ chainId: selectedChainId });
 
-  const defaultVault = (LILYPAD_VAULT_BY_CHAIN[selectedChainId] ?? zeroAddress) as Hex;
+  const defaultVault = (LILYPAD_GAME_BY_CHAIN[selectedChainId] ?? zeroAddress) as Hex;
   const [vaultOverride, setVaultOverride] = useState<string>("");
 
   const vaultAddress = useMemo(() => {

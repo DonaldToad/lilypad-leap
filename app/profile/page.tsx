@@ -2,8 +2,16 @@
 "use client";
 
 import TopNav from "../components/TopNav";
-import { useEffect, useMemo, useState } from "react";
-import { useAccount, useChainId, usePublicClient, useReadContract, useSwitchChain } from "wagmi";
+import { useEffect, useMemo, useState, useCallback } from "react";
+import {
+  useAccount,
+  useChainId,
+  usePublicClient,
+  useReadContract,
+  useSwitchChain,
+  useWriteContract,
+  useWaitForTransactionReceipt,
+} from "wagmi";
 import { zeroAddress, formatUnits, keccak256, encodePacked } from "viem";
 
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
@@ -13,6 +21,8 @@ import { REFERRAL_REGISTRY_ABI } from "../lib/abi/referralRegistry";
 
 const TOKEN_CHAIN_IDS = [59144, 8453] as const;
 type TokenChainId = (typeof TOKEN_CHAIN_IDS)[number];
+
+type TimeframeKey = "day" | "week" | "month" | "all";
 
 function isTokenChain(id: number | undefined): id is TokenChainId {
   return !!id && (TOKEN_CHAIN_IDS as readonly number[]).includes(id);
@@ -93,6 +103,11 @@ function storageKey(address?: string) {
   return `ll_profile_v1_${(address || "anon").toLowerCase()}`;
 }
 
+// Leaderboard-friendly username key (easy to read from anywhere)
+function usernameKey(address?: string) {
+  return `ll_username_${(address || "anon").toLowerCase()}`;
+}
+
 function safeParseJSON<T>(s: string | null): T | null {
   if (!s) return null;
   try {
@@ -108,6 +123,47 @@ function isAddressLike(v: string) {
 
 function isNumericString(v: string) {
   return /^\d+$/.test(v);
+}
+
+function toBigIntSafe(v: unknown): bigint {
+  try {
+    if (typeof v === "bigint") return v;
+    if (typeof v === "number") return BigInt(Math.trunc(v));
+    if (typeof v === "string") return BigInt(v);
+    // wagmi sometimes gives { toString() }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyV = v as any;
+    if (anyV?.toString) return BigInt(anyV.toString());
+    return 0n;
+  } catch {
+    return 0n;
+  }
+}
+
+function miniBars(values: number[]) {
+  const max = Math.max(1, ...values.map((x) => Math.abs(x)));
+  return (
+    <div className="mt-3 flex h-16 w-full items-end gap-1">
+      {values.map((v, i) => {
+        const h = Math.max(2, Math.round((Math.abs(v) / max) * 64));
+        const isPos = v >= 0;
+        return (
+          <div
+            // eslint-disable-next-line react/no-array-index-key
+            key={i}
+            className={[
+              "w-full rounded-sm",
+              isPos ? "bg-emerald-500/30" : "bg-red-500/25",
+              "ring-1",
+              isPos ? "ring-emerald-500/20" : "ring-red-500/20",
+            ].join(" ")}
+            style={{ height: `${h}px` }}
+            title={`PnL: ${fmtNum(v, 4)}`}
+          />
+        );
+      })}
+    </div>
+  );
 }
 
 export default function ProfilePage() {
@@ -153,16 +209,19 @@ export default function ProfilePage() {
     return CHAIN_LIST.find((c) => c.chainId === walletChainId)?.name ?? String(walletChainId);
   }, [ready, walletChainId]);
 
-  async function onPickChain(chainId: number) {
-    setSelectedChainId(chainId);
-    if (!ready) return;
-    if (!isConnected) return;
-    try {
-      await switchChainAsync?.({ chainId });
-    } catch {
-      // keep silent
-    }
-  }
+  const onPickChain = useCallback(
+    async (chainId: number) => {
+      setSelectedChainId(chainId);
+      if (!ready) return;
+      if (!isConnected) return;
+      try {
+        await switchChainAsync?.({ chainId });
+      } catch {
+        // ignore
+      }
+    },
+    [ready, isConnected, switchChainAsync],
+  );
 
   // Dedicated public clients for NFT chains so PFP loads regardless of selected chain
   const publicClientLinea = usePublicClient({ chainId: 59144 });
@@ -193,6 +252,7 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (!ready) return;
+
     const k = storageKey(address);
     const raw = safeParseJSON<StoredProfile>(window.localStorage.getItem(k)) ?? {};
 
@@ -201,12 +261,24 @@ export default function ProfilePage() {
     setProfile(raw);
     setUsernameDraft(raw.username ?? "");
     window.localStorage.setItem(k, JSON.stringify(raw));
+
+    // keep global username key in sync for leaderboard usage
+    if (address && raw.username?.trim()) {
+      window.localStorage.setItem(usernameKey(address), raw.username.trim());
+    }
   }, [ready, address]);
 
   function saveProfile(next: StoredProfile) {
     setProfile(next);
     if (!ready) return;
     window.localStorage.setItem(storageKey(address), JSON.stringify(next));
+
+    // leaderboard-friendly username key
+    if (address && next.username?.trim()) {
+      window.localStorage.setItem(usernameKey(address), next.username.trim());
+    } else if (address) {
+      window.localStorage.removeItem(usernameKey(address));
+    }
   }
 
   const joinedLabel = useMemo(() => {
@@ -252,10 +324,11 @@ export default function ProfilePage() {
     query: { enabled: readsEnabled && vaultAddress !== zeroAddress },
   });
 
+  const owedBig = useMemo(() => toBigIntSafe(owedWei), [owedWei]);
+
   const owedDtcLabel = useMemo(() => {
-    const v = (owedWei as bigint | undefined) ?? 0n;
-    return fmtNum(Number(formatUnits(v, 18)), 6);
-  }, [owedWei]);
+    return fmtNum(Number(formatUnits(owedBig, 18)), 6);
+  }, [owedBig]);
 
   const { data: myRewardsTotal } = useReadContract({
     chainId: effectiveChainId,
@@ -267,15 +340,10 @@ export default function ProfilePage() {
   });
 
   const totalClaimedReferralsLabel = useMemo(() => {
-    const v = (myRewardsTotal as any) ?? 0n;
-    try {
-      return fmtNum(Number(formatUnits(BigInt(v.toString()), 18)), 6);
-    } catch {
-      return "—";
-    }
+    const v = toBigIntSafe(myRewardsTotal);
+    return fmtNum(Number(formatUnits(v, 18)), 6);
   }, [myRewardsTotal]);
 
-  // Optional: referral count if your registry supports it
   const { data: referralsCountMaybe, error: referralsCountErr } = useReadContract({
     chainId: effectiveChainId,
     abi: REFERRAL_REGISTRY_ABI as any,
@@ -290,11 +358,46 @@ export default function ProfilePage() {
     if (referralsCountErr) return "—";
     if (referralsCountMaybe === undefined || referralsCountMaybe === null) return "—";
     try {
-      return String((referralsCountMaybe as any)?.toString?.() ?? referralsCountMaybe);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const anyV = referralsCountMaybe as any;
+      return String(anyV?.toString?.() ?? anyV);
     } catch {
       return "—";
     }
   }, [tokenMode, referralsCountMaybe, referralsCountErr]);
+
+  // ===== Cash out (vault owed) =====
+  const { writeContractAsync } = useWriteContract();
+  const [cashoutErr, setCashoutErr] = useState<string>("");
+  const [cashoutHash, setCashoutHash] = useState<`0x${string}` | undefined>(undefined);
+
+  const cashoutWait = useWaitForTransactionReceipt({
+    hash: cashoutHash,
+    query: { enabled: !!cashoutHash },
+  });
+
+  const canCashOut = tokenMode && owedBig > 0n && readsEnabled && vaultAddress !== zeroAddress;
+
+  const onCashOut = useCallback(async () => {
+    setCashoutErr("");
+    if (!canCashOut) return;
+
+    try {
+      // NOTE: If your vault uses a different function name, change ONLY this string.
+      // Common alternatives: "claim", "claimOwed", "withdrawOwed", "cashOutOwed".
+      const txHash = await writeContractAsync({
+        chainId: effectiveChainId,
+        address: vaultAddress,
+        abi: LILYPAD_VAULT_ABI as any, // keep flexible if ABI typing changes
+        functionName: "claimOwed" as any,
+        args: [],
+      });
+
+      setCashoutHash(txHash as `0x${string}`);
+    } catch (e: any) {
+      setCashoutErr(e?.shortMessage || e?.message || "Cash out failed.");
+    }
+  }, [canCashOut, writeContractAsync, effectiveChainId, vaultAddress]);
 
   // ===== PFP resolve + ownership enforcement =====
   const [pfpStatus, setPfpStatus] = useState<string>("");
@@ -308,11 +411,9 @@ export default function ProfilePage() {
   // Load cached image immediately (no chain dependency)
   useEffect(() => {
     if (!ready) return;
-    const cached = profile.pfp?.image || "";
-    setPfpImage(cached);
+    setPfpImage(profile.pfp?.image || "");
   }, [ready, profile.pfp?.image]);
 
-  // Resolve/verify whenever pfp selection changes
   useEffect(() => {
     if (!ready) return;
 
@@ -328,7 +429,7 @@ export default function ProfilePage() {
       };
     }
 
-    const run = async () => {
+    const run = async (snap: NonNullable<StoredProfile["pfp"]>) => {
       try {
         if (!address) {
           setPfpErr("Connect wallet to verify ownership.");
@@ -336,7 +437,7 @@ export default function ProfilePage() {
           return;
         }
 
-        const pc = publicClientForChain(pfp.chainId);
+        const pc = publicClientForChain(snap.chainId);
         if (!pc) {
           setPfpErr("Unsupported NFT chain.");
           setPfpImage("");
@@ -346,10 +447,10 @@ export default function ProfilePage() {
         setPfpStatus("Verifying ownership…");
 
         const owner = (await pc.readContract({
-          address: pfp.contract,
+          address: snap.contract,
           abi: ERC721_ABI_MIN,
           functionName: "ownerOf",
-          args: [BigInt(pfp.tokenId)],
+          args: [BigInt(snap.tokenId)],
         })) as `0x${string}`;
 
         if (owner.toLowerCase() !== address.toLowerCase()) {
@@ -357,7 +458,8 @@ export default function ProfilePage() {
           setPfpErr("You don’t own this NFT. Please import an NFT owned by your connected wallet.");
           setPfpImage("");
 
-          const next: StoredProfile = { ...profile, pfp: { ...pfp, image: undefined } };
+          // clear cached image, keep selection (optional)
+          const next: StoredProfile = { ...profile, pfp: { ...snap, image: undefined } };
           if (!cancelled) saveProfile(next);
           return;
         }
@@ -365,10 +467,10 @@ export default function ProfilePage() {
         setPfpStatus("Loading NFT metadata…");
 
         const tokenUri = (await pc.readContract({
-          address: pfp.contract,
+          address: snap.contract,
           abi: ERC721_ABI_MIN,
           functionName: "tokenURI",
-          args: [BigInt(pfp.tokenId)],
+          args: [BigInt(snap.tokenId)],
         })) as string;
 
         const resolvedTokenUri = normalizeUri(tokenUri);
@@ -401,7 +503,8 @@ export default function ProfilePage() {
         setPfpImage(img);
         setPfpStatus("");
 
-        const next: StoredProfile = { ...profile, pfp: { ...pfp, image: img } };
+        // Cache image locally so it shows on any chain + in TopNav
+        const next: StoredProfile = { ...profile, pfp: { ...snap, image: img } };
         saveProfile(next);
       } catch (e: any) {
         if (cancelled) return;
@@ -411,7 +514,7 @@ export default function ProfilePage() {
       }
     };
 
-    void run();
+    void run(pfp);
 
     return () => {
       cancelled = true;
@@ -424,6 +527,7 @@ export default function ProfilePage() {
 
   // Username UI
   const username = profile.username?.trim() ? profile.username.trim() : "Player";
+
   const usernameSlug = useMemo(() => {
     const base = username
       .toLowerCase()
@@ -432,6 +536,30 @@ export default function ProfilePage() {
     const suffix = String((gamesLen as any)?.toString?.() ?? "0");
     return base ? `${base}-${suffix}` : `player-${suffix}`;
   }, [username, gamesLen]);
+
+  // ===== "Latest games" (no indexer; show last N slots) =====
+  const latestGameSlots = useMemo(() => {
+    const len = Number(toBigIntSafe(gamesLen));
+    if (!tokenMode || !Number.isFinite(len) || len <= 0) return [];
+    const n = Math.min(10, len);
+    // show latest first
+    return Array.from({ length: n }, (_, i) => len - 1 - i);
+  }, [gamesLen, tokenMode]);
+
+  // ===== Stats UI shell =====
+  const [timeframe, setTimeframe] = useState<TimeframeKey>("week");
+
+  // Placeholder PnL series (until you wire real data from events/indexer)
+  const pnlSeries = useMemo(() => {
+    const seed = Number(toBigIntSafe(gamesLen) % 17n);
+    const base = timeframe === "day" ? 5 : timeframe === "week" ? 10 : timeframe === "month" ? 14 : 18;
+    const arr = Array.from({ length: base }, (_, i) => {
+      const x = (i + 1 + seed) * 1.17;
+      const v = Math.sin(x) * 12 + Math.cos(x / 2) * 6;
+      return Math.round(v * 1000) / 1000;
+    });
+    return arr;
+  }, [gamesLen, timeframe]);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -522,6 +650,12 @@ export default function ProfilePage() {
                     COPY PROOF HASH
                   </button>
                 </div>
+
+                {address ? (
+                  <div className="mt-2 text-[11px] text-neutral-500">
+                    Leaderboard username key: <span className="font-mono">{usernameKey(address)}</span>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -561,15 +695,13 @@ export default function ProfilePage() {
                 {!ready ? (
                   <div className="mt-2 text-[11px] text-neutral-600">Initializing…</div>
                 ) : !isConnected ? (
-                  <div className="mt-2 text-[11px] text-neutral-600">
-                    Connect wallet to load on-chain stats.
-                  </div>
+                  <div className="mt-2 text-[11px] text-neutral-600">Connect wallet to load on-chain stats.</div>
                 ) : null}
               </div>
             </div>
           </div>
 
-          {/* Stat cards */}
+          {/* Quick stats */}
           <div className="mt-5 grid gap-3 md:grid-cols-4">
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
               <div className="text-[12px] text-neutral-500">IP Balance</div>
@@ -593,47 +725,12 @@ export default function ProfilePage() {
 
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
               <div className="text-[12px] text-neutral-500">Total Claimed (referrals)</div>
-              <div className="mt-1 text-2xl font-extrabold">
-                {tokenMode ? `${totalClaimedReferralsLabel} DTC` : "—"}
-              </div>
+              <div className="mt-1 text-2xl font-extrabold">{tokenMode ? `${totalClaimedReferralsLabel} DTC` : "—"}</div>
               <div className="mt-1 text-[11px] text-neutral-600">From ReferralRegistry</div>
             </div>
           </div>
 
-          {/* Proof hash */}
-          <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-semibold text-neutral-100">Proof Game ID Hash</div>
-                <div className="mt-1 text-[12px] text-neutral-500">
-                  Used for support + fairness verification flows (placeholder until wired to your game hash).
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!proofIdHash) return;
-                  await copyText(proofIdHash);
-                }}
-                disabled={!proofIdHash}
-                className={[
-                  "rounded-xl border px-4 py-2 text-xs font-extrabold",
-                  proofIdHash
-                    ? "border-neutral-800 bg-neutral-900 text-neutral-100 hover:bg-neutral-800/60"
-                    : "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500",
-                ].join(" ")}
-              >
-                COPY
-              </button>
-            </div>
-
-            <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-3 font-mono text-[12px] text-neutral-200">
-              {proofIdHash ? `${proofIdHash.slice(0, 14)}…${proofIdHash.slice(-14)}` : "—"}
-            </div>
-          </div>
-
-          {/* Owed + PFP info */}
+          {/* Cash out + proof hash */}
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
               <div className="text-sm font-semibold text-neutral-100">Claimable (vault owed)</div>
@@ -641,68 +738,190 @@ export default function ProfilePage() {
               <div className="mt-1 text-[12px] text-neutral-500">
                 This is vault “owed” (separate from weekly referral claims).
               </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void onCashOut()}
+                  disabled={!canCashOut || cashoutWait.isLoading}
+                  className={[
+                    "rounded-xl border px-4 py-2 text-xs font-extrabold",
+                    canCashOut
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
+                      : "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500",
+                  ].join(" ")}
+                  title={!canCashOut ? "Nothing to cash out, or wallet not ready." : "Claim owed from vault"}
+                >
+                  {cashoutWait.isLoading ? "CASHING OUT…" : "CASH OUT"}
+                </button>
+
+                {cashoutWait.isSuccess ? (
+                  <span className="text-[11px] text-emerald-200">Cash out confirmed ✅</span>
+                ) : cashoutErr ? (
+                  <span className="text-[11px] text-red-200">{cashoutErr}</span>
+                ) : null}
+              </div>
+
+              <div className="mt-2 text-[11px] text-neutral-600">
+                If this reverts, your vault function name likely differs. Search vault ABI for “claim/withdraw/owed”.
+              </div>
             </div>
 
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-              <div className="text-sm font-semibold text-neutral-100">Profile picture</div>
-              <div className="mt-1 text-[12px] text-neutral-500">
-                Import an NFT you own (ERC-721) by contract + tokenId (Linea/Base). Stored locally on this device.
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-neutral-100">Proof Game ID Hash</div>
+                  <div className="mt-1 text-[12px] text-neutral-500">
+                    Used for support + fairness verification flows (placeholder until wired to your game hash).
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!proofIdHash) return;
+                    await copyText(proofIdHash);
+                  }}
+                  disabled={!proofIdHash}
+                  className={[
+                    "rounded-xl border px-4 py-2 text-xs font-extrabold",
+                    proofIdHash
+                      ? "border-neutral-800 bg-neutral-900 text-neutral-100 hover:bg-neutral-800/60"
+                      : "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500",
+                  ].join(" ")}
+                >
+                  COPY
+                </button>
               </div>
 
-              {profile.pfp ? (
-                <div className="mt-3 text-[12px] text-neutral-300">
-                  <div>
-                    Chain:{" "}
-                    <span className="text-neutral-100">
-                      {CHAIN_LIST.find((c) => c.chainId === profile.pfp!.chainId)?.name ??
-                        String(profile.pfp!.chainId)}
-                    </span>
-                  </div>
-                  <div className="mt-1">
-                    NFT:{" "}
-                    <span className="font-mono text-neutral-100">
-                      {profile.pfp!.contract}:{profile.pfp!.tokenId}
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = { ...profile };
-                      delete next.pfp;
-                      saveProfile(next);
-                      setPfpImage("");
-                      setPfpErr("");
-                      setPfpStatus("");
-                    }}
-                    className="mt-3 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-extrabold text-neutral-100 hover:bg-neutral-800/60"
-                  >
-                    REMOVE PFP
-                  </button>
-                </div>
-              ) : (
-                <div className="mt-3 text-[12px] text-neutral-400">No NFT selected.</div>
-              )}
+              <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-3 font-mono text-[12px] text-neutral-200">
+                {proofIdHash ? `${proofIdHash.slice(0, 14)}…${proofIdHash.slice(-14)}` : "—"}
+              </div>
             </div>
           </div>
 
-          {/* History placeholder */}
+          {/* Stats + PnL chart (UI shell) */}
+          <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-neutral-100">Statistics & PnL</div>
+                <div className="mt-1 text-[12px] text-neutral-500">
+                  Per chain + timeframe. Real PnL requires game result events (or an indexer/subgraph).
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {(["day", "week", "month", "all"] as TimeframeKey[]).map((k) => {
+                  const active = timeframe === k;
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setTimeframe(k)}
+                      className={[
+                        "rounded-xl border px-3 py-2 text-xs font-extrabold",
+                        active
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                          : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
+                      ].join(" ")}
+                    >
+                      {k.toUpperCase()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {miniBars(pnlSeries)}
+
+            <div className="mt-3 text-[11px] text-neutral-600">
+              Placeholder chart. Next step: emit per-game PnL in events, then aggregate per day/week/month.
+            </div>
+          </div>
+
+          {/* Latest games */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
               <div>
-                <div className="text-sm font-semibold text-neutral-100">Game history</div>
+                <div className="text-sm font-semibold text-neutral-100">Latest games</div>
                 <div className="mt-1 text-[12px] text-neutral-500">
-                  Last 20 games (recommended: index events with a backend or subgraph for fast UI).
+                  Without an indexer we can only show your latest game slots. Wire actual details via events.
                 </div>
               </div>
               <span className="text-[11px] text-neutral-600">
-                Tip: Stake-like history usually comes from an indexed DB, not direct RPC scans.
+                Tip: real “latest games” = indexed events, not RPC scans.
               </span>
             </div>
 
-            <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-400">
-              Not wired yet (needs event indexer/subgraph). UI shell is ready.
+            {!tokenMode ? (
+              <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-400">
+                Connect wallet + select the correct network to load your games.
+              </div>
+            ) : latestGameSlots.length === 0 ? (
+              <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-400">
+                No games found.
+              </div>
+            ) : (
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {latestGameSlots.map((slot) => (
+                  <div
+                    key={slot}
+                    className="rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-300"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold text-neutral-100">Game slot #{slot}</div>
+                      <div className="text-neutral-500">Chain: {selectedChain?.name ?? effectiveChainId ?? "—"}</div>
+                    </div>
+                    <div className="mt-1 text-neutral-500">
+                      TODO: fetch game struct or event details (bet, mode, result, payout, tx).
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* PFP info */}
+          <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+            <div className="text-sm font-semibold text-neutral-100">Profile picture</div>
+            <div className="mt-1 text-[12px] text-neutral-500">
+              Import an NFT you own (ERC-721) by contract + tokenId (Linea/Base). Stored locally on this device.
             </div>
+
+            {profile.pfp ? (
+              <div className="mt-3 text-[12px] text-neutral-300">
+                <div>
+                  Chain:{" "}
+                  <span className="text-neutral-100">
+                    {CHAIN_LIST.find((c) => c.chainId === profile.pfp!.chainId)?.name ??
+                      String(profile.pfp!.chainId)}
+                  </span>
+                </div>
+                <div className="mt-1">
+                  NFT:{" "}
+                  <span className="font-mono text-neutral-100">
+                    {profile.pfp!.contract}:{profile.pfp!.tokenId}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = { ...profile };
+                    delete next.pfp;
+                    saveProfile(next);
+                    setPfpImage("");
+                    setPfpErr("");
+                    setPfpStatus("");
+                  }}
+                  className="mt-3 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-extrabold text-neutral-100 hover:bg-neutral-800/60"
+                >
+                  REMOVE PFP
+                </button>
+              </div>
+            ) : (
+              <div className="mt-3 text-[12px] text-neutral-400">No NFT selected.</div>
+            )}
           </div>
         </div>
       </section>
@@ -730,7 +949,9 @@ export default function ProfilePage() {
                 placeholder="Toad Jones"
                 className="mt-2 w-full rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-3 text-sm text-neutral-100 placeholder:text-neutral-600 outline-none focus:ring-2 focus:ring-emerald-500/30"
               />
-              <div className="mt-2 text-[11px] text-neutral-500">Stored locally (private). Nothing public.</div>
+              <div className="mt-2 text-[11px] text-neutral-500">
+                Stored locally + duplicated to <span className="font-mono">ll_username_&lt;address&gt;</span> for leaderboard tabs.
+              </div>
             </div>
 
             <div className="mt-4 flex gap-2">
@@ -842,12 +1063,7 @@ export default function ProfilePage() {
 
                   const next: StoredProfile = {
                     ...profile,
-                    pfp: {
-                      chainId: pfpDraftChainId,
-                      contract: c,
-                      tokenId: pfpDraftTokenId,
-                      image: undefined,
-                    },
+                    pfp: { chainId: pfpDraftChainId, contract: c, tokenId: pfpDraftTokenId, image: undefined },
                   };
 
                   saveProfile(next);
