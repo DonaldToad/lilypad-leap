@@ -3,21 +3,8 @@
 
 import TopNav from "../components/TopNav";
 import { useEffect, useMemo, useState } from "react";
-import {
-  useAccount,
-  useChainId,
-  usePublicClient,
-  useReadContract,
-  useSwitchChain,
-} from "wagmi";
-import {
-  zeroAddress,
-  formatUnits,
-  keccak256,
-  encodePacked,
-  type Hex,
-  isHex,
-} from "viem";
+import { useAccount, useChainId, usePublicClient, useReadContract, useSwitchChain } from "wagmi";
+import { zeroAddress, formatUnits, keccak256, encodePacked } from "viem";
 
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 import { LILYPAD_VAULT_BY_CHAIN, REF_REGISTRY_BY_CHAIN } from "../lib/addresses";
@@ -181,7 +168,7 @@ export default function ProfilePage() {
   // Public clients:
   // - One for current selected chain (for vault + registry reads)
   // - Two dedicated for NFT chain (so PFP loads no matter what selected chain is)
-  const publicClient = usePublicClient({ chainId: effectiveChainId });
+  usePublicClient({ chainId: effectiveChainId }); // kept for parity (selected-chain reads are via useReadContract)
   const publicClientLinea = usePublicClient({ chainId: 59144 });
   const publicClientBase = usePublicClient({ chainId: 8453 });
 
@@ -248,9 +235,7 @@ export default function ProfilePage() {
   }, [ready, address, effectiveChainId]);
 
   // ===== On-chain reads (selected chain) =====
-  const readsEnabled =
-    ready && isConnected && !!address && !wrongWalletForSelected && !!effectiveChainId;
-
+  const readsEnabled = ready && isConnected && !!address && !wrongWalletForSelected && !!effectiveChainId;
   const tokenMode = readsEnabled && isTokenChain(effectiveChainId);
 
   const { data: gamesLen } = useReadContract({
@@ -339,31 +324,24 @@ export default function ProfilePage() {
     setPfpErr("");
     setPfpStatus("");
 
-    const p = profile.pfp;
-if (!p) {
-  setPfpImage("");
-  return;
-}
-const pfp = p; // ✅ snapshot for TS + correctness
+    const pfp = profile.pfp;
+    if (!pfp) {
+      setPfpImage("");
+      return;
+    }
 
-async function run(pfp: NonNullable<StoredProfile["pfp"]>) {
-  const pc = publicClientForChain(pfp.chainId);
-  // ... use pfp.contract, pfp.tokenId everywhere
-}
-
-void run(pfp);
-
-
-    async function run() {
+    async function resolvePfp(p: NonNullable<StoredProfile["pfp"]>) {
       try {
         if (!address) {
           setPfpErr("Connect wallet to verify ownership.");
+          setPfpImage("");
           return;
         }
 
         const pc = publicClientForChain(p.chainId);
         if (!pc) {
           setPfpErr("Unsupported NFT chain.");
+          setPfpImage("");
           return;
         }
 
@@ -380,14 +358,13 @@ void run(pfp);
         if (owner.toLowerCase() !== address.toLowerCase()) {
           setPfpStatus("");
           setPfpErr("You don’t own this NFT. Please import an NFT owned by your connected wallet.");
-          // Keep cached image off
           setPfpImage("");
-          // Also clear cached image in storage (keep selection if you want, but it will never show)
-          const next: StoredProfile = {
-            ...profile,
-            pfp: { ...p, image: undefined },
-          };
-          if (!cancelled) saveProfile(next);
+
+          // Clear cached image (keep selection if you want, but it won't show)
+          if (!cancelled) {
+            const next: StoredProfile = { ...profile, pfp: { ...p, image: undefined } };
+            saveProfile(next);
+          }
           return;
         }
 
@@ -405,6 +382,8 @@ void run(pfp);
         if (!resolvedTokenUri) {
           setPfpStatus("");
           setPfpErr("tokenURI() returned empty.");
+          set attachment is
+          setPfpImage("");
           return;
         }
 
@@ -412,6 +391,7 @@ void run(pfp);
         if (!metaRes.ok) {
           setPfpStatus("");
           setPfpErr(`Failed to fetch metadata. (HTTP ${metaRes.status})`);
+          setPfpImage("");
           return;
         }
 
@@ -420,6 +400,7 @@ void run(pfp);
         if (!img) {
           setPfpStatus("");
           setPfpErr("Metadata has no image field.");
+          setPfpImage("");
           return;
         }
 
@@ -429,10 +410,7 @@ void run(pfp);
         setPfpStatus("");
 
         // Cache image locally so it shows on any chain + in TopNav
-        const next: StoredProfile = {
-          ...profile,
-          pfp: { ...p, image: img },
-        };
+        const next: StoredProfile = { ...profile, pfp: { ...p, image: img } };
         saveProfile(next);
       } catch (e: any) {
         if (cancelled) return;
@@ -442,7 +420,8 @@ void run(pfp);
       }
     }
 
-    void run();
+    void resolvePfp(pfp);
+
     return () => {
       cancelled = true;
     };
@@ -684,7 +663,8 @@ void run(pfp);
                   <div>
                     Chain:{" "}
                     <span className="text-neutral-100">
-                      {CHAIN_LIST.find((c) => c.chainId === profile.pfp!.chainId)?.name ?? String(profile.pfp!.chainId)}
+                      {CHAIN_LIST.find((c) => c.chainId === profile.pfp!.chainId)?.name ??
+                        String(profile.pfp!.chainId)}
                     </span>
                   </div>
                   <div className="mt-1">
@@ -844,9 +824,7 @@ void run(pfp);
                   className="mt-2 w-full rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-3 text-sm text-neutral-100 placeholder:text-neutral-600 outline-none"
                 />
 
-                <div className="mt-2 text-[11px] text-neutral-500">
-                  Saved locally under your wallet address.
-                </div>
+                <div className="mt-2 text-[11px] text-neutral-500">Saved locally under your wallet address.</div>
               </div>
             </div>
 
