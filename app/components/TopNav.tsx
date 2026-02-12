@@ -14,7 +14,6 @@ export type TopNavProps = {
   soundOn?: boolean;
   setSoundOn?: React.Dispatch<React.SetStateAction<boolean>>;
 
-  // Lock changing mode, network (handled in page), and disconnect once game is created
   controlsLocked?: boolean;
 };
 
@@ -30,7 +29,8 @@ function chainKeyFromChainId(chainId: number | undefined): "linea" | "base" | nu
   return null;
 }
 
-const DTC_ICON_SRC = "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
+const DTC_ICON_SRC =
+  "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
 
 function DtcIcon({ size = 14 }: { size?: number }) {
   return (
@@ -56,6 +56,25 @@ const NAV = [
   { href: "/earn", label: "Earn" },
 ];
 
+type StoredProfile = {
+  pfp?: {
+    image?: string; // ✅ must exist to show PFP in TopNav
+  };
+};
+
+function storageKey(address?: string) {
+  return `ll_profile_v1_${(address || "anon").toLowerCase()}`;
+}
+
+function safeParseJSON<T>(s: string | null): T | null {
+  if (!s) return null;
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return null;
+  }
+}
+
 export default function TopNav(props: TopNavProps) {
   const pathname = usePathname();
   const { playMode, setPlayMode, soundOn, setSoundOn, controlsLocked } = props;
@@ -75,14 +94,9 @@ export default function TopNav(props: TopNavProps) {
   const demoActive = playMode === "demo";
   const tokenActive = playMode === "token";
 
-  // ✅ When game is active, lock EVERYTHING in the top nav
   const locked = !!controlsLocked;
 
-  // -----------------------------
-  // Mobile: collapse TopNav on scroll (do NOT disappear)
-  // - At top: full nav
-  // - Scrolled down: compact bar (logo + title + wallet only)
-  // -----------------------------
+  // Mobile collapse behavior
   const [isMobile, setIsMobile] = useState(false);
   const [mobileCollapsed, setMobileCollapsed] = useState(false);
 
@@ -90,7 +104,6 @@ export default function TopNav(props: TopNavProps) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-
     const computeIsMobile = () => setIsMobile(window.innerWidth < 900);
     computeIsMobile();
     window.addEventListener("resize", computeIsMobile, { passive: true });
@@ -99,24 +112,44 @@ export default function TopNav(props: TopNavProps) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-
-    // If not mobile, always show full header.
     if (!isMobile) {
       setMobileCollapsed(false);
       return;
     }
-
     const onScroll = () => {
       const y = window.scrollY || window.pageYOffset || 0;
-      // Collapse once you leave the top area
       setMobileCollapsed(y > 20);
     };
-
     window.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
-
     return () => window.removeEventListener("scroll", onScroll);
   }, [isMobile]);
+
+  // -------- Private PFP (local-only) --------
+  const [pfpUrl, setPfpUrl] = useState<string>("");
+
+  // refresh PFP on route change and on focus (user might update on Profile then navigate)
+  useEffect(() => {
+    if (!mounted) return;
+
+    const load = () => {
+      if (!isConnected || !address) {
+        setPfpUrl("");
+        return;
+      }
+      const raw = safeParseJSON<StoredProfile>(
+        window.localStorage.getItem(storageKey(address)),
+      );
+      const img = raw?.pfp?.image || "";
+      setPfpUrl(img);
+    };
+
+    load();
+
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [mounted, isConnected, address, pathname]);
 
   const WalletPill = ({ compact }: { compact?: boolean }) => (
     <div
@@ -125,6 +158,29 @@ export default function TopNav(props: TopNavProps) {
         compact ? "px-2 py-1.5" : "px-2 py-2",
       ].join(" ")}
     >
+      {/* ✅ Private PFP thumbnail (only if saved) */}
+      {mounted && isConnected && pfpUrl ? (
+        <div
+          className={[
+            "overflow-hidden rounded-xl ring-1 ring-neutral-800 bg-neutral-950",
+            compact ? "h-[26px] w-[26px]" : "h-[30px] w-[30px]",
+          ].join(" ")}
+          title="Your private PFP (local-only)"
+        >
+          <img
+            src={pfpUrl}
+            alt="PFP"
+            className="h-full w-full object-cover"
+            loading="lazy"
+            decoding="async"
+            onError={() => {
+              // If the URL becomes invalid, stop showing it
+              setPfpUrl("");
+            }}
+          />
+        </div>
+      ) : null}
+
       {mounted && isConnected && chainKey ? (
         <img
           src={`/chains/${chainKey}.png`}
@@ -202,12 +258,8 @@ export default function TopNav(props: TopNavProps) {
           "transition-[padding] duration-300 ease-out",
         ].join(" ")}
       >
-        {/* --------------------------------
-            MOBILE (collapsed): compact bar only
-           -------------------------------- */}
         {isMobile && mobileCollapsed ? (
           <div className="flex items-center justify-between gap-3">
-            {/* Brand (compact) */}
             <div className="flex min-w-0 items-center gap-2">
               <img
                 src="/logo/logo.png"
@@ -215,23 +267,19 @@ export default function TopNav(props: TopNavProps) {
                 className="h-9 w-9 shrink-0 rounded-xl ring-1 ring-neutral-800"
               />
               <div className="min-w-0">
-                <div className="truncate text-sm font-bold leading-tight text-neutral-50">Lilypad Leap</div>
+                <div className="truncate text-sm font-bold leading-tight text-neutral-50">
+                  Lilypad Leap
+                </div>
                 <div className="truncate text-[10px] text-neutral-400">v1</div>
               </div>
             </div>
-
-            {/* Wallet only */}
             <div className="shrink-0">
               <WalletPill compact />
             </div>
           </div>
         ) : (
-          /* --------------------------------
-             FULL HEADER (desktop + mobile at top)
-             -------------------------------- */
           <div className="transition-opacity duration-300">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              {/* Brand */}
               <div className="flex items-center gap-4">
                 <img
                   src="/logo/logo.png"
@@ -239,16 +287,18 @@ export default function TopNav(props: TopNavProps) {
                   className="h-12 w-12 rounded-xl ring-1 ring-neutral-800 md:h-16 md:w-16"
                 />
                 <div className="min-w-0">
-                  <div className="truncate text-lg font-bold leading-tight text-neutral-50 md:text-xl">Lilypad Leap</div>
-                  <div className="truncate text-xs text-neutral-400 md:text-sm">The original multichain DTC game by Donald Toad</div>
+                  <div className="truncate text-lg font-bold leading-tight text-neutral-50 md:text-xl">
+                    Lilypad Leap
+                  </div>
+                  <div className="truncate text-xs text-neutral-400 md:text-sm">
+                    The original multichain DTC game by Donald Toad
+                  </div>
                 </div>
               </div>
 
-              {/* Controls */}
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <WalletPill />
 
-                {/* DEMO / TOKEN */}
                 {showPlayControls ? (
                   <div className="flex items-center rounded-2xl border border-neutral-800 bg-neutral-900/30 p-1">
                     <button
@@ -270,7 +320,8 @@ export default function TopNav(props: TopNavProps) {
                           ? {
                               background:
                                 "radial-gradient(circle at 50% 10%, rgba(255,255,255,0.22), rgba(255,255,255,0.06) 55%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(250,204,21,0.25), rgba(250,204,21,0.10))",
-                              boxShadow: "0 0 0 1px rgba(250,204,21,0.35), 0 0 22px rgba(250,204,21,0.18)",
+                              boxShadow:
+                                "0 0 0 1px rgba(250,204,21,0.35), 0 0 22px rgba(250,204,21,0.18)",
                             }
                           : undefined
                       }
@@ -289,8 +340,8 @@ export default function TopNav(props: TopNavProps) {
                         locked
                           ? "Locked while a game is active"
                           : !mounted || !isConnected
-                          ? "Connect wallet to enable TOKEN mode"
-                          : "Token mode"
+                            ? "Connect wallet to enable TOKEN mode"
+                            : "Token mode"
                       }
                       className={[
                         "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
@@ -304,7 +355,8 @@ export default function TopNav(props: TopNavProps) {
                           ? {
                               background:
                                 "radial-gradient(circle at 50% 10%, rgba(16,185,129,0.28), rgba(16,185,129,0.10) 60%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(16,185,129,0.18), rgba(16,185,129,0.07))",
-                              boxShadow: "0 0 0 1px rgba(16,185,129,0.28), 0 0 22px rgba(16,185,129,0.16)",
+                              boxShadow:
+                                "0 0 0 1px rgba(16,185,129,0.28), 0 0 22px rgba(16,185,129,0.16)",
                             }
                           : undefined
                       }
@@ -316,7 +368,6 @@ export default function TopNav(props: TopNavProps) {
                   </div>
                 ) : null}
 
-                {/* Sound */}
                 {showSoundControl ? (
                   <button
                     type="button"
@@ -331,8 +382,8 @@ export default function TopNav(props: TopNavProps) {
                       locked
                         ? "cursor-not-allowed border-neutral-800 bg-neutral-900/30 text-neutral-500 opacity-70"
                         : soundOn
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
-                        : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
+                          : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
                     ].join(" ")}
                     aria-pressed={!!soundOn}
                   >
@@ -342,14 +393,8 @@ export default function TopNav(props: TopNavProps) {
               </div>
             </div>
 
-            {/* Nav row (FIXED: WRAPS on mobile, stays clean & accessible) */}
             <nav className="mt-2 flex md:mt-4">
-              <div
-                className={[
-                  "flex w-full flex-wrap gap-2",
-                  "justify-start md:justify-end",
-                ].join(" ")}
-              >
+              <div className="flex w-full flex-wrap gap-2 justify-start md:justify-end">
                 {NAV.map((item) => {
                   const active = pathname === item.href;
                   const label = item.label === "Verify Fairness" ? "Fairness" : item.label;
