@@ -29,8 +29,7 @@ function chainKeyFromChainId(chainId: number | undefined): "linea" | "base" | nu
   return null;
 }
 
-const DTC_ICON_SRC =
-  "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
+const DTC_ICON_SRC = "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
 
 function DtcIcon({ size = 14 }: { size?: number }) {
   return (
@@ -58,7 +57,7 @@ const NAV = [
 
 type StoredProfile = {
   pfp?: {
-    image?: string; // ✅ must exist to show PFP in TopNav
+    image?: string; // must exist to show PFP in TopNav
   };
 };
 
@@ -93,7 +92,6 @@ export default function TopNav(props: TopNavProps) {
 
   const demoActive = playMode === "demo";
   const tokenActive = playMode === "token";
-
   const locked = !!controlsLocked;
 
   // Mobile collapse behavior
@@ -128,7 +126,6 @@ export default function TopNav(props: TopNavProps) {
   // -------- Private PFP (local-only) --------
   const [pfpUrl, setPfpUrl] = useState<string>("");
 
-  // refresh PFP on route change and on focus (user might update on Profile then navigate)
   useEffect(() => {
     if (!mounted) return;
 
@@ -137,9 +134,7 @@ export default function TopNav(props: TopNavProps) {
         setPfpUrl("");
         return;
       }
-      const raw = safeParseJSON<StoredProfile>(
-        window.localStorage.getItem(storageKey(address)),
-      );
+      const raw = safeParseJSON<StoredProfile>(window.localStorage.getItem(storageKey(address)));
       const img = raw?.pfp?.image || "";
       setPfpUrl(img);
     };
@@ -151,6 +146,35 @@ export default function TopNav(props: TopNavProps) {
     return () => window.removeEventListener("focus", onFocus);
   }, [mounted, isConnected, address, pathname]);
 
+  function PrivatePfpButton({ compact }: { compact?: boolean }) {
+    if (!mounted || !isConnected || !pfpUrl) return null;
+
+    // visible, but ONLY for the user (local-only)
+    return (
+      <Link
+        href="/profile"
+        title="Your private PFP (local-only)"
+        className={[
+          "shrink-0 overflow-hidden rounded-2xl ring-1 ring-neutral-800 bg-neutral-950",
+          "hover:ring-emerald-500/30 transition",
+          compact ? "h-[40px] w-[40px]" : "h-[44px] w-[44px]",
+        ].join(" ")}
+      >
+        <img
+          src={pfpUrl}
+          alt="PFP"
+          className="h-full w-full object-cover"
+          loading="lazy"
+          decoding="async"
+          onError={() => {
+            // if the URL becomes invalid, stop showing it
+            setPfpUrl("");
+          }}
+        />
+      </Link>
+    );
+  }
+
   const WalletPill = ({ compact }: { compact?: boolean }) => (
     <div
       className={[
@@ -158,29 +182,6 @@ export default function TopNav(props: TopNavProps) {
         compact ? "px-2 py-1.5" : "px-2 py-2",
       ].join(" ")}
     >
-      {/* ✅ Private PFP thumbnail (only if saved) */}
-      {mounted && isConnected && pfpUrl ? (
-        <div
-          className={[
-            "overflow-hidden rounded-xl ring-1 ring-neutral-800 bg-neutral-950",
-            compact ? "h-[26px] w-[26px]" : "h-[30px] w-[30px]",
-          ].join(" ")}
-          title="Your private PFP (local-only)"
-        >
-          <img
-            src={pfpUrl}
-            alt="PFP"
-            className="h-full w-full object-cover"
-            loading="lazy"
-            decoding="async"
-            onError={() => {
-              // If the URL becomes invalid, stop showing it
-              setPfpUrl("");
-            }}
-          />
-        </div>
-      ) : null}
-
       {mounted && isConnected && chainKey ? (
         <img
           src={`/chains/${chainKey}.png`}
@@ -242,6 +243,16 @@ export default function TopNav(props: TopNavProps) {
     </div>
   );
 
+  function RightControls({ compact }: { compact?: boolean }) {
+    return (
+      <div className="flex items-center justify-end gap-2">
+        <WalletPill compact={compact} />
+        {/* ✅ PFP goes to the RIGHT of wallet connector */}
+        <PrivatePfpButton compact={compact} />
+      </div>
+    );
+  }
+
   return (
     <header
       className={[
@@ -267,15 +278,13 @@ export default function TopNav(props: TopNavProps) {
                 className="h-9 w-9 shrink-0 rounded-xl ring-1 ring-neutral-800"
               />
               <div className="min-w-0">
-                <div className="truncate text-sm font-bold leading-tight text-neutral-50">
-                  Lilypad Leap
-                </div>
+                <div className="truncate text-sm font-bold leading-tight text-neutral-50">Lilypad Leap</div>
                 <div className="truncate text-[10px] text-neutral-400">v1</div>
               </div>
             </div>
-            <div className="shrink-0">
-              <WalletPill compact />
-            </div>
+
+            {/* ✅ still top-right on mobile collapsed */}
+            <RightControls compact />
           </div>
         ) : (
           <div className="transition-opacity duration-300">
@@ -297,7 +306,7 @@ export default function TopNav(props: TopNavProps) {
               </div>
 
               <div className="flex flex-wrap items-center justify-end gap-2">
-                <WalletPill />
+                <RightControls />
 
                 {showPlayControls ? (
                   <div className="flex items-center rounded-2xl border border-neutral-800 bg-neutral-900/30 p-1">
@@ -320,8 +329,7 @@ export default function TopNav(props: TopNavProps) {
                           ? {
                               background:
                                 "radial-gradient(circle at 50% 10%, rgba(255,255,255,0.22), rgba(255,255,255,0.06) 55%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(250,204,21,0.25), rgba(250,204,21,0.10))",
-                              boxShadow:
-                                "0 0 0 1px rgba(250,204,21,0.35), 0 0 22px rgba(250,204,21,0.18)",
+                              boxShadow: "0 0 0 1px rgba(250,204,21,0.35), 0 0 22px rgba(250,204,21,0.18)",
                             }
                           : undefined
                       }
@@ -340,8 +348,8 @@ export default function TopNav(props: TopNavProps) {
                         locked
                           ? "Locked while a game is active"
                           : !mounted || !isConnected
-                            ? "Connect wallet to enable TOKEN mode"
-                            : "Token mode"
+                          ? "Connect wallet to enable TOKEN mode"
+                          : "Token mode"
                       }
                       className={[
                         "relative rounded-xl px-3 py-2 text-[11px] font-extrabold tracking-wide transition",
@@ -355,8 +363,7 @@ export default function TopNav(props: TopNavProps) {
                           ? {
                               background:
                                 "radial-gradient(circle at 50% 10%, rgba(16,185,129,0.28), rgba(16,185,129,0.10) 60%, rgba(0,0,0,0) 100%), linear-gradient(180deg, rgba(16,185,129,0.18), rgba(16,185,129,0.07))",
-                              boxShadow:
-                                "0 0 0 1px rgba(16,185,129,0.28), 0 0 22px rgba(16,185,129,0.16)",
+                              boxShadow: "0 0 0 1px rgba(16,185,129,0.28), 0 0 22px rgba(16,185,129,0.16)",
                             }
                           : undefined
                       }
@@ -382,8 +389,8 @@ export default function TopNav(props: TopNavProps) {
                       locked
                         ? "cursor-not-allowed border-neutral-800 bg-neutral-900/30 text-neutral-500 opacity-70"
                         : soundOn
-                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
-                          : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
+                        : "border-neutral-800 bg-neutral-900/30 text-neutral-200 hover:bg-neutral-800/60",
                     ].join(" ")}
                     aria-pressed={!!soundOn}
                   >

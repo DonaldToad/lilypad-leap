@@ -340,10 +340,19 @@ export default function ProfilePage() {
     setPfpStatus("");
 
     const p = profile.pfp;
-    if (!p) {
-      setPfpImage("");
-      return;
-    }
+if (!p) {
+  setPfpImage("");
+  return;
+}
+const pfp = p; // ✅ snapshot for TS + correctness
+
+async function run(pfp: NonNullable<StoredProfile["pfp"]>) {
+  const pc = publicClientForChain(pfp.chainId);
+  // ... use pfp.contract, pfp.tokenId everywhere
+}
+
+void run(pfp);
+
 
     async function run() {
       try {
