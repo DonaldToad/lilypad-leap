@@ -3,7 +3,13 @@
 
 import TopNav from "../components/TopNav";
 import { useEffect, useMemo, useState } from "react";
-import { useAccount, useChainId, usePublicClient, useReadContract, useSwitchChain } from "wagmi";
+import {
+  useAccount,
+  useChainId,
+  usePublicClient,
+  useReadContract,
+  useSwitchChain,
+} from "wagmi";
 import { zeroAddress, formatUnits, keccak256, encodePacked } from "viem";
 
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
@@ -128,7 +134,6 @@ export default function ProfilePage() {
 
   const allowedWalletChain = isTokenChain(walletChainId);
   const defaultChainId = allowedWalletChain ? walletChainId : PRIMARY_CHAIN.chainId;
-
   const [selectedChainId, setSelectedChainId] = useState<number>(defaultChainId);
 
   useEffect(() => {
@@ -165,10 +170,8 @@ export default function ProfilePage() {
     }
   }
 
-  // Public clients:
-  // - One for current selected chain (for vault + registry reads)
-  // - Two dedicated for NFT chain (so PFP loads no matter what selected chain is)
-  usePublicClient({ chainId: effectiveChainId }); // kept for parity (selected-chain reads are via useReadContract)
+  // Public clients (dedicated for NFT chain so PFP loads regardless of selected chain)
+  usePublicClient({ chainId: effectiveChainId }); // keep hook for selected chain (future-proof)
   const publicClientLinea = usePublicClient({ chainId: 59144 });
   const publicClientBase = usePublicClient({ chainId: 8453 });
 
@@ -235,7 +238,9 @@ export default function ProfilePage() {
   }, [ready, address, effectiveChainId]);
 
   // ===== On-chain reads (selected chain) =====
-  const readsEnabled = ready && isConnected && !!address && !wrongWalletForSelected && !!effectiveChainId;
+  const readsEnabled =
+    ready && isConnected && !!address && !wrongWalletForSelected && !!effectiveChainId;
+
   const tokenMode = readsEnabled && isTokenChain(effectiveChainId);
 
   const { data: gamesLen } = useReadContract({
@@ -279,7 +284,6 @@ export default function ProfilePage() {
     }
   }, [myRewardsTotal]);
 
-  // Optional: referral count if your registry supports it
   const { data: referralsCountMaybe, error: referralsCountErr } = useReadContract({
     chainId: effectiveChainId,
     abi: REFERRAL_REGISTRY_ABI as any,
@@ -324,35 +328,32 @@ export default function ProfilePage() {
     setPfpErr("");
     setPfpStatus("");
 
-    const pfp = profile.pfp;
+    const pfp = profile.pfp; // ✅ snapshot for TS safety
     if (!pfp) {
       setPfpImage("");
       return;
     }
 
-    async function resolvePfp(p: NonNullable<StoredProfile["pfp"]>) {
+    async function resolvePfp() {
       try {
         if (!address) {
           setPfpErr("Connect wallet to verify ownership.");
-          setPfpImage("");
           return;
         }
 
-        const pc = publicClientForChain(p.chainId);
+        const pc = publicClientForChain(pfp.chainId);
         if (!pc) {
           setPfpErr("Unsupported NFT chain.");
-          setPfpImage("");
           return;
         }
 
         setPfpStatus("Verifying ownership…");
 
-        // 1) Verify ownership (ERC-721)
         const owner = (await pc.readContract({
-          address: p.contract,
+          address: pfp.contract,
           abi: ERC721_ABI_MIN,
           functionName: "ownerOf",
-          args: [BigInt(p.tokenId)],
+          args: [BigInt(pfp.tokenId)],
         })) as `0x${string}`;
 
         if (owner.toLowerCase() !== address.toLowerCase()) {
@@ -360,29 +361,27 @@ export default function ProfilePage() {
           setPfpErr("You don’t own this NFT. Please import an NFT owned by your connected wallet.");
           setPfpImage("");
 
-          // Clear cached image (keep selection if you want, but it won't show)
-          if (!cancelled) {
-            const next: StoredProfile = { ...profile, pfp: { ...p, image: undefined } };
-            saveProfile(next);
-          }
+          const next: StoredProfile = {
+            ...profile,
+            pfp: { ...pfp, image: undefined },
+          };
+          if (!cancelled) saveProfile(next);
           return;
         }
 
-        // 2) Resolve tokenURI -> metadata -> image
         setPfpStatus("Loading NFT metadata…");
 
         const tokenUri = (await pc.readContract({
-          address: p.contract,
+          address: pfp.contract,
           abi: ERC721_ABI_MIN,
           functionName: "tokenURI",
-          args: [BigInt(p.tokenId)],
+          args: [BigInt(pfp.tokenId)],
         })) as string;
 
         const resolvedTokenUri = normalizeUri(tokenUri);
         if (!resolvedTokenUri) {
           setPfpStatus("");
           setPfpErr("tokenURI() returned empty.");
-          set attachment is
           setPfpImage("");
           return;
         }
@@ -391,7 +390,6 @@ export default function ProfilePage() {
         if (!metaRes.ok) {
           setPfpStatus("");
           setPfpErr(`Failed to fetch metadata. (HTTP ${metaRes.status})`);
-          setPfpImage("");
           return;
         }
 
@@ -400,7 +398,6 @@ export default function ProfilePage() {
         if (!img) {
           setPfpStatus("");
           setPfpErr("Metadata has no image field.");
-          setPfpImage("");
           return;
         }
 
@@ -409,8 +406,10 @@ export default function ProfilePage() {
         setPfpImage(img);
         setPfpStatus("");
 
-        // Cache image locally so it shows on any chain + in TopNav
-        const next: StoredProfile = { ...profile, pfp: { ...p, image: img } };
+        const next: StoredProfile = {
+          ...profile,
+          pfp: { ...pfp, image: img },
+        };
         saveProfile(next);
       } catch (e: any) {
         if (cancelled) return;
@@ -420,13 +419,12 @@ export default function ProfilePage() {
       }
     }
 
-    void resolvePfp(pfp);
-
+    void resolvePfp();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, profile.pfp?.chainId, profile.pfp?.contract, profile.pfp?.tokenId, address]);
+  }, [ready, address, profile.pfp?.chainId, profile.pfp?.contract, profile.pfp?.tokenId]);
 
   const pfpFallback = "/profile/default.png";
   const pfpSrc = pfpImage || pfpFallback;
@@ -646,7 +644,9 @@ export default function ProfilePage() {
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
               <div className="text-sm font-semibold text-neutral-100">Claimable (vault owed)</div>
-              <div className="mt-2 text-2xl font-extrabold">{tokenMode ? `${owedDtcLabel} DTC` : "—"}</div>
+              <div className="mt-2 text-2xl font-extrabold">
+                {tokenMode ? `${owedDtcLabel} DTC` : "—"}
+              </div>
               <div className="mt-1 text-[12px] text-neutral-500">
                 This is vault “owed” (separate from weekly referral claims).
               </div>
@@ -739,14 +739,19 @@ export default function ProfilePage() {
                 placeholder="Toad Jones"
                 className="mt-2 w-full rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-3 text-sm text-neutral-100 placeholder:text-neutral-600 outline-none focus:ring-2 focus:ring-emerald-500/30"
               />
-              <div className="mt-2 text-[11px] text-neutral-500">Stored locally (private). Nothing public.</div>
+              <div className="mt-2 text-[11px] text-neutral-500">
+                Stored locally (private). Nothing public.
+              </div>
             </div>
 
             <div className="mt-4 flex gap-2">
               <button
                 type="button"
                 onClick={() => {
-                  const next: StoredProfile = { ...profile, username: usernameDraft.trim() || undefined };
+                  const next: StoredProfile = {
+                    ...profile,
+                    username: usernameDraft.trim() || undefined,
+                  };
                   saveProfile(next);
                   setEditOpen(false);
                 }}
@@ -824,7 +829,9 @@ export default function ProfilePage() {
                   className="mt-2 w-full rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-3 text-sm text-neutral-100 placeholder:text-neutral-600 outline-none"
                 />
 
-                <div className="mt-2 text-[11px] text-neutral-500">Saved locally under your wallet address.</div>
+                <div className="mt-2 text-[11px] text-neutral-500">
+                  Saved locally under your wallet address.
+                </div>
               </div>
             </div>
 
@@ -855,7 +862,7 @@ export default function ProfilePage() {
                       chainId: pfpDraftChainId,
                       contract: c,
                       tokenId: pfpDraftTokenId,
-                      image: undefined, // will be filled after verified + resolved
+                      image: undefined,
                     },
                   };
 
