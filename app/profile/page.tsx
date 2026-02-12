@@ -3,13 +3,7 @@
 
 import TopNav from "../components/TopNav";
 import { useEffect, useMemo, useState } from "react";
-import {
-  useAccount,
-  useChainId,
-  usePublicClient,
-  useReadContract,
-  useSwitchChain,
-} from "wagmi";
+import { useAccount, useChainId, usePublicClient, useReadContract, useSwitchChain } from "wagmi";
 import { zeroAddress, formatUnits, keccak256, encodePacked } from "viem";
 
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
@@ -170,8 +164,7 @@ export default function ProfilePage() {
     }
   }
 
-  // Public clients (dedicated for NFT chain so PFP loads regardless of selected chain)
-  usePublicClient({ chainId: effectiveChainId }); // keep hook for selected chain (future-proof)
+  // Dedicated public clients for NFT chains so PFP loads regardless of selected chain
   const publicClientLinea = usePublicClient({ chainId: 59144 });
   const publicClientBase = usePublicClient({ chainId: 8453 });
 
@@ -238,9 +231,7 @@ export default function ProfilePage() {
   }, [ready, address, effectiveChainId]);
 
   // ===== On-chain reads (selected chain) =====
-  const readsEnabled =
-    ready && isConnected && !!address && !wrongWalletForSelected && !!effectiveChainId;
-
+  const readsEnabled = ready && isConnected && !!address && !wrongWalletForSelected && !!effectiveChainId;
   const tokenMode = readsEnabled && isTokenChain(effectiveChainId);
 
   const { data: gamesLen } = useReadContract({
@@ -284,6 +275,7 @@ export default function ProfilePage() {
     }
   }, [myRewardsTotal]);
 
+  // Optional: referral count if your registry supports it
   const { data: referralsCountMaybe, error: referralsCountErr } = useReadContract({
     chainId: effectiveChainId,
     abi: REFERRAL_REGISTRY_ABI as any,
@@ -328,22 +320,26 @@ export default function ProfilePage() {
     setPfpErr("");
     setPfpStatus("");
 
-    const pfp = profile.pfp; // ✅ snapshot for TS safety
+    const pfp = profile.pfp;
     if (!pfp) {
       setPfpImage("");
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
-    async function resolvePfp() {
+    const run = async () => {
       try {
         if (!address) {
           setPfpErr("Connect wallet to verify ownership.");
+          setPfpImage("");
           return;
         }
 
         const pc = publicClientForChain(pfp.chainId);
         if (!pc) {
           setPfpErr("Unsupported NFT chain.");
+          setPfpImage("");
           return;
         }
 
@@ -361,10 +357,7 @@ export default function ProfilePage() {
           setPfpErr("You don’t own this NFT. Please import an NFT owned by your connected wallet.");
           setPfpImage("");
 
-          const next: StoredProfile = {
-            ...profile,
-            pfp: { ...pfp, image: undefined },
-          };
+          const next: StoredProfile = { ...profile, pfp: { ...pfp, image: undefined } };
           if (!cancelled) saveProfile(next);
           return;
         }
@@ -390,6 +383,7 @@ export default function ProfilePage() {
         if (!metaRes.ok) {
           setPfpStatus("");
           setPfpErr(`Failed to fetch metadata. (HTTP ${metaRes.status})`);
+          setPfpImage("");
           return;
         }
 
@@ -398,6 +392,7 @@ export default function ProfilePage() {
         if (!img) {
           setPfpStatus("");
           setPfpErr("Metadata has no image field.");
+          setPfpImage("");
           return;
         }
 
@@ -406,10 +401,7 @@ export default function ProfilePage() {
         setPfpImage(img);
         setPfpStatus("");
 
-        const next: StoredProfile = {
-          ...profile,
-          pfp: { ...pfp, image: img },
-        };
+        const next: StoredProfile = { ...profile, pfp: { ...pfp, image: img } };
         saveProfile(next);
       } catch (e: any) {
         if (cancelled) return;
@@ -417,14 +409,15 @@ export default function ProfilePage() {
         setPfpErr(e?.shortMessage || e?.message || "Failed to load NFT.");
         setPfpImage("");
       }
-    }
+    };
 
-    void resolvePfp();
+    void run();
+
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, address, profile.pfp?.chainId, profile.pfp?.contract, profile.pfp?.tokenId]);
+  }, [ready, profile.pfp?.chainId, profile.pfp?.contract, profile.pfp?.tokenId, address]);
 
   const pfpFallback = "/profile/default.png";
   const pfpSrc = pfpImage || pfpFallback;
@@ -644,9 +637,7 @@ export default function ProfilePage() {
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
               <div className="text-sm font-semibold text-neutral-100">Claimable (vault owed)</div>
-              <div className="mt-2 text-2xl font-extrabold">
-                {tokenMode ? `${owedDtcLabel} DTC` : "—"}
-              </div>
+              <div className="mt-2 text-2xl font-extrabold">{tokenMode ? `${owedDtcLabel} DTC` : "—"}</div>
               <div className="mt-1 text-[12px] text-neutral-500">
                 This is vault “owed” (separate from weekly referral claims).
               </div>
@@ -739,19 +730,14 @@ export default function ProfilePage() {
                 placeholder="Toad Jones"
                 className="mt-2 w-full rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-3 text-sm text-neutral-100 placeholder:text-neutral-600 outline-none focus:ring-2 focus:ring-emerald-500/30"
               />
-              <div className="mt-2 text-[11px] text-neutral-500">
-                Stored locally (private). Nothing public.
-              </div>
+              <div className="mt-2 text-[11px] text-neutral-500">Stored locally (private). Nothing public.</div>
             </div>
 
             <div className="mt-4 flex gap-2">
               <button
                 type="button"
                 onClick={() => {
-                  const next: StoredProfile = {
-                    ...profile,
-                    username: usernameDraft.trim() || undefined,
-                  };
+                  const next: StoredProfile = { ...profile, username: usernameDraft.trim() || undefined };
                   saveProfile(next);
                   setEditOpen(false);
                 }}
@@ -829,9 +815,7 @@ export default function ProfilePage() {
                   className="mt-2 w-full rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-3 text-sm text-neutral-100 placeholder:text-neutral-600 outline-none"
                 />
 
-                <div className="mt-2 text-[11px] text-neutral-500">
-                  Saved locally under your wallet address.
-                </div>
+                <div className="mt-2 text-[11px] text-neutral-500">Saved locally under your wallet address.</div>
               </div>
             </div>
 
