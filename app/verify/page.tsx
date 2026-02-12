@@ -2,6 +2,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import TopNav from "../components/TopNav";
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 import { LILYPAD_GAME_BY_CHAIN } from "../lib/addresses";
@@ -74,10 +75,10 @@ async function copyText(text: string) {
 }
 
 /**
- * Minimal view ABI for games(bytes32)
- * Match your vault struct layout.
+ * ✅ Minimal ABI for GAME contract reads we need
  */
-const GAMES_VIEW_ABI = [
+const GAME_VIEW_ABI = [
+  // games(gameId)
   {
     type: "function",
     name: "games",
@@ -92,19 +93,19 @@ const GAMES_VIEW_ABI = [
       { name: "userCommit", type: "bytes32" },
       { name: "randAnchor", type: "bytes32" },
       { name: "settled", type: "bool" },
-      { name: "refunded", type: "bool" },
       { name: "cashoutHop", type: "uint8" },
       { name: "payout", type: "uint128" },
     ],
   },
-] as const;
-
-/**
- * Profile helper ABI if present:
- * getUserGamesLength(address)
- * getUserGamesSlice(address,start,count)
- */
-const PROFILE_ABI = [
+  // VAULT()
+  {
+    type: "function",
+    name: "VAULT",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  // getUserGamesLength(user)
   {
     type: "function",
     name: "getUserGamesLength",
@@ -112,6 +113,7 @@ const PROFILE_ABI = [
     inputs: [{ name: "user", type: "address" }],
     outputs: [{ name: "", type: "uint256" }],
   },
+  // getUserGamesSlice(user,start,count)
   {
     type: "function",
     name: "getUserGamesSlice",
@@ -121,25 +123,28 @@ const PROFILE_ABI = [
       { name: "start", type: "uint256" },
       { name: "count", type: "uint256" },
     ],
-    outputs: [{ name: "", type: "bytes32[]" }],
+    outputs: [{ name: "ids", type: "bytes32[]" }],
   },
 ] as const;
 
 /**
- * ✅ Dedicated minimal event ABI — don’t depend on a big ABI being perfect.
- * Adjust names/order to match your contract.
+ * ✅ Events emitted by GAME contract (per your ABI)
+ * Note indexed order EXACT: in your ABI, gameId & player are indexed (gameId first).
  */
 const EVENTS_ABI = [
   {
     type: "event",
     name: "GameCreated",
     inputs: [
+      { indexed: true, name: "gameId", type: "bytes32" },
       { indexed: true, name: "player", type: "address" },
-      { indexed: false, name: "gameId", type: "bytes32" },
-      { indexed: false, name: "amount", type: "uint128" },
+      { indexed: false, name: "amountReceived", type: "uint256" },
       { indexed: false, name: "mode", type: "uint8" },
       { indexed: false, name: "userCommit", type: "bytes32" },
       { indexed: false, name: "randAnchor", type: "bytes32" },
+      { indexed: false, name: "createdAt", type: "uint256" },
+      { indexed: false, name: "deadline", type: "uint256" },
+      { indexed: false, name: "maxPayoutReserved", type: "uint256" },
     ],
     anonymous: false,
   },
@@ -147,13 +152,11 @@ const EVENTS_ABI = [
     type: "event",
     name: "GameSettled",
     inputs: [
+      { indexed: true, name: "gameId", type: "bytes32" },
       { indexed: true, name: "player", type: "address" },
-      { indexed: false, name: "gameId", type: "bytes32" },
       { indexed: false, name: "won", type: "bool" },
       { indexed: false, name: "cashoutHop", type: "uint8" },
-      { indexed: false, name: "payout", type: "uint128" },
-      // Some vaults emit commit hash separately. If yours doesn’t, this will decode fail only for this log
-      // and we’ll still verify via on-chain games() data.
+      { indexed: false, name: "payout", type: "uint256" },
       { indexed: false, name: "userCommitHash", type: "bytes32" },
       { indexed: false, name: "randAnchor", type: "bytes32" },
     ],
@@ -178,6 +181,10 @@ function computeCommit(userSecret: Hex) {
   return keccak256(encodePacked(["bytes32"], [userSecret])) as Hex;
 }
 
+/**
+ * ✅ Seed uses VAULT address (not game), per your spec:
+ * keccak256(userSecret, randAnchor, vault, gameId)
+ */
 function computeSeed(userSecret: Hex, randAnchor: Hex, vault: Hex, gameId: Hex) {
   return keccak256(
     encodePacked(["bytes32", "bytes32", "address", "bytes32"], [userSecret, randAnchor, vault, gameId])
@@ -220,7 +227,6 @@ type RecentGameRow = {
   userCommit: Hex;
   randAnchor: Hex;
   settled: boolean;
-  refunded: boolean;
 
   cashoutHop: number;
   payoutWei: bigint;
@@ -236,43 +242,43 @@ type RecentGameRow = {
   };
 };
 
-type StatusKey = "SETTLED" | "REFUNDED" | "ACTIVE" | "EXPIRED";
+type StatusKey = "SETTLED" | "ACTIVE" | "EXPIRED";
 function statusChipClasses(label: StatusKey) {
   if (label === "SETTLED") return "bg-emerald-500/10 text-emerald-200 ring-emerald-500/20";
-  if (label === "REFUNDED") return "bg-amber-500/10 text-amber-200 ring-amber-500/20";
   if (label === "EXPIRED") return "bg-red-500/10 text-red-200 ring-red-500/20";
   return "bg-neutral-50/10 text-neutral-200 ring-neutral-200/20";
 }
 
 // ---------- Secret store (client only) ----------
+// ✅ KEYED BY GAME ADDRESS (fixes “NO SECRET” after contract changes)
 const SECRET_STORE_KEY = "lilypadLeapSecretsV1";
-function secretKey(chainId: number, vault: Hex, gameId: Hex) {
-  return `${chainId}:${vault.toLowerCase()}:${gameId.toLowerCase()}`;
+function secretKey(chainId: number, game: Hex, gameId: Hex) {
+  return `${chainId}:${game.toLowerCase()}:${gameId.toLowerCase()}`;
 }
-function getStoredSecret(chainId: number, vault: Hex, gameId: Hex): Hex | null {
+function getStoredSecret(chainId: number, game: Hex, gameId: Hex): Hex | null {
   try {
     const raw = localStorage.getItem(SECRET_STORE_KEY);
     if (!raw) return null;
     const obj = JSON.parse(raw) as Record<string, string>;
-    const v = obj[secretKey(chainId, vault, gameId)];
+    const v = obj[secretKey(chainId, game, gameId)];
     if (v && isHex(v) && v.length === 66) return v as Hex;
     return null;
   } catch {
     return null;
   }
 }
-function setStoredSecret(chainId: number, vault: Hex, gameId: Hex, secret: Hex) {
+function setStoredSecret(chainId: number, game: Hex, gameId: Hex, secret: Hex) {
   try {
     const raw = localStorage.getItem(SECRET_STORE_KEY);
     const obj = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    obj[secretKey(chainId, vault, gameId)] = secret;
+    obj[secretKey(chainId, game, gameId)] = secret;
     localStorage.setItem(SECRET_STORE_KEY, JSON.stringify(obj));
   } catch {}
 }
 
 // ---------- Auto verification for a row ----------
-function autoVerifyRow(params: { vault: Hex; row: RecentGameRow; secret: Hex | null }) {
-  const { vault, row, secret } = params;
+function autoVerifyRow(params: { seedVault: Hex; row: RecentGameRow; secret: Hex | null }) {
+  const { seedVault, row, secret } = params;
 
   if (!secret) return { key: "NO_SECRET" as const, label: "NO SECRET" };
 
@@ -281,11 +287,10 @@ function autoVerifyRow(params: { vault: Hex; row: RecentGameRow; secret: Hex | n
     return { key: "NOT_VERIFIED" as const, label: "NOT VERIFIED", detail: "commit mismatch" };
   }
 
-  if (!row.settled && !row.refunded) return { key: "COMMIT_OK" as const, label: "COMMIT OK" };
-  if (row.refunded && !row.settled) return { key: "VERIFIED" as const, label: "VERIFIED" };
+  if (!row.settled) return { key: "COMMIT_OK" as const, label: "COMMIT OK" };
 
   const hop = clampHop(row.cashoutHop || 1);
-  const seed = computeSeed(secret, row.randAnchor, vault, row.gameId);
+  const seed = computeSeed(secret, row.randAnchor, seedVault, row.gameId);
   const pBps = P_BPS[row.mode];
 
   let won = true;
@@ -315,10 +320,10 @@ function autoVerifyRow(params: { vault: Hex; row: RecentGameRow; secret: Hex | n
 // ---------- Tx search by gameId (topic filtered) ----------
 async function findTxHashesForGame(params: {
   publicClient: any;
-  vault: Hex;
+  game: Hex;
   gameId: Hex;
 }): Promise<{ createTx?: Hex; settleTx?: Hex }> {
-  const { publicClient, vault, gameId } = params;
+  const { publicClient, game, gameId } = params;
   try {
     const latest = (await publicClient.getBlockNumber()) as bigint;
     const windows = [50_000n, 200_000n, 800_000n, 2_000_000n];
@@ -329,9 +334,8 @@ async function findTxHashesForGame(params: {
     for (const w of windows) {
       const fromBlock = latest > w ? latest - w : 0n;
 
-      // Search each event separately with topic0 filter (FAST + reliable)
       const createdLogs = (await publicClient.getLogs({
-        address: vault,
+        address: game,
         fromBlock,
         toBlock: latest,
         topics: [TOPIC_GAME_CREATED],
@@ -339,7 +343,6 @@ async function findTxHashesForGame(params: {
 
       for (const log of createdLogs) {
         try {
-          // ✅ Fix TS: viem wants topics as [] OR [signature, ...args]
           const topics = ((log.topics ?? []) as unknown) as `0x${string}`[];
           if (topics.length === 0) continue;
 
@@ -348,6 +351,7 @@ async function findTxHashesForGame(params: {
             data: log.data,
             topics: topics as [`0x${string}`, ...`0x${string}`[]],
           });
+
           if (decoded.eventName !== "GameCreated") continue;
           const gid = (decoded.args as any).gameId as Hex;
           if (gid?.toLowerCase() === gameId.toLowerCase()) {
@@ -358,7 +362,7 @@ async function findTxHashesForGame(params: {
       }
 
       const settledLogs = (await publicClient.getLogs({
-        address: vault,
+        address: game,
         fromBlock,
         toBlock: latest,
         topics: [TOPIC_GAME_SETTLED],
@@ -366,7 +370,6 @@ async function findTxHashesForGame(params: {
 
       for (const log of settledLogs) {
         try {
-          // ✅ Fix TS: viem wants topics as [] OR [signature, ...args]
           const topics = ((log.topics ?? []) as unknown) as `0x${string}`[];
           if (topics.length === 0) continue;
 
@@ -375,6 +378,7 @@ async function findTxHashesForGame(params: {
             data: log.data,
             topics: topics as [`0x${string}`, ...`0x${string}`[]],
           });
+
           if (decoded.eventName !== "GameSettled") continue;
           const gid = (decoded.args as any).gameId as Hex;
           if (gid?.toLowerCase() === gameId.toLowerCase()) {
@@ -392,6 +396,11 @@ async function findTxHashesForGame(params: {
     return {};
   }
 }
+
+const CHAIN_ICON: Record<number, string> = {
+  59144: "/chains/linea.png",
+  8453: "/chains/base.png",
+};
 
 export default function VerifyPage() {
   const { isConnected, address } = useAccount();
@@ -414,16 +423,54 @@ export default function VerifyPage() {
 
   const publicClient = usePublicClient({ chainId: selectedChainId });
 
-  const defaultVault = (LILYPAD_GAME_BY_CHAIN[selectedChainId] ?? zeroAddress) as Hex;
-  const [vaultOverride, setVaultOverride] = useState<string>("");
+  // ✅ GAME address (truth source)
+  const defaultGame = (LILYPAD_GAME_BY_CHAIN[selectedChainId] ?? zeroAddress) as Hex;
+  const [gameOverride, setGameOverride] = useState<string>("");
 
-  const vaultAddress = useMemo(() => {
-    const v = vaultOverride.trim();
+  const gameAddress = useMemo(() => {
+    const v = gameOverride.trim();
     if (v && isHex(v) && v.length === 42) return v as Hex;
-    return defaultVault;
-  }, [vaultOverride, defaultVault]);
+    return defaultGame;
+  }, [gameOverride, defaultGame]);
 
-  const canUseChain = vaultAddress !== zeroAddress;
+  const canUseChain = gameAddress !== zeroAddress;
+
+  // ✅ seedVault comes from GAME.VAULT()
+  const [seedVault, setSeedVault] = useState<Hex>(zeroAddress as Hex);
+  const [seedVaultStatus, setSeedVaultStatus] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadVault() {
+      setSeedVault(zeroAddress as Hex);
+      setSeedVaultStatus("");
+
+      if (!ready || !publicClient || !canUseChain) return;
+
+      try {
+        setSeedVaultStatus("Loading VAULT()…");
+        const v = (await publicClient.readContract({
+          address: gameAddress,
+          abi: GAME_VIEW_ABI,
+          functionName: "VAULT",
+          args: [],
+        })) as Hex;
+
+        if (cancelled) return;
+        setSeedVault(v);
+        setSeedVaultStatus("");
+      } catch (e: any) {
+        if (cancelled) return;
+        setSeedVaultStatus(e?.shortMessage || e?.message || "Failed to read VAULT() from game.");
+      }
+    }
+
+    void loadVault();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, publicClient, canUseChain, gameAddress]);
 
   // Inputs
   const [gameId, setGameId] = useState<string>("");
@@ -434,9 +481,6 @@ export default function VerifyPage() {
   // Bundle import (cross-device)
   const [bundleText, setBundleText] = useState<string>("");
   const [bundleStatus, setBundleStatus] = useState<string>("");
-
-  // One-click behavior
-  const [autoVerify, setAutoVerify] = useState(true);
 
   // Recent games
   const [recent, setRecent] = useState<RecentGameRow[]>([]);
@@ -458,7 +502,8 @@ export default function VerifyPage() {
     bundleJson: string;
 
     chainId: number;
-    vault: Hex;
+    game: Hex;
+    seedVault: Hex;
 
     gameId: Hex;
     player: Hex;
@@ -472,7 +517,6 @@ export default function VerifyPage() {
       userCommit: Hex;
       randAnchor: Hex;
       settled: boolean;
-      refunded: boolean;
       cashoutHop: number;
       payoutWei: bigint;
       payoutDtc: string;
@@ -497,6 +541,7 @@ export default function VerifyPage() {
       txPayoutMatches?: boolean;
       txWonMatches?: boolean;
       txHopMatches?: boolean;
+      txCommitMatches?: boolean;
     };
   }>(null);
 
@@ -508,13 +553,12 @@ export default function VerifyPage() {
   }, [ready]);
 
   function getStatusKey(row: RecentGameRow, now?: number): StatusKey {
-    if (row.refunded) return "REFUNDED";
     if (row.settled) return "SETTLED";
     if (now && row.deadline > 0 && now > row.deadline) return "EXPIRED";
     return "ACTIVE";
   }
 
-  // Reset per chain/vault
+  // Reset per chain/game
   useEffect(() => {
     setFromTx(null);
     setTxParseStatus("");
@@ -525,7 +569,7 @@ export default function VerifyPage() {
     setTxHash("");
     setErr("");
     setResult(null);
-  }, [selectedChainId, vaultAddress]);
+  }, [selectedChainId, gameAddress]);
 
   async function loadMyRecentGames(count = 20) {
     setErr("");
@@ -534,7 +578,7 @@ export default function VerifyPage() {
 
     if (!ready) return setErr("Page is still initializing. Try again in a second.");
     if (!publicClient) return setErr("No RPC client available for this selected chain.");
-    if (!canUseChain) return setErr("Missing vault address for this chain (or invalid override).");
+    if (!canUseChain) return setErr("Missing game address for this chain (or invalid override).");
     if (!address) return setErr("Connect your wallet to import your recent games.");
 
     setRecent([]);
@@ -545,8 +589,8 @@ export default function VerifyPage() {
       setRecentStatus("Fetching your games…");
 
       const n = (await publicClient.readContract({
-        address: vaultAddress,
-        abi: PROFILE_ABI,
+        address: gameAddress, // ✅ GAME, not vault
+        abi: GAME_VIEW_ABI,
         functionName: "getUserGamesLength",
         args: [address],
       })) as bigint;
@@ -559,8 +603,8 @@ export default function VerifyPage() {
 
       const start = Math.max(0, total - count);
       const ids = (await publicClient.readContract({
-        address: vaultAddress,
-        abi: PROFILE_ABI,
+        address: gameAddress, // ✅ GAME, not vault
+        abi: GAME_VIEW_ABI,
         functionName: "getUserGamesSlice",
         args: [address, BigInt(start), BigInt(count)],
       })) as Hex[];
@@ -571,23 +615,24 @@ export default function VerifyPage() {
       const rows = await Promise.all(
         newestFirst.map(async (gid) => {
           const g = (await publicClient.readContract({
-            address: vaultAddress,
-            abi: GAMES_VIEW_ABI,
+            address: gameAddress,
+            abi: GAME_VIEW_ABI,
             functionName: "games",
             args: [gid],
-          })) as unknown as [Hex, bigint, bigint, bigint, bigint, Hex, Hex, boolean, boolean, bigint, bigint];
+          })) as unknown as [Hex, bigint, bigint, bigint, bigint, Hex, Hex, boolean, bigint, bigint];
 
+          const player = g[0];
           const amountWei = toUInt(g[1]);
           const createdAt = Number(g[2]);
           const deadline = Number(g[3]);
           const mode = modeFromEnum(Number(g[4]));
-          const onUserCommit = g[5];
-          const onRandAnchor = g[6];
+          const onUserCommit = g[5] as Hex;
+          const onRandAnchor = g[6] as Hex;
           const settled = Boolean(g[7]);
-          const refunded = Boolean(g[8]);
-          const cashoutHop = Number(g[9]);
-          const payoutWei = toUInt(g[10]);
+          const cashoutHop = Number(g[8]);
+          const payoutWei = toUInt(g[9]);
 
+          // If not found (zero address), skip as empty row; but keep it visible
           const baseRow: RecentGameRow = {
             gameId: gid,
             mode,
@@ -598,14 +643,14 @@ export default function VerifyPage() {
             userCommit: onUserCommit,
             randAnchor: onRandAnchor,
             settled,
-            refunded,
             cashoutHop,
             payoutWei,
             payoutDtc: formatUnits(payoutWei, 18),
           };
 
-          const secret = ready ? getStoredSecret(selectedChainId, vaultAddress, gid) : null;
-          const v = autoVerifyRow({ vault: vaultAddress, row: baseRow, secret });
+          const secret = ready ? getStoredSecret(selectedChainId, gameAddress, gid) : null;
+          const v = seedVault !== (zeroAddress as Hex) ? autoVerifyRow({ seedVault, row: baseRow, secret }) : undefined;
+
           return { ...baseRow, verify: v };
         })
       );
@@ -618,6 +663,7 @@ export default function VerifyPage() {
       setRecentStatus(`Loaded ${rows.length} games. Verified: ${verifiedCount}. Missing secret: ${noSecretCount}.`);
       window.setTimeout(() => setRecentStatus(""), 1600);
     } catch (e: any) {
+      // If it reverts, you WILL see it here.
       setErr(e?.shortMessage || e?.message || "Failed to load recent games.");
       setRecentStatus("");
     } finally {
@@ -633,18 +679,10 @@ export default function VerifyPage() {
     setResult(null);
     setFromTx(null);
 
-    if (!ready) {
-      setTxParseStatus("Page is still initializing.");
-      return;
-    }
-    if (!publicClient) {
-      setTxParseStatus("No RPC client available for this selected chain.");
-      return;
-    }
-    if (!isHex(hash) || hash.length !== 66) {
-      setTxParseStatus("Paste a valid tx hash (0x… 32 bytes).");
-      return;
-    }
+    if (!ready) return setTxParseStatus("Page is still initializing.");
+    if (!publicClient) return setTxParseStatus("No RPC client available for this selected chain.");
+    if (!isHex(hash) || hash.length !== 66) return setTxParseStatus("Paste a valid tx hash (0x… 32 bytes).");
+    if (!canUseChain) return setTxParseStatus("Missing game address for this chain (or invalid override).");
 
     try {
       setTxParseStatus("Fetching receipt…");
@@ -655,11 +693,10 @@ export default function VerifyPage() {
       let settled: SettledFromTx = null;
 
       for (const log of receipt.logs as Array<{ address: Hex; data: Hex; topics: Hex[] }>) {
-        // ✅ Only decode vault logs
-        if ((log.address ?? "").toLowerCase() !== vaultAddress.toLowerCase()) continue;
+        // ✅ Only decode GAME logs
+        if ((log.address ?? "").toLowerCase() !== gameAddress.toLowerCase()) continue;
 
         try {
-          // ✅ Fix TS: viem wants topics as [] OR [signature, ...args]
           const topics = ((log.topics ?? []) as unknown) as `0x${string}`[];
           if (topics.length === 0) continue;
 
@@ -686,19 +723,19 @@ export default function VerifyPage() {
               player: (decoded.args as any).player as Hex,
               won: Boolean((decoded.args as any).won),
               cashoutHop: clampHop(hop),
-              payoutWei: toUInt((decoded.args as any).payout as bigint),
+              payoutWei: toUInt(BigInt((decoded.args as any).payout ?? 0)),
               userCommitHash: (decoded.args as any).userCommitHash as Hex | undefined,
               randAnchor: (decoded.args as any).randAnchor as Hex | undefined,
               txHash: hash,
             };
           }
         } catch {
-          // If the event signature doesn't match exactly, ignore
+          // ignore non-matching signatures
         }
       }
 
       if (!foundGameId) {
-        setTxParseStatus("No GameCreated/GameSettled event found in this tx (for this vault/chain).");
+        setTxParseStatus("No GameCreated/GameSettled event found in this tx (for this GAME/chain).");
         return;
       }
 
@@ -720,7 +757,8 @@ export default function VerifyPage() {
 
     if (!ready) return setErr("Page is still initializing. Try again in a second.");
     if (!publicClient) return setErr("No RPC client available for this selected chain.");
-    if (!canUseChain) return setErr("Missing vault address for this chain (or invalid override).");
+    if (!canUseChain) return setErr("Missing game address for this chain (or invalid override).");
+    if (seedVault === (zeroAddress as Hex)) return setErr("Seed vault not loaded yet (GAME.VAULT()).");
 
     const g = gameId.trim();
     const s = userSecret.trim();
@@ -734,30 +772,29 @@ export default function VerifyPage() {
     setLoading(true);
     try {
       const game = (await publicClient.readContract({
-        address: vaultAddress,
-        abi: GAMES_VIEW_ABI,
+        address: gameAddress,
+        abi: GAME_VIEW_ABI,
         functionName: "games",
         args: [gid],
-      })) as unknown as [Hex, bigint, bigint, bigint, bigint, Hex, Hex, boolean, boolean, bigint, bigint];
+      })) as unknown as [Hex, bigint, bigint, bigint, bigint, Hex, Hex, boolean, bigint, bigint];
 
-      const player = game[0];
+      const player = game[0] as Hex;
       const amountWei = toUInt(game[1]);
       const mode = modeFromEnum(Number(game[4]));
-      const onUserCommit = game[5];
-      const onRandAnchor = game[6];
+      const onUserCommit = game[5] as Hex;
+      const onRandAnchor = game[6] as Hex;
       const settled = Boolean(game[7]);
-      const refunded = Boolean(game[8]);
-      const onHop = Number(game[9]);
-      const onPayoutWei = toUInt(game[10]);
+      const onHop = Number(game[8]);
+      const onPayoutWei = toUInt(game[9]);
 
-      if (player === zeroAddress) throw new Error("Game not found on-chain. Check network/vault/gameId.");
+      if (player === (zeroAddress as Hex)) throw new Error("Game not found on-chain. Check network/game/gameId.");
 
       const hop = settled ? clampHop(onHop || 1) : clampHop(cashoutHop);
 
       const commit = computeCommit(secret);
       const commitMatches = commit.toLowerCase() === onUserCommit.toLowerCase();
 
-      const seed = computeSeed(secret, onRandAnchor, vaultAddress, gid);
+      const seed = computeSeed(secret, onRandAnchor, seedVault, gid);
       const pBps = P_BPS[mode];
 
       const rolls: Array<{ hop: number; rBps: number; passed: boolean }> = [];
@@ -789,6 +826,7 @@ export default function VerifyPage() {
       const txPayoutMatches = fromTx ? payoutWei === fromTx.payoutWei : undefined;
       const txWonMatches = fromTx ? won === fromTx.won : undefined;
       const txHopMatches = fromTx ? hop === fromTx.cashoutHop : undefined;
+      const txCommitMatches = fromTx?.userCommitHash ? commit.toLowerCase() === fromTx.userCommitHash.toLowerCase() : undefined;
 
       const ok =
         commitMatches &&
@@ -797,16 +835,21 @@ export default function VerifyPage() {
         wonMatchesIfSettled &&
         (txPayoutMatches ?? true) &&
         (txWonMatches ?? true) &&
-        (txHopMatches ?? true);
+        (txHopMatches ?? true) &&
+        (txCommitMatches ?? true);
 
       let summary: string;
       if (ok) summary = "✅ Verified. Your secret reproduces the exact on-chain outcome.";
       else if (!commitMatches) summary = "❌ Not verified: secret → commit does not match stored on-chain userCommit.";
       else summary = "❌ Not verified: one or more checks failed (hop / payout / win-bust).";
 
+      // ✅ store secret on this device for this game
+      if (ready) setStoredSecret(selectedChainId, gameAddress, gid, secret);
+
       const bundle = {
         chainId: selectedChainId,
-        vault: vaultAddress,
+        vault: seedVault,
+        game: gameAddress,
         gameId: gid,
         userSecret: secret,
         cashoutHop: hop,
@@ -818,7 +861,8 @@ export default function VerifyPage() {
         summary,
         bundleJson: JSON.stringify(bundle, null, 2),
         chainId: selectedChainId,
-        vault: vaultAddress,
+        game: gameAddress,
+        seedVault,
         gameId: gid,
         player,
         amountWei,
@@ -829,7 +873,6 @@ export default function VerifyPage() {
           userCommit: onUserCommit,
           randAnchor: onRandAnchor,
           settled,
-          refunded,
           cashoutHop: onHop,
           payoutWei: onPayoutWei,
           payoutDtc: onPayoutDtc,
@@ -851,6 +894,7 @@ export default function VerifyPage() {
           txPayoutMatches,
           txWonMatches,
           txHopMatches,
+          txCommitMatches,
         },
       });
     } catch (e: any) {
@@ -870,12 +914,12 @@ export default function VerifyPage() {
     setGameId(row.gameId);
     setCashoutHop(row.settled && row.cashoutHop >= 1 ? clampHop(row.cashoutHop) : 1);
 
-    // 1) Find tx hashes by topic-filtered scan
+    // 1) Find tx hashes by topic-filtered scan (GAME logs)
     if (ready && publicClient && canUseChain) {
       setRecentStatus("Finding tx…");
       const found = await findTxHashesForGame({
         publicClient,
-        vault: vaultAddress,
+        game: gameAddress,
         gameId: row.gameId,
       });
 
@@ -897,17 +941,10 @@ export default function VerifyPage() {
       setRecentStatus("");
     }
 
-    // 2) load stored secret if available
+    // 2) load stored secret if available (keyed by GAME)
     if (ready) {
-      const s = getStoredSecret(selectedChainId, vaultAddress, row.gameId);
+      const s = getStoredSecret(selectedChainId, gameAddress, row.gameId);
       if (s) setUserSecret(s);
-    }
-
-    // 3) Auto-verify if enabled + secret exists
-    const s2 = ready ? getStoredSecret(selectedChainId, vaultAddress, row.gameId) : null;
-    if (autoVerify && s2 && isHex(s2) && s2.length === 66) {
-      setUserSecret(s2);
-      setTimeout(() => void verifyNow(), 0);
     }
   }
 
@@ -920,6 +957,7 @@ export default function VerifyPage() {
 
       const obj = JSON.parse(raw) as any;
       const bChainId = Number(obj.chainId);
+      const bGame = String(obj.game ?? "");
       const bVault = String(obj.vault ?? "");
       const bGameId = String(obj.gameId ?? "");
       const bSecret = String(obj.userSecret ?? "");
@@ -929,15 +967,15 @@ export default function VerifyPage() {
       if (!Number.isFinite(bChainId) || !TOKEN_CHAIN_IDS.includes(bChainId as any)) {
         return setBundleStatus("Bundle chainId must be Linea/Base.");
       }
-      if (!isHex(bVault) || bVault.length !== 42) return setBundleStatus("Bundle vault is invalid.");
+      if (!isHex(bGame) || bGame.length !== 42) return setBundleStatus("Bundle game is invalid.");
       if (!isHex(bGameId) || bGameId.length !== 66) return setBundleStatus("Bundle gameId is invalid.");
       if (!isHex(bSecret) || bSecret.length !== 66) return setBundleStatus("Bundle userSecret is invalid.");
 
       setSelectedChainId(bChainId);
-      // keep override empty: we use configured vault unless user overrides
-      // but if bundle vault differs from configured, we set override for safety:
-      if (defaultVault.toLowerCase() !== (bVault as Hex).toLowerCase()) {
-        setVaultOverride(bVault);
+
+      // if bundle game differs from configured, set override
+      if (defaultGame.toLowerCase() !== (bGame as Hex).toLowerCase()) {
+        setGameOverride(bGame);
       }
 
       setGameId(bGameId);
@@ -946,7 +984,7 @@ export default function VerifyPage() {
       setTxHash(isHex(bTx) ? bTx : "");
 
       if (ready) {
-        setStoredSecret(bChainId, bVault as Hex, bGameId as Hex, bSecret as Hex);
+        setStoredSecret(bChainId, bGame as Hex, bGameId as Hex, bSecret as Hex);
       }
 
       setBundleStatus("Bundle imported and secret stored on this device.");
@@ -957,7 +995,8 @@ export default function VerifyPage() {
   }
 
   const chainOptions = useMemo(() => CHAIN_LIST.filter((c) => TOKEN_CHAIN_IDS.includes(c.chainId as any)), []);
-  const displayVault = vaultAddress === zeroAddress ? "—" : vaultAddress;
+  const displayGame = gameAddress === (zeroAddress as Hex) ? "—" : gameAddress;
+  const displayVault = seedVault === (zeroAddress as Hex) ? "—" : seedVault;
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -993,7 +1032,7 @@ export default function VerifyPage() {
             <textarea
               value={bundleText}
               onChange={(e) => setBundleText(e.target.value)}
-              placeholder={`{\n  "chainId": 8453,\n  "vault": "0x…",\n  "gameId": "0x…",\n  "userSecret": "0x…",\n  "cashoutHop": 3,\n  "txHash": "0x…"\n}`}
+              placeholder={`{\n  "chainId": 8453,\n  "vault": "0x…",\n  "game": "0x…",\n  "gameId": "0x…",\n  "userSecret": "0x…",\n  "cashoutHop": 3,\n  "txHash": "0x…"\n}`}
               className="mt-3 w-full rounded-2xl border border-neutral-800 bg-neutral-900 p-3 text-xs text-neutral-100 outline-none font-mono"
               rows={6}
             />
@@ -1017,18 +1056,29 @@ export default function VerifyPage() {
               <div className="flex flex-wrap gap-2">
                 {chainOptions.map((c) => {
                   const active = c.chainId === selectedChainId;
+                  const iconSrc = CHAIN_ICON[c.chainId] ?? "";
+
                   return (
                     <button
                       key={c.chainId}
                       type="button"
                       onClick={() => setSelectedChainId(c.chainId)}
                       className={[
-                        "rounded-xl border px-4 py-2 text-sm font-semibold transition",
+                        "flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold transition",
                         active
                           ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                           : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
                       ].join(" ")}
                     >
+                      {iconSrc ? (
+                        <Image
+                          src={iconSrc}
+                          alt={`${c.name} icon`}
+                          width={16}
+                          height={16}
+                          className="h-4 w-4"
+                        />
+                      ) : null}
                       {c.name}
                     </button>
                   );
@@ -1038,15 +1088,15 @@ export default function VerifyPage() {
 
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <div className="text-xs text-neutral-500">
-                Vault (auto):{" "}
-                <span className="font-mono text-neutral-200">{defaultVault === zeroAddress ? "—" : defaultVault}</span>
+                Game (auto):{" "}
+                <span className="font-mono text-neutral-200">{defaultGame === (zeroAddress as Hex) ? "—" : defaultGame}</span>
               </div>
 
               <div>
-                <div className="text-xs text-neutral-400">Vault override (optional)</div>
+                <div className="text-xs text-neutral-400">Game override (optional)</div>
                 <input
-                  value={vaultOverride}
-                  onChange={(e) => setVaultOverride(e.target.value)}
+                  value={gameOverride}
+                  onChange={(e) => setGameOverride(e.target.value)}
                   placeholder="0x… (42 chars)"
                   className="mt-1 w-full rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-50 outline-none font-mono"
                 />
@@ -1054,8 +1104,13 @@ export default function VerifyPage() {
             </div>
 
             <div className="mt-2 text-xs text-neutral-500">
-              Using vault: <span className="font-mono text-neutral-200">{displayVault}</span>
-              {!canUseChain ? <span className="ml-2 text-amber-200">⚠️ Missing/invalid vault address</span> : null}
+              Using GAME: <span className="font-mono text-neutral-200">{displayGame}</span>
+              {!canUseChain ? <span className="ml-2 text-amber-200">⚠️ Missing/invalid game address</span> : null}
+            </div>
+
+            <div className="mt-2 text-xs text-neutral-500">
+              Seed VAULT (from GAME.VAULT()): <span className="font-mono text-neutral-200">{displayVault}</span>
+              {seedVaultStatus ? <span className="ml-2 text-amber-200">⚠️ {seedVaultStatus}</span> : null}
             </div>
           </div>
 
@@ -1065,7 +1120,7 @@ export default function VerifyPage() {
               <div>
                 <div className="text-sm font-semibold text-neutral-100">My recent games</div>
                 <div className="mt-1 text-xs text-neutral-500">
-                  Rows show auto status immediately if the secret exists on this device.
+                  IMPORTANT: Recent games are read from the GAME contract (getUserGamesLength/getUserGamesSlice).
                 </div>
               </div>
 
@@ -1157,10 +1212,7 @@ export default function VerifyPage() {
 
                         <div className="flex flex-col items-end gap-2">
                           <span
-                            className={[
-                              "rounded-full px-2 py-0.5 text-xs font-semibold ring-1",
-                              statusChipClasses(st),
-                            ].join(" ")}
+                            className={["rounded-full px-2 py-0.5 text-xs font-semibold ring-1", statusChipClasses(st)].join(" ")}
                           >
                             {st}
                           </span>
@@ -1170,15 +1222,6 @@ export default function VerifyPage() {
                               "rounded-full px-2 py-0.5 text-xs font-extrabold ring-1",
                               verifyChipClasses(r.verify?.key ?? "NO_SECRET"),
                             ].join(" ")}
-                            title={
-                              r.verify?.key === "NO_SECRET"
-                                ? "No secret stored on this device for this game."
-                                : r.verify?.key === "COMMIT_OK"
-                                ? "Commit matches. Full verification requires settle/refund."
-                                : r.verify?.key === "VERIFIED"
-                                ? "Secret reproduces on-chain outcome."
-                                : "Secret does not reproduce outcome."
-                            }
                           >
                             {r.verify?.label ?? "NO SECRET"}
                           </span>
@@ -1258,10 +1301,10 @@ export default function VerifyPage() {
                 <button
                   type="button"
                   onClick={() => void verifyNow()}
-                  disabled={!ready || loading || !canUseChain}
+                  disabled={!ready || loading || !canUseChain || seedVault === (zeroAddress as Hex)}
                   className={[
                     "mt-2 w-full rounded-2xl px-4 py-3 text-sm font-extrabold tracking-wide transition",
-                    !ready || loading || !canUseChain
+                    !ready || loading || !canUseChain || seedVault === (zeroAddress as Hex)
                       ? "cursor-not-allowed border border-neutral-800 bg-neutral-900 text-neutral-500"
                       : "bg-emerald-500 text-neutral-950 hover:bg-emerald-400",
                   ].join(" ")}
@@ -1270,7 +1313,7 @@ export default function VerifyPage() {
                 </button>
 
                 <div className="mt-2 text-[11px] text-neutral-600">
-                  If you want “no input at all”, you must store the secret when the game is created (Play page), or import a bundle once.
+                  Secrets are stored locally by chain + GAME contract. For cross-device verification, use the bundle.
                 </div>
               </div>
             </div>
@@ -1280,7 +1323,9 @@ export default function VerifyPage() {
                 <div>
                   <div className="text-sm font-semibold text-neutral-100">Result</div>
                   <div className="mt-1 text-xs text-neutral-500">
-                    Truth source: <span className="font-mono">{shortHex(vaultAddress)}</span> on <b>{selectedChain.name}</b>
+                    Truth source: <span className="font-mono">{shortHex(gameAddress)}</span> (GAME) on <b>{selectedChain.name}</b>
+                    <br />
+                    Seed vault: <span className="font-mono">{shortHex(seedVault)}</span>
                   </div>
                 </div>
 
@@ -1342,7 +1387,7 @@ export default function VerifyPage() {
           </div>
 
           <div className="mt-6 text-xs text-neutral-600">
-            Integrity model: secret stays private. Full verification requires the userSecret (stored locally or shared via bundle).
+            Integrity model: secret stays private. Verification uses GAME.games(gameId) + GAME.VAULT() (seed vault).
           </div>
         </div>
       </section>

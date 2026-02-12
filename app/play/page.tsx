@@ -2041,7 +2041,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                           : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
                       ].join(" ")}
                     >
-                      DEMO
+                      🎲 DEMO
                     </button>
                     <button
                       type="button"
@@ -2054,7 +2054,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                           : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
                       ].join(" ")}
                     >
-                      TOKEN
+                      <DtcIcon size={15} /> TOKEN
                     </button>
                   </div>
                 ) : (
