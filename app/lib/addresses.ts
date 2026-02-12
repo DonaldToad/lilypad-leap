@@ -24,6 +24,8 @@ export const REF_REGISTRY_BY_CHAIN: Record<number, `0x${string}`> = {
   8453: "0x3FCE6A5C85B6f30Cb5FeEdCc19DC9420EE8B48be",
 };
 
+export const LILYPAD_VAULT_BY_CHAIN = TOAD_ARCADE_VAULT_BY_CHAIN;
+
 export const WEEKLY_REWARDS_DISTRIBUTOR_BY_CHAIN: Record<number, `0x${string}`> = {
   59144: "0xa2DDB9eC60c436859d8aD688Dac3c2845673f10C",
   8453: "0x4ae0A91feD2233c607cA58CFd186540ae1c8eBfb",
