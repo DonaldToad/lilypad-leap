@@ -394,11 +394,16 @@ async function fetchAllBoundLogsForReferrer(params: {
 
   const { chainId, registryAddress, referrer } = params;
 
-  const topic0 = keccak256(toHex("Bound(address,address,bytes32)")) as `0x${string}`;
+  const topic0 = keccak256(
+    toHex("Bound(address,address,bytes32)"),
+  ) as `0x${string}`;
   const topic2 = padTopicAddress(referrer);
-  if (!topic2) return [];
 
-  const latestHex = await etherscanGetLatestBlockNumberHex(chainId, cfg.url, cfg.key);
+  const latestHex = await etherscanGetLatestBlockNumberHex(
+    chainId,
+    cfg.url,
+    cfg.key,
+  );
   const latest = Number(BigInt(latestHex));
   if (!Number.isFinite(latest) || latest <= 0) return [];
 
@@ -418,7 +423,7 @@ async function fetchAllBoundLogsForReferrer(params: {
       fromBlockHex: fromHex,
       toBlockHex: toHex2,
       topic0,
-      topic2,
+      topic2: topic2 ?? undefined,
     });
 
     if (logs.length >= 950 && to - from > 0) {
@@ -469,35 +474,173 @@ function prettyDtc(v: bigint | null | undefined) {
 
 const FN_ABI: Record<
   string,
-  { type: "function"; name: string; stateMutability: "view"; inputs: any[]; outputs: any[] }
+  {
+    type: "function";
+    name: string;
+    stateMutability: "view";
+    inputs: any[];
+    outputs: any[];
+  }
 > = {
-  referrerOf: { type: "function", name: "referrerOf", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "address", name: "" }] },
-  publicCodeOf: { type: "function", name: "publicCodeOf", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "bytes32", name: "" }] },
-  resolveReferrer: { type: "function", name: "resolveReferrer", stateMutability: "view", inputs: [{ type: "bytes32", name: "" }], outputs: [{ type: "address", name: "" }] },
+  referrerOf: {
+    type: "function",
+    name: "referrerOf",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "address", name: "" }],
+  },
+  publicCodeOf: {
+    type: "function",
+    name: "publicCodeOf",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "bytes32", name: "" }],
+  },
+  resolveReferrer: {
+    type: "function",
+    name: "resolveReferrer",
+    stateMutability: "view",
+    inputs: [{ type: "bytes32", name: "" }],
+    outputs: [{ type: "address", name: "" }],
+  },
 
-  referrer_total_generated_loss: { type: "function", name: "referrer_total_generated_loss", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  referrerTotalGeneratedLoss: { type: "function", name: "referrerTotalGeneratedLoss", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  totalGeneratedLossOf: { type: "function", name: "totalGeneratedLossOf", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  generatedLossOf: { type: "function", name: "generatedLossOf", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  referrerGeneratedLossTotal: { type: "function", name: "referrerGeneratedLossTotal", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
+  referrer_total_generated_loss: {
+    type: "function",
+    name: "referrer_total_generated_loss",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  referrerTotalGeneratedLoss: {
+    type: "function",
+    name: "referrerTotalGeneratedLoss",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  totalGeneratedLossOf: {
+    type: "function",
+    name: "totalGeneratedLossOf",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  generatedLossOf: {
+    type: "function",
+    name: "generatedLossOf",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  referrerGeneratedLossTotal: {
+    type: "function",
+    name: "referrerGeneratedLossTotal",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
 
-  referrer_total_rewards: { type: "function", name: "referrer_total_rewards", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  referrerTotalRewards: { type: "function", name: "referrerTotalRewards", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  totalRewardsOf: { type: "function", name: "totalRewardsOf", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  rewardsOf: { type: "function", name: "rewardsOf", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  referrerRewardsTotal: { type: "function", name: "referrerRewardsTotal", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
+  referrer_total_rewards: {
+    type: "function",
+    name: "referrer_total_rewards",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  referrerTotalRewards: {
+    type: "function",
+    name: "referrerTotalRewards",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  totalRewardsOf: {
+    type: "function",
+    name: "totalRewardsOf",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  rewardsOf: {
+    type: "function",
+    name: "rewardsOf",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  referrerRewardsTotal: {
+    type: "function",
+    name: "referrerRewardsTotal",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
 
-  referrer_referees_count: { type: "function", name: "referrer_referees_count", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  referrerRefereesCount: { type: "function", name: "referrerRefereesCount", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
-  refereesCountOf: { type: "function", name: "refereesCountOf", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "uint256", name: "" }] },
+  referrer_referees_count: {
+    type: "function",
+    name: "referrer_referees_count",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  referrerRefereesCount: {
+    type: "function",
+    name: "referrerRefereesCount",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
+  refereesCountOf: {
+    type: "function",
+    name: "refereesCountOf",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "uint256", name: "" }],
+  },
 
-  referrer_referees: { type: "function", name: "referrer_referees", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "address[]", name: "" }] },
-  refereesOf: { type: "function", name: "refereesOf", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "address[]", name: "" }] },
-  getReferees: { type: "function", name: "getReferees", stateMutability: "view", inputs: [{ type: "address", name: "" }], outputs: [{ type: "address[]", name: "" }] },
+  referrer_referees: {
+    type: "function",
+    name: "referrer_referees",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "address[]", name: "" }],
+  },
+  refereesOf: {
+    type: "function",
+    name: "refereesOf",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "address[]", name: "" }],
+  },
+  getReferees: {
+    type: "function",
+    name: "getReferees",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }],
+    outputs: [{ type: "address[]", name: "" }],
+  },
 
-  referrer_referee_at: { type: "function", name: "referrer_referee_at", stateMutability: "view", inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }], outputs: [{ type: "address", name: "" }] },
-  referrerRefereeAt: { type: "function", name: "referrerRefereeAt", stateMutability: "view", inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }], outputs: [{ type: "address", name: "" }] },
-  refereesAt: { type: "function", name: "refereesAt", stateMutability: "view", inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }], outputs: [{ type: "address", name: "" }] },
+  referrer_referee_at: {
+    type: "function",
+    name: "referrer_referee_at",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }],
+    outputs: [{ type: "address", name: "" }],
+  },
+  referrerRefereeAt: {
+    type: "function",
+    name: "referrerRefereeAt",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }],
+    outputs: [{ type: "address", name: "" }],
+  },
+  refereesAt: {
+    type: "function",
+    name: "refereesAt",
+    stateMutability: "view",
+    inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }],
+    outputs: [{ type: "address", name: "" }],
+  },
 };
 
 function abiFor(fn: string) {
@@ -516,12 +659,18 @@ export default function EarnPage() {
   const ready = mounted;
 
   const chains = useMemo(() => {
-    const filtered = CHAIN_LIST.filter((c) => TOKEN_CHAIN_IDS.includes(c.chainId as any));
+    const filtered = CHAIN_LIST.filter((c) =>
+      TOKEN_CHAIN_IDS.includes(c.chainId as any),
+    );
     const order: Record<number, number> = { 59144: 0, 8453: 1 };
-    return [...filtered].sort((a, b) => (order[a.chainId] ?? 99) - (order[b.chainId] ?? 99));
+    return [...filtered].sort(
+      (a, b) => (order[a.chainId] ?? 99) - (order[b.chainId] ?? 99),
+    );
   }, []);
 
-  const [selectedChainId, setSelectedChainId] = useState<number>(TOKEN_CHAIN_IDS[0]);
+  const [selectedChainId, setSelectedChainId] = useState<number>(
+    TOKEN_CHAIN_IDS[0],
+  );
 
   useEffect(() => {
     if (!ready) return;
@@ -537,19 +686,24 @@ export default function EarnPage() {
 
   const registryAddress = useMemo(() => {
     if (!effectiveChainId) return zeroAddress as `0x${string}`;
-    return (REF_REGISTRY_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+    return (REF_REGISTRY_BY_CHAIN[effectiveChainId] ??
+      zeroAddress) as `0x${string}`;
   }, [effectiveChainId]);
 
   const distributorAddress = useMemo(() => {
     if (!effectiveChainId) return zeroAddress as `0x${string}`;
-    return (WEEKLY_REWARDS_DISTRIBUTOR_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+    return (WEEKLY_REWARDS_DISTRIBUTOR_BY_CHAIN[effectiveChainId] ??
+      zeroAddress) as `0x${string}`;
   }, [effectiveChainId]);
 
   const publicClient = usePublicClient({ chainId: effectiveChainId });
 
   const walletNetworkName = useMemo(() => {
     if (!ready || !walletChainId) return "—";
-    return CHAIN_LIST.find((c) => c.chainId === walletChainId)?.name ?? String(walletChainId);
+    return (
+      CHAIN_LIST.find((c) => c.chainId === walletChainId)?.name ??
+      String(walletChainId)
+    );
   }, [ready, walletChainId]);
 
   const wrongWalletForSelected = useMemo(() => {
@@ -622,22 +776,39 @@ export default function EarnPage() {
     if (typeof refV === "string") setReferrerOfMe(refV);
 
     const codeV = await readAny(["publicCodeOf"], [me]);
-    if (typeof codeV === "string" && isHex(codeV) && codeV.length === 66) setMyPublicCode(codeV as Hex);
+    if (typeof codeV === "string" && isHex(codeV) && codeV.length === 66)
+      setMyPublicCode(codeV as Hex);
 
     const lossV = await readAny(
-      ["referrer_total_generated_loss", "referrerTotalGeneratedLoss", "totalGeneratedLossOf", "generatedLossOf", "referrerGeneratedLossTotal"],
+      [
+        "referrer_total_generated_loss",
+        "referrerTotalGeneratedLoss",
+        "totalGeneratedLossOf",
+        "generatedLossOf",
+        "referrerGeneratedLossTotal",
+      ],
       [me],
     );
     setMyLossTotal(bi(lossV) ?? 0n);
 
     const rewardsV = await readAny(
-      ["referrer_total_rewards", "referrerTotalRewards", "totalRewardsOf", "rewardsOf", "referrerRewardsTotal"],
+      [
+        "referrer_total_rewards",
+        "referrerTotalRewards",
+        "totalRewardsOf",
+        "rewardsOf",
+        "referrerRewardsTotal",
+      ],
       [me],
     );
     setMyRewardsTotal(bi(rewardsV) ?? 0n);
 
     const cfg = getEtherscanConfig();
-    setDiag(cfg.ok ? "" : "Etherscan V2 env missing: NEXT_PUBLIC_ETHERSCAN_V2_URL and NEXT_PUBLIC_ETHERSCAN_V2_API_KEY");
+    setDiag(
+      cfg.ok
+        ? ""
+        : "Etherscan V2 env missing: NEXT_PUBLIC_ETHERSCAN_V2_URL and NEXT_PUBLIC_ETHERSCAN_V2_API_KEY",
+    );
   }, [readsEnabled, address, readAny]);
 
   const [refsCount, setRefsCount] = useState<number>(0);
@@ -661,7 +832,11 @@ export default function EarnPage() {
       const reg = registryAddress as `0x${string}`;
 
       const countV = await (async () => {
-        for (const fn of ["referrer_referees_count", "referrerRefereesCount", "refereesCountOf"]) {
+        for (const fn of [
+          "referrer_referees_count",
+          "referrerRefereesCount",
+          "refereesCountOf",
+        ]) {
           const v = await tryReadContract<any>({
             publicClient: pc,
             address: reg,
@@ -689,7 +864,9 @@ export default function EarnPage() {
           args: [me],
         });
         if (Array.isArray(v)) {
-          list = v.map((x: any) => String(x)).filter((x: string) => isHexAddress(x) && x !== zeroAddress);
+          list = v
+            .map((x: any) => String(x))
+            .filter((x: string) => isHexAddress(x) && x !== zeroAddress);
           break;
         }
       }
@@ -705,7 +882,8 @@ export default function EarnPage() {
               functionName: fn,
               args: [me, BigInt(i)],
             });
-            if (typeof v === "string" && isHexAddress(v) && v !== zeroAddress) out.push(v);
+            if (typeof v === "string" && isHexAddress(v) && v !== zeroAddress)
+              out.push(v);
             else break;
           }
           if (out.length > 0) {
@@ -726,7 +904,10 @@ export default function EarnPage() {
           list = refs;
         } catch (e: any) {
           const cfg = getEtherscanConfig();
-          if (!cfg.ok) setRefsError("Referees fallback needs Etherscan V2 env vars. Totals and list are unavailable from this registry ABI.");
+          if (!cfg.ok)
+            setRefsError(
+              "Referees fallback needs Etherscan V2 env vars. Totals and list are unavailable from this registry ABI.",
+            );
           else setRefsError(e?.message || "Failed to fetch referees from logs.");
         }
       }
@@ -765,7 +946,8 @@ export default function EarnPage() {
   const [alreadyClaimed, setAlreadyClaimed] = useState<boolean>(false);
 
   const refreshDistributor = useCallback(async () => {
-    if (!distributorReadsEnabled || !publicClient || !effectiveChainId || !address) return;
+    if (!distributorReadsEnabled || !publicClient || !effectiveChainId || !address)
+      return;
     const pc = publicClient as any;
     const dist = distributorAddress as `0x${string}`;
 
@@ -815,10 +997,7 @@ export default function EarnPage() {
 
   const myCodeHex = myPublicCode;
   const haveCode =
-    !!myCodeHex &&
-    isHex(myCodeHex) &&
-    myCodeHex.length === 66 &&
-    isNonZeroBytes32(myCodeHex);
+    !!myCodeHex && isHex(myCodeHex) && myCodeHex.length === 66 && isNonZeroBytes32(myCodeHex);
 
   const myCodeFriendly = useMemo(() => {
     if (!haveCode || !myCodeHex) return "";
@@ -876,7 +1055,12 @@ export default function EarnPage() {
   const effectiveRefCode = useMemo(() => {
     if (parsedRef.kind === "code") return parsedRef.code as Hex;
     if (parsedRef.kind === "address") {
-      if (refAddrPublicCode && isHex(refAddrPublicCode) && refAddrPublicCode.length === 66 && isNonZeroBytes32(refAddrPublicCode)) {
+      if (
+        refAddrPublicCode &&
+        isHex(refAddrPublicCode) &&
+        refAddrPublicCode.length === 66 &&
+        isNonZeroBytes32(refAddrPublicCode)
+      ) {
         return refAddrPublicCode;
       }
       return null;
@@ -945,18 +1129,7 @@ export default function EarnPage() {
     if (bundleNotFound) return true;
     if (bundle && amountBig === 0n) return true;
     return false;
-  }, [
-    ready,
-    bundleChecked,
-    isConnected,
-    address,
-    effectiveChainId,
-    wrongWalletForSelected,
-    alreadyClaimed,
-    bundleNotFound,
-    bundle,
-    amountBig,
-  ]);
+  }, [ready, bundleChecked, isConnected, address, effectiveChainId, wrongWalletForSelected, alreadyClaimed, bundleNotFound, bundle, amountBig]);
 
   const claimable = useMemo(() => {
     if (!ready) return false;
@@ -970,18 +1143,7 @@ export default function EarnPage() {
     if (bundle.epochId <= 0) return false;
     if (amountBig <= 0n) return false;
     return true;
-  }, [
-    ready,
-    bundleChecked,
-    isConnected,
-    address,
-    effectiveChainId,
-    wrongWalletForSelected,
-    distributorAddress,
-    bundle,
-    alreadyClaimed,
-    amountBig,
-  ]);
+  }, [ready, bundleChecked, isConnected, address, effectiveChainId, wrongWalletForSelected, distributorAddress, bundle, alreadyClaimed, amountBig]);
 
   const baseDisabledReason = useMemo(() => {
     if (!ready) return "Initializing…";
@@ -1336,18 +1498,7 @@ export default function EarnPage() {
         CLAIM
       </button>
     );
-  }, [
-    ready,
-    bundleLoading,
-    bundleChecked,
-    isConnected,
-    address,
-    baseDisabledReason,
-    wrongWalletForSelected,
-    alreadyClaimed,
-    nothingToClaim,
-    claimable,
-  ]);
+  }, [ready, bundleLoading, bundleChecked, isConnected, address, baseDisabledReason, wrongWalletForSelected, alreadyClaimed, nothingToClaim, claimable]);
 
   const nothingToClaimHelper =
     nothingToClaim && ready && isConnected && !wrongWalletForSelected ? (
@@ -1553,9 +1704,7 @@ export default function EarnPage() {
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-semibold text-neutral-100">Your referral code</div>
-                <div className="mt-1 text-[12px] text-neutral-500">
-                  Your code is per-chain. Registering is optional.
-                </div>
+                <div className="mt-1 text-[12px] text-neutral-500">Your code is per-chain. Registering is optional.</div>
               </div>
 
               <button
