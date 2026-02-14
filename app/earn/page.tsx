@@ -1,3 +1,4 @@
+// app/earn/page.tsx
 "use client";
 
 import TopNav from "../components/TopNav";
@@ -16,13 +17,16 @@ import {
   formatUnits,
   keccak256,
   toHex,
+  decodeEventLog,
 } from "viem";
 
 import { CHAIN_LIST } from "../lib/chains";
 import { REFERRAL_REGISTRY_ABI } from "../lib/abi/referralRegistry";
+import { LILYPAD_LEAP_GAME_ABI } from "../lib/abi/lilypadLeapGame";
 import {
   REF_REGISTRY_BY_CHAIN,
   WEEKLY_REWARDS_DISTRIBUTOR_BY_CHAIN,
+  LILYPAD_GAME_BY_CHAIN,
 } from "../lib/addresses";
 
 const SITE_ORIGIN = "https://hop.donaldtoad.com";
@@ -287,176 +291,6 @@ async function tryReadContract<T>(params: {
   }
 }
 
-function getEtherscanConfig() {
-  const url = (process.env.NEXT_PUBLIC_ETHERSCAN_V2_URL || "").trim();
-  const key = (process.env.NEXT_PUBLIC_ETHERSCAN_V2_API_KEY || "").trim();
-  return { url, key, ok: !!url && !!key };
-}
-
-type EtherscanLog = {
-  address: string;
-  topics: string[];
-  data: string;
-  blockNumber: string;
-};
-
-function padTopicAddress(addr: string) {
-  const a = (addr || "").toLowerCase();
-  if (!/^0x[a-f0-9]{40}$/.test(a)) return null;
-  return ("0x" + "0".repeat(24 * 2) + a.slice(2)) as `0x${string}`;
-}
-
-function topicToAddress(topic: string) {
-  const t = (topic || "").toLowerCase();
-  if (!t.startsWith("0x") || t.length !== 66) return null;
-  const a = ("0x" + t.slice(26)) as `0x${string}`;
-  if (!/^0x[a-f0-9]{40}$/.test(a)) return null;
-  return a;
-}
-
-async function etherscanV2FetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: "no-store" });
-  const text = await res.text();
-  let json: any = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(`Etherscan JSON parse failed (HTTP ${res.status})`);
-  }
-  if (json?.status === "0") {
-    const msg = String(json?.message || "");
-    if (msg.toLowerCase().includes("no records")) return ([] as any) as T;
-    throw new Error(String(json?.result || json?.message || "Etherscan error"));
-  }
-  return (json?.result ?? json) as T;
-}
-
-async function etherscanGetLatestBlockNumberHex(
-  chainId: number,
-  urlBase: string,
-  apiKey: string,
-) {
-  const url =
-    `${urlBase}?chainid=${chainId}` +
-    `&module=proxy&action=eth_blockNumber` +
-    `&apikey=${encodeURIComponent(apiKey)}`;
-  const out = await etherscanV2FetchJson<{ result: string }>(url);
-  const hex = (out as any)?.result ?? (out as any);
-  if (typeof hex !== "string" || !hex.startsWith("0x"))
-    throw new Error("Failed to read latest blockNumber from Etherscan");
-  return hex;
-}
-
-async function etherscanGetLogsRange(params: {
-  chainId: number;
-  urlBase: string;
-  apiKey: string;
-  address: `0x${string}`;
-  fromBlockHex: string;
-  toBlockHex: string;
-  topic0: `0x${string}`;
-  topic2?: `0x${string}`;
-}): Promise<EtherscanLog[]> {
-  const {
-    chainId,
-    urlBase,
-    apiKey,
-    address,
-    fromBlockHex,
-    toBlockHex,
-    topic0,
-    topic2,
-  } = params;
-
-  let url =
-    `${urlBase}?chainid=${chainId}` +
-    `&module=logs&action=getLogs` +
-    `&fromBlock=${fromBlockHex}` +
-    `&toBlock=${toBlockHex}` +
-    `&address=${address}` +
-    `&topic0=${topic0}`;
-
-  if (topic2) url += `&topic2=${topic2}`;
-
-  url += `&apikey=${encodeURIComponent(apiKey)}`;
-
-  const logs = await etherscanV2FetchJson<EtherscanLog[]>(url);
-  return Array.isArray(logs) ? logs : [];
-}
-
-async function fetchAllBoundLogsForReferrer(params: {
-  chainId: number;
-  registryAddress: `0x${string}`;
-  referrer: `0x${string}`;
-}): Promise<EtherscanLog[]> {
-  const cfg = getEtherscanConfig();
-  if (!cfg.ok) return [];
-
-  const { chainId, registryAddress, referrer } = params;
-
-  const topic0 = keccak256(
-    toHex("Bound(address,address,bytes32)"),
-  ) as `0x${string}`;
-  const topic2 = padTopicAddress(referrer);
-
-  const latestHex = await etherscanGetLatestBlockNumberHex(
-    chainId,
-    cfg.url,
-    cfg.key,
-  );
-  const latest = Number(BigInt(latestHex));
-  if (!Number.isFinite(latest) || latest <= 0) return [];
-
-  const out: EtherscanLog[] = [];
-
-  async function walk(from: number, to: number): Promise<void> {
-    if (from > to) return;
-
-    const fromHex = "0x" + from.toString(16);
-    const toHex2 = "0x" + to.toString(16);
-
-    const logs = await etherscanGetLogsRange({
-      chainId,
-      urlBase: cfg.url,
-      apiKey: cfg.key,
-      address: registryAddress,
-      fromBlockHex: fromHex,
-      toBlockHex: toHex2,
-      topic0,
-      topic2: topic2 ?? undefined,
-    });
-
-    if (logs.length >= 950 && to - from > 0) {
-      const mid = Math.floor((from + to) / 2);
-      if (mid === from) {
-        await walk(from, from);
-        await walk(from + 1, to);
-      } else {
-        await walk(from, mid);
-        await walk(mid + 1, to);
-      }
-      return;
-    }
-
-    out.push(...logs);
-  }
-
-  await walk(0, latest);
-
-  return out;
-}
-
-function extractRefereesFromBoundLogs(logs: EtherscanLog[]) {
-  const players: string[] = [];
-  for (const l of logs) {
-    const t1 = l?.topics?.[1];
-    const player = t1 ? topicToAddress(t1) : null;
-    if (player && player !== zeroAddress) players.push(player);
-  }
-  const uniq = Array.from(new Set(players.map((x) => x.toLowerCase())));
-  return uniq.map((x) => x as `0x${string}`);
-}
-
 function bi(v: any) {
   if (typeof v === "bigint") return v;
   if (v?.toString) {
@@ -472,6 +306,11 @@ function prettyDtc(v: bigint | null | undefined) {
   return fmtNum(Number(formatUnits(v, 18)), 6);
 }
 
+/**
+ * Registry ABI is v1 (bindings + optional totals written by rewardsWriter).
+ * Your LilypadLeapGame.sol (uploaded) does NOT call addTotals(), so these totals
+ * will remain 0 unless you add an off-chain writer or update the game to write.
+ */
 const FN_ABI: Record<
   string,
   {
@@ -503,7 +342,6 @@ const FN_ABI: Record<
     inputs: [{ type: "bytes32", name: "" }],
     outputs: [{ type: "address", name: "" }],
   },
-
   referrer_total_generated_loss: {
     type: "function",
     name: "referrer_total_generated_loss",
@@ -511,35 +349,6 @@ const FN_ABI: Record<
     inputs: [{ type: "address", name: "" }],
     outputs: [{ type: "uint256", name: "" }],
   },
-  referrerTotalGeneratedLoss: {
-    type: "function",
-    name: "referrerTotalGeneratedLoss",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-  totalGeneratedLossOf: {
-    type: "function",
-    name: "totalGeneratedLossOf",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-  generatedLossOf: {
-    type: "function",
-    name: "generatedLossOf",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-  referrerGeneratedLossTotal: {
-    type: "function",
-    name: "referrerGeneratedLossTotal",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-
   referrer_total_rewards: {
     type: "function",
     name: "referrer_total_rewards",
@@ -547,35 +356,6 @@ const FN_ABI: Record<
     inputs: [{ type: "address", name: "" }],
     outputs: [{ type: "uint256", name: "" }],
   },
-  referrerTotalRewards: {
-    type: "function",
-    name: "referrerTotalRewards",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-  totalRewardsOf: {
-    type: "function",
-    name: "totalRewardsOf",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-  rewardsOf: {
-    type: "function",
-    name: "rewardsOf",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-  referrerRewardsTotal: {
-    type: "function",
-    name: "referrerRewardsTotal",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-
   referrer_referees_count: {
     type: "function",
     name: "referrer_referees_count",
@@ -583,21 +363,6 @@ const FN_ABI: Record<
     inputs: [{ type: "address", name: "" }],
     outputs: [{ type: "uint256", name: "" }],
   },
-  referrerRefereesCount: {
-    type: "function",
-    name: "referrerRefereesCount",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-  refereesCountOf: {
-    type: "function",
-    name: "refereesCountOf",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "uint256", name: "" }],
-  },
-
   referrer_referees: {
     type: "function",
     name: "referrer_referees",
@@ -605,38 +370,9 @@ const FN_ABI: Record<
     inputs: [{ type: "address", name: "" }],
     outputs: [{ type: "address[]", name: "" }],
   },
-  refereesOf: {
-    type: "function",
-    name: "refereesOf",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "address[]", name: "" }],
-  },
-  getReferees: {
-    type: "function",
-    name: "getReferees",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }],
-    outputs: [{ type: "address[]", name: "" }],
-  },
-
   referrer_referee_at: {
     type: "function",
     name: "referrer_referee_at",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }],
-    outputs: [{ type: "address", name: "" }],
-  },
-  referrerRefereeAt: {
-    type: "function",
-    name: "referrerRefereeAt",
-    stateMutability: "view",
-    inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }],
-    outputs: [{ type: "address", name: "" }],
-  },
-  refereesAt: {
-    type: "function",
-    name: "refereesAt",
     stateMutability: "view",
     inputs: [{ type: "address", name: "" }, { type: "uint256", name: "" }],
     outputs: [{ type: "address", name: "" }],
@@ -646,6 +382,93 @@ const FN_ABI: Record<
 function abiFor(fn: string) {
   const f = FN_ABI[fn];
   return f ? [f] : [];
+}
+
+/**
+ * COST-FREE weekly stats source:
+ * - We compute “this week” from on-chain game logs inside the distributor epoch window.
+ * - No server, no paid indexer. We cache results in localStorage per (chainId, epochId, referrer).
+ *
+ * IMPORTANT: this can be heavy if the epoch is huge + you have many referees.
+ * We therefore:
+ *  - default to a limited number of referees
+ *  - allow manual refresh
+ *  - cache aggressively
+ */
+const GAME_EVENT_CREATED = {
+  type: "event",
+  name: "GameCreated",
+  inputs: [
+    { indexed: true, name: "gameId", type: "bytes32" },
+    { indexed: true, name: "player", type: "address" },
+    { indexed: false, name: "amountReceived", type: "uint256" },
+    { indexed: false, name: "mode", type: "uint8" },
+    { indexed: false, name: "userCommit", type: "bytes32" },
+    { indexed: false, name: "randAnchor", type: "bytes32" },
+    { indexed: false, name: "createdAt", type: "uint256" },
+    { indexed: false, name: "deadline", type: "uint256" },
+    { indexed: false, name: "maxPayoutReserved", type: "uint256" },
+  ],
+} as const;
+
+const GAME_EVENT_SETTLED = {
+  type: "event",
+  name: "GameSettled",
+  inputs: [
+    { indexed: true, name: "gameId", type: "bytes32" },
+    { indexed: true, name: "player", type: "address" },
+    { indexed: false, name: "won", type: "bool" },
+    { indexed: false, name: "cashoutHop", type: "uint8" },
+    { indexed: false, name: "payout", type: "uint256" },
+    { indexed: false, name: "userCommitHash", type: "bytes32" },
+    { indexed: false, name: "randAnchor", type: "bytes32" },
+  ],
+} as const;
+
+const TOPIC_GAME_CREATED = keccak256(
+  toHex(
+    "GameCreated(bytes32,address,uint256,uint8,bytes32,bytes32,uint256,uint256,uint256)",
+  ),
+) as `0x${string}`;
+
+const TOPIC_GAME_SETTLED = keccak256(
+  toHex("GameSettled(bytes32,address,bool,uint8,uint256,bytes32,bytes32)"),
+) as `0x${string}`;
+
+function padTopicAddress(addr: string) {
+  const a = (addr || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(a)) return null;
+  return ("0x" + "0".repeat(24 * 2) + a.slice(2)) as `0x${string}`;
+}
+
+type WeeklyRefStats = {
+  chainId: number;
+  epochId: number;
+  start: number; // unix
+  end: number; // unix
+  refereesCount: number;
+
+  // “volume” = sum(amountReceived) across all referee-created games inside epoch window
+  volume: string; // bigint string
+  wins: string; // sum(max(payout - amountReceived, 0))
+  losses: string; // sum(max(amountReceived - payout, 0))
+
+  // “net” = wins - losses (mostly negative in expectation)
+  net: string;
+
+  computedAt: string;
+};
+
+function safeLower(x?: string) {
+  return (x || "").toLowerCase();
+}
+
+function lsKeyWeekly(chainId: number, epochId: number, me: string) {
+  return `toad:earn:weekly:${chainId}:${epochId}:${safeLower(me)}`;
+}
+
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
 export default function EarnPage() {
@@ -693,6 +516,12 @@ export default function EarnPage() {
   const distributorAddress = useMemo(() => {
     if (!effectiveChainId) return zeroAddress as `0x${string}`;
     return (WEEKLY_REWARDS_DISTRIBUTOR_BY_CHAIN[effectiveChainId] ??
+      zeroAddress) as `0x${string}`;
+  }, [effectiveChainId]);
+
+  const gameAddress = useMemo(() => {
+    if (!effectiveChainId) return zeroAddress as `0x${string}`;
+    return (LILYPAD_GAME_BY_CHAIN[effectiveChainId] ??
       zeroAddress) as `0x${string}`;
   }, [effectiveChainId]);
 
@@ -746,8 +575,6 @@ export default function EarnPage() {
   const [myLossTotal, setMyLossTotal] = useState<bigint | null>(null);
   const [myRewardsTotal, setMyRewardsTotal] = useState<bigint | null>(null);
 
-  const [diag, setDiag] = useState<string>("");
-
   const readAny = useCallback(
     async (fnList: string[], args: any[]) => {
       if (!readsEnabled || !publicClient) return null;
@@ -779,38 +606,15 @@ export default function EarnPage() {
     if (typeof codeV === "string" && isHex(codeV) && codeV.length === 66)
       setMyPublicCode(codeV as Hex);
 
-    const lossV = await readAny(
-      [
-        "referrer_total_generated_loss",
-        "referrerTotalGeneratedLoss",
-        "totalGeneratedLossOf",
-        "generatedLossOf",
-        "referrerGeneratedLossTotal",
-      ],
-      [me],
-    );
+    // These are OPTIONAL totals in your registry (only update if someone calls addTotals as rewardsWriter).
+    const lossV = await readAny(["referrer_total_generated_loss"], [me]);
     setMyLossTotal(bi(lossV) ?? 0n);
 
-    const rewardsV = await readAny(
-      [
-        "referrer_total_rewards",
-        "referrerTotalRewards",
-        "totalRewardsOf",
-        "rewardsOf",
-        "referrerRewardsTotal",
-      ],
-      [me],
-    );
+    const rewardsV = await readAny(["referrer_total_rewards"], [me]);
     setMyRewardsTotal(bi(rewardsV) ?? 0n);
-
-    const cfg = getEtherscanConfig();
-    setDiag(
-      cfg.ok
-        ? ""
-        : "Etherscan V2 env missing: NEXT_PUBLIC_ETHERSCAN_V2_URL and NEXT_PUBLIC_ETHERSCAN_V2_API_KEY",
-    );
   }, [readsEnabled, address, readAny]);
 
+  // ----- Referees list (best-effort) -----
   const [refsCount, setRefsCount] = useState<number>(0);
   const [refsList, setRefsList] = useState<string[]>([]);
   const [refsOpen, setRefsOpen] = useState<boolean>(false);
@@ -831,85 +635,48 @@ export default function EarnPage() {
       const pc = publicClient as any;
       const reg = registryAddress as `0x${string}`;
 
-      const countV = await (async () => {
-        for (const fn of [
-          "referrer_referees_count",
-          "referrerRefereesCount",
-          "refereesCountOf",
-        ]) {
-          const v = await tryReadContract<any>({
-            publicClient: pc,
-            address: reg,
-            abi: abiFor(fn),
-            functionName: fn,
-            args: [me],
-          });
-          const b = bi(v);
-          if (b !== null) return b;
-        }
-        return null;
-      })();
+      const countV = await tryReadContract<any>({
+        publicClient: pc,
+        address: reg,
+        abi: abiFor("referrer_referees_count"),
+        functionName: "referrer_referees_count",
+        args: [me],
+      });
 
-      const countNum = countV ? Number(countV) : 0;
+      const countNum = bi(countV) ? Number(bi(countV)!) : 0;
       const target = Math.min(Math.max(0, limit), Math.max(0, countNum));
 
       let list: string[] = [];
 
-      for (const fn of ["referrer_referees", "refereesOf", "getReferees"]) {
-        const v = await tryReadContract<any>({
-          publicClient: pc,
-          address: reg,
-          abi: abiFor(fn),
-          functionName: fn,
-          args: [me],
-        });
-        if (Array.isArray(v)) {
-          list = v
-            .map((x: any) => String(x))
-            .filter((x: string) => isHexAddress(x) && x !== zeroAddress);
-          break;
-        }
-      }
+      // Try array getter (if your deployed registry doesn’t implement it, it will return null)
+      const arrV = await tryReadContract<any>({
+        publicClient: pc,
+        address: reg,
+        abi: abiFor("referrer_referees"),
+        functionName: "referrer_referees",
+        args: [me],
+      });
 
-      if (list.length === 0 && countNum > 0) {
-        for (const fn of ["referrer_referee_at", "referrerRefereeAt", "refereesAt"]) {
-          const out: string[] = [];
-          for (let i = 0; i < target; i++) {
-            const v = await tryReadContract<any>({
-              publicClient: pc,
-              address: reg,
-              abi: abiFor(fn),
-              functionName: fn,
-              args: [me, BigInt(i)],
-            });
-            if (typeof v === "string" && isHexAddress(v) && v !== zeroAddress)
-              out.push(v);
-            else break;
-          }
-          if (out.length > 0) {
-            list = out;
-            break;
-          }
-        }
-      }
-
-      if (list.length === 0) {
-        try {
-          const logs = await fetchAllBoundLogsForReferrer({
-            chainId: effectiveChainId,
-            registryAddress: reg,
-            referrer: me,
+      if (Array.isArray(arrV)) {
+        list = arrV
+          .map((x: any) => String(x))
+          .filter((x: string) => isHexAddress(x) && x !== zeroAddress);
+      } else if (countNum > 0) {
+        // Fallback: index getter
+        const out: string[] = [];
+        for (let i = 0; i < target; i++) {
+          const v = await tryReadContract<any>({
+            publicClient: pc,
+            address: reg,
+            abi: abiFor("referrer_referee_at"),
+            functionName: "referrer_referee_at",
+            args: [me, BigInt(i)],
           });
-          const refs = extractRefereesFromBoundLogs(logs);
-          list = refs;
-        } catch (e: any) {
-          const cfg = getEtherscanConfig();
-          if (!cfg.ok)
-            setRefsError(
-              "Referees fallback needs Etherscan V2 env vars. Totals and list are unavailable from this registry ABI.",
-            );
-          else setRefsError(e?.message || "Failed to fetch referees from logs.");
+          if (typeof v === "string" && isHexAddress(v) && v !== zeroAddress)
+            out.push(v);
+          else break;
         }
+        list = out;
       }
 
       const uniq = Array.from(new Set(list.map((x) => x.toLowerCase())));
@@ -917,7 +684,14 @@ export default function EarnPage() {
       setRefsList(uniq.slice(0, refsOpen ? uniq.length : Math.max(0, limit)));
       setRefsLoading(false);
     },
-    [readsEnabled, address, effectiveChainId, publicClient, registryAddress, refsOpen],
+    [
+      readsEnabled,
+      address,
+      effectiveChainId,
+      publicClient,
+      registryAddress,
+      refsOpen,
+    ],
   );
 
   useEffect(() => {
@@ -928,10 +702,11 @@ export default function EarnPage() {
     const id = window.setInterval(() => {
       void refreshCore();
       void loadReferees(refsOpen ? 500 : 25);
-    }, 8000);
+    }, 12000);
     return () => window.clearInterval(id);
   }, [ready, readsEnabled, refreshCore, loadReferees, refsOpen]);
 
+  // ----- Distributor -----
   const distributorReadsEnabled =
     ready &&
     !!effectiveChainId &&
@@ -946,7 +721,12 @@ export default function EarnPage() {
   const [alreadyClaimed, setAlreadyClaimed] = useState<boolean>(false);
 
   const refreshDistributor = useCallback(async () => {
-    if (!distributorReadsEnabled || !publicClient || !effectiveChainId || !address)
+    if (
+      !distributorReadsEnabled ||
+      !publicClient ||
+      !effectiveChainId ||
+      !address
+    )
       return;
     const pc = publicClient as any;
     const dist = distributorAddress as `0x${string}`;
@@ -986,18 +766,28 @@ export default function EarnPage() {
       setEpochMetaRaw(null);
       setAlreadyClaimed(false);
     }
-  }, [distributorReadsEnabled, publicClient, effectiveChainId, address, distributorAddress]);
+  }, [
+    distributorReadsEnabled,
+    publicClient,
+    effectiveChainId,
+    address,
+    distributorAddress,
+  ]);
 
   useEffect(() => {
     if (!ready) return;
     void refreshDistributor();
-    const id = window.setInterval(() => void refreshDistributor(), 8000);
+    const id = window.setInterval(() => void refreshDistributor(), 12000);
     return () => window.clearInterval(id);
   }, [ready, refreshDistributor]);
 
+  // ----- Referral code display -----
   const myCodeHex = myPublicCode;
   const haveCode =
-    !!myCodeHex && isHex(myCodeHex) && myCodeHex.length === 66 && isNonZeroBytes32(myCodeHex);
+    !!myCodeHex &&
+    isHex(myCodeHex) &&
+    myCodeHex.length === 66 &&
+    isNonZeroBytes32(myCodeHex);
 
   const myCodeFriendly = useMemo(() => {
     if (!haveCode || !myCodeHex) return "";
@@ -1017,13 +807,13 @@ export default function EarnPage() {
   }, [myCodeFriendly]);
 
   const isBound = referrerOfMe !== zeroAddress;
-
   const [refInput, setRefInput] = useState("");
 
   const parsedRef = useMemo(() => {
     const raw = (refInput || "").trim();
     if (!raw) return { kind: "empty" as const };
-    if (isHexAddress(raw)) return { kind: "address" as const, address: raw as `0x${string}` };
+    if (isHexAddress(raw))
+      return { kind: "address" as const, address: raw as `0x${string}` };
     const code = parseReferralCodeToHex32(raw);
     if (code) return { kind: "code" as const, code };
     return { kind: "invalid" as const };
@@ -1044,7 +834,8 @@ export default function EarnPage() {
         args: [parsedRef.address],
       });
       if (!alive) return;
-      if (typeof v === "string" && isHex(v) && v.length === 66) setRefAddrPublicCode(v as Hex);
+      if (typeof v === "string" && isHex(v) && v.length === 66)
+        setRefAddrPublicCode(v as Hex);
     }
     void run();
     return () => {
@@ -1091,6 +882,7 @@ export default function EarnPage() {
     };
   }, [readsEnabled, publicClient, registryAddress, effectiveRefCode]);
 
+  // ----- Claim bundle fetch -----
   const [bundleStatus, setBundleStatus] = useState<string>("");
   const [bundleErr, setBundleErr] = useState<string>("");
   const [bundle, setBundle] = useState<ClaimBundle | null>(null);
@@ -1116,43 +908,14 @@ export default function EarnPage() {
     }
   }, [bundle]);
 
-  const amountLabel = useMemo(() => fmtNum(Number(formatUnits(amountBig, 18)), 6), [amountBig]);
-  const genLossLabel = useMemo(() => fmtNum(Number(formatUnits(genLossBig, 18)), 6), [genLossBig]);
-
-  const nothingToClaim = useMemo(() => {
-    if (!ready) return false;
-    if (!bundleChecked) return false;
-    if (!isConnected || !address) return false;
-    if (!effectiveChainId) return false;
-    if (wrongWalletForSelected) return false;
-    if (alreadyClaimed) return false;
-    if (bundleNotFound) return true;
-    if (bundle && amountBig === 0n) return true;
-    return false;
-  }, [ready, bundleChecked, isConnected, address, effectiveChainId, wrongWalletForSelected, alreadyClaimed, bundleNotFound, bundle, amountBig]);
-
-  const claimable = useMemo(() => {
-    if (!ready) return false;
-    if (!bundleChecked) return false;
-    if (!isConnected || !address) return false;
-    if (!effectiveChainId) return false;
-    if (wrongWalletForSelected) return false;
-    if (distributorAddress === zeroAddress) return false;
-    if (!bundle) return false;
-    if (alreadyClaimed) return false;
-    if (bundle.epochId <= 0) return false;
-    if (amountBig <= 0n) return false;
-    return true;
-  }, [ready, bundleChecked, isConnected, address, effectiveChainId, wrongWalletForSelected, distributorAddress, bundle, alreadyClaimed, amountBig]);
-
-  const baseDisabledReason = useMemo(() => {
-    if (!ready) return "Initializing…";
-    if (!isConnected || !address) return "Connect wallet";
-    if (!effectiveChainId) return "Select chain";
-    if (wrongWalletForSelected) return "Switch wallet network";
-    if (distributorAddress === zeroAddress) return "Distributor not set";
-    return "";
-  }, [ready, isConnected, address, effectiveChainId, wrongWalletForSelected, distributorAddress]);
+  const amountLabel = useMemo(
+    () => fmtNum(Number(formatUnits(amountBig, 18)), 6),
+    [amountBig],
+  );
+  const genLossLabel = useMemo(
+    () => fmtNum(Number(formatUnits(genLossBig, 18)), 6),
+    [genLossBig],
+  );
 
   async function fetchBundle() {
     setBundleErr("");
@@ -1168,7 +931,9 @@ export default function EarnPage() {
       return;
     }
     if (wrongWalletForSelected) {
-      setBundleStatus("Switch wallet network to match the selected chain to load bundle.");
+      setBundleStatus(
+        "Switch wallet network to match the selected chain to load bundle.",
+      );
       setBundleLoading(false);
       setBundleChecked(true);
       return;
@@ -1186,7 +951,8 @@ export default function EarnPage() {
         setBundleChecked(true);
         setBundleLoading(false);
 
-        if (res.status !== 404) setBundleErr(`Bundle not available. (HTTP ${res.status})`);
+        if (res.status !== 404)
+          setBundleErr(`Bundle not available. (HTTP ${res.status})`);
         else setBundleErr("");
         return;
       }
@@ -1202,7 +968,9 @@ export default function EarnPage() {
 
       if (!ok) {
         setBundleStatus("");
-        setBundleErr("Bundle JSON exists but is malformed. Check fields: epochId, amount, generatedLoss, proof[].");
+        setBundleErr(
+          "Bundle JSON exists but is malformed. Check fields: epochId, amount, generatedLoss, proof[].",
+        );
         setBundleChecked(true);
         setBundleLoading(false);
         return;
@@ -1235,8 +1003,264 @@ export default function EarnPage() {
     setBundleLoading(false);
 
     void fetchBundle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, address, effectiveChainId, wrongWalletForSelected]);
 
+  // ----- Weekly referee stats (computed client-side from game logs) -----
+  const [weeklyStats, setWeeklyStats] = useState<WeeklyRefStats | null>(null);
+  const [weeklyLoading, setWeeklyLoading] = useState(false);
+  const [weeklyErr, setWeeklyErr] = useState("");
+  const [weeklyRefLimit, setWeeklyRefLimit] = useState(50);
+
+  const epochWindow = useMemo(() => {
+    if (!epochMetaRaw) return null;
+    const start = Number((epochMetaRaw as any)?.[1] ?? 0);
+    const end = Number((epochMetaRaw as any)?.[2] ?? 0);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= 0)
+      return null;
+    return { start, end };
+  }, [epochMetaRaw]);
+
+  const dtc = (v: bigint) => fmtNum(Number(formatUnits(v, 18)), 6);
+
+  async function findBlockByTimestamp(pc: any, targetTs: number) {
+    // binary search on [0, latest]
+    const latest = await pc.getBlockNumber();
+    let lo = 0n;
+    let hi = latest;
+
+    // quick guard
+    const hiBlock = await pc.getBlock({ blockNumber: hi });
+    const hiTs = Number(hiBlock?.timestamp ?? 0);
+    if (Number.isFinite(hiTs) && hiTs < targetTs) return hi;
+
+    // NOTE: Linea/Base have genesis at block 0, timestamp comparisons are fine.
+    // We'll cap iterations.
+    for (let i = 0; i < 34; i++) {
+      const mid = (lo + hi) / 2n;
+      const b = await pc.getBlock({ blockNumber: mid });
+      const ts = Number(b?.timestamp ?? 0);
+
+      if (!Number.isFinite(ts) || ts <= 0) {
+        // if provider returns weird timestamps, just shrink range
+        hi = mid > 0n ? mid - 1n : 0n;
+        continue;
+      }
+
+      if (ts < targetTs) lo = mid + 1n;
+      else hi = mid;
+    }
+    return hi;
+  }
+
+  const computeWeeklyRefStats = useCallback(async () => {
+    setWeeklyErr("");
+    setWeeklyLoading(true);
+
+    try {
+      if (
+        !ready ||
+        !publicClient ||
+        !effectiveChainId ||
+        !address ||
+        wrongWalletForSelected
+      ) {
+        setWeeklyLoading(false);
+        return;
+      }
+      if (!epochWindow || currentEpoch <= 0n) {
+        setWeeklyStats(null);
+        setWeeklyLoading(false);
+        return;
+      }
+      if (gameAddress === zeroAddress) {
+        setWeeklyErr("GAME address not configured for this chain.");
+        setWeeklyLoading(false);
+        return;
+      }
+
+      const epochId = Number(currentEpoch);
+      const key = lsKeyWeekly(effectiveChainId, epochId, address);
+
+      // cached?
+      try {
+        const cached = localStorage.getItem(key);
+        if (cached) {
+          const obj = JSON.parse(cached) as WeeklyRefStats;
+          if (
+            obj &&
+            obj.chainId === effectiveChainId &&
+            obj.epochId === epochId &&
+            typeof obj.volume === "string"
+          ) {
+            setWeeklyStats(obj);
+            // keep going only if cache is old-ish (optional): we’ll trust it unless user refreshes
+            setWeeklyLoading(false);
+            return;
+          }
+        }
+      } catch {}
+
+      const pc = publicClient as any;
+
+      const refsAll = refsList.slice(0, clamp(weeklyRefLimit, 1, 500));
+      const refs = refsAll
+        .map((x) => x.toLowerCase())
+        .filter((x) => isHexAddress(x) && x !== zeroAddress);
+
+      if (refs.length === 0) {
+        setWeeklyStats({
+          chainId: effectiveChainId,
+          epochId,
+          start: epochWindow.start,
+          end: epochWindow.end,
+          refereesCount: 0,
+          volume: "0",
+          wins: "0",
+          losses: "0",
+          net: "0",
+          computedAt: new Date().toISOString(),
+        });
+        setWeeklyLoading(false);
+        return;
+      }
+
+      // blocks for epoch window
+      const fromBlock = await findBlockByTimestamp(pc, epochWindow.start);
+      const toBlock = await findBlockByTimestamp(pc, epochWindow.end);
+
+      // pull logs per referee (topic2=player). This is “cost-free” (RPC),
+      // but can be heavy for lots of refs — we limit + cache.
+      const createdByGameId = new Map<string, { amountReceived: bigint; player: string }>();
+      const settledByGameId = new Map<string, { payout: bigint; player: string }>();
+
+      for (const ref of refs) {
+        const t2 = padTopicAddress(ref);
+        if (!t2) continue;
+
+        const createdLogs = await pc.getLogs({
+          address: gameAddress,
+          fromBlock,
+          toBlock,
+          topics: [TOPIC_GAME_CREATED, null, t2],
+        });
+
+        for (const l of createdLogs) {
+          try {
+            const decoded = decodeEventLog({
+              abi: [GAME_EVENT_CREATED],
+              data: l.data,
+              topics: l.topics,
+            }) as any;
+            const gid = String(decoded?.args?.gameId || "");
+            const player = String(decoded?.args?.player || "").toLowerCase();
+            const amountReceived = bi(decoded?.args?.amountReceived) ?? 0n;
+            if (isHex(gid) && gid.length === 66 && isHexAddress(player)) {
+              createdByGameId.set(gid.toLowerCase(), { amountReceived, player });
+            }
+          } catch {}
+        }
+
+        const settledLogs = await pc.getLogs({
+          address: gameAddress,
+          fromBlock,
+          toBlock,
+          topics: [TOPIC_GAME_SETTLED, null, t2],
+        });
+
+        for (const l of settledLogs) {
+          try {
+            const decoded = decodeEventLog({
+              abi: [GAME_EVENT_SETTLED],
+              data: l.data,
+              topics: l.topics,
+            }) as any;
+            const gid = String(decoded?.args?.gameId || "");
+            const player = String(decoded?.args?.player || "").toLowerCase();
+            const payout = bi(decoded?.args?.payout) ?? 0n;
+            if (isHex(gid) && gid.length === 66 && isHexAddress(player)) {
+              settledByGameId.set(gid.toLowerCase(), { payout, player });
+            }
+          } catch {}
+        }
+      }
+
+      let volume = 0n;
+      let wins = 0n;
+      let losses = 0n;
+
+      // Only count games that have BOTH create+settle inside window
+      for (const [gid, c] of createdByGameId.entries()) {
+        const s = settledByGameId.get(gid);
+        if (!s) continue;
+
+        const a = c.amountReceived ?? 0n;
+        const p = s.payout ?? 0n;
+
+        volume += a;
+
+        if (p >= a) wins += p - a;
+        else losses += a - p;
+      }
+
+      const net = wins - losses;
+
+      const out: WeeklyRefStats = {
+        chainId: effectiveChainId,
+        epochId,
+        start: epochWindow.start,
+        end: epochWindow.end,
+        refereesCount: refs.length,
+        volume: volume.toString(),
+        wins: wins.toString(),
+        losses: losses.toString(),
+        net: net.toString(),
+        computedAt: new Date().toISOString(),
+      };
+
+      try {
+        localStorage.setItem(key, JSON.stringify(out));
+      } catch {}
+
+      setWeeklyStats(out);
+      setWeeklyLoading(false);
+    } catch (e: any) {
+      setWeeklyLoading(false);
+      setWeeklyErr(e?.message || "Failed to compute weekly referee stats.");
+    }
+  }, [
+    ready,
+    publicClient,
+    effectiveChainId,
+    address,
+    wrongWalletForSelected,
+    epochWindow,
+    currentEpoch,
+    gameAddress,
+    refsList,
+    weeklyRefLimit,
+  ]);
+
+  // auto-load cached stats when epoch changes / chain changes
+  useEffect(() => {
+    if (!ready || !effectiveChainId || !address) return;
+    if (!epochWindow || currentEpoch <= 0n) {
+      setWeeklyStats(null);
+      return;
+    }
+    const epochId = Number(currentEpoch);
+    const key = lsKeyWeekly(effectiveChainId, epochId, address);
+    try {
+      const cached = localStorage.getItem(key);
+      if (cached) {
+        const obj = JSON.parse(cached) as WeeklyRefStats;
+        if (obj && obj.chainId === effectiveChainId && obj.epochId === epochId)
+          setWeeklyStats(obj);
+      }
+    } catch {}
+  }, [ready, effectiveChainId, address, epochWindow, currentEpoch]);
+
+  // ----- Actions -----
   const [status, setStatus] = useState<string>("");
   const [err, setErr] = useState<string>("");
   const [copied, setCopied] = useState(false);
@@ -1260,7 +1284,9 @@ export default function EarnPage() {
       return;
     }
     if (wrongWalletForSelected) {
-      setErr(`Switch wallet network to ${selectedChain?.name ?? "selected chain"} first.`);
+      setErr(
+        `Switch wallet network to ${selectedChain?.name ?? "selected chain"} first.`,
+      );
       return;
     }
 
@@ -1305,7 +1331,9 @@ export default function EarnPage() {
       return;
     }
     if (wrongWalletForSelected) {
-      setErr(`Switch wallet network to ${selectedChain?.name ?? "selected chain"} first.`);
+      setErr(
+        `Switch wallet network to ${selectedChain?.name ?? "selected chain"} first.`,
+      );
       return;
     }
     if (!effectiveRefCode) {
@@ -1316,7 +1344,10 @@ export default function EarnPage() {
       setErr("Invalid code format.");
       return;
     }
-    if (resolvesTo !== zeroAddress && resolvesTo.toLowerCase() === (address || "").toLowerCase()) {
+    if (
+      resolvesTo !== zeroAddress &&
+      resolvesTo.toLowerCase() === (address || "").toLowerCase()
+    ) {
       setErr("You cannot bind to yourself.");
       return;
     }
@@ -1348,13 +1379,79 @@ export default function EarnPage() {
     }
   }
 
+  const nothingToClaim = useMemo(() => {
+    if (!ready) return false;
+    if (!bundleChecked) return false;
+    if (!isConnected || !address) return false;
+    if (!effectiveChainId) return false;
+    if (wrongWalletForSelected) return false;
+    if (alreadyClaimed) return false;
+    if (bundleNotFound) return true;
+    if (bundle && amountBig === 0n) return true;
+    return false;
+  }, [
+    ready,
+    bundleChecked,
+    isConnected,
+    address,
+    effectiveChainId,
+    wrongWalletForSelected,
+    alreadyClaimed,
+    bundleNotFound,
+    bundle,
+    amountBig,
+  ]);
+
+  const claimable = useMemo(() => {
+    if (!ready) return false;
+    if (!bundleChecked) return false;
+    if (!isConnected || !address) return false;
+    if (!effectiveChainId) return false;
+    if (wrongWalletForSelected) return false;
+    if (distributorAddress === zeroAddress) return false;
+    if (!bundle) return false;
+    if (alreadyClaimed) return false;
+    if (bundle.epochId <= 0) return false;
+    if (amountBig <= 0n) return false;
+    return true;
+  }, [
+    ready,
+    bundleChecked,
+    isConnected,
+    address,
+    effectiveChainId,
+    wrongWalletForSelected,
+    distributorAddress,
+    bundle,
+    alreadyClaimed,
+    amountBig,
+  ]);
+
+  const baseDisabledReason = useMemo(() => {
+    if (!ready) return "Initializing…";
+    if (!isConnected || !address) return "Connect wallet";
+    if (!effectiveChainId) return "Select chain";
+    if (wrongWalletForSelected) return "Switch wallet network";
+    if (distributorAddress === zeroAddress) return "Distributor not set";
+    return "";
+  }, [
+    ready,
+    isConnected,
+    address,
+    effectiveChainId,
+    wrongWalletForSelected,
+    distributorAddress,
+  ]);
+
   async function claimWeeklyRewards() {
     setErr("");
     setStatus("");
 
     if (!claimable) {
       if (nothingToClaim) {
-        setErr("Nothing to claim this week. Share your referral code and invite friends to play to start earning.");
+        setErr(
+          "Nothing to claim this week. Share your referral code and invite friends to play to start earning.",
+        );
       } else if (bundleLoading || !bundleChecked) {
         setErr("Still loading your weekly bundle. Try again in a moment.");
       } else if (baseDisabledReason) {
@@ -1382,7 +1479,12 @@ export default function EarnPage() {
         abi: WEEKLY_REWARDS_DISTRIBUTOR_ABI,
         address: distributorAddress,
         functionName: "claim",
-        args: [BigInt(bundle.epochId), BigInt(bundle.amount), BigInt(bundle.generatedLoss), bundle.proof as any],
+        args: [
+          BigInt(bundle.epochId),
+          BigInt(bundle.amount),
+          BigInt(bundle.generatedLoss),
+          bundle.proof as any,
+        ],
       });
 
       await (publicClient as any).waitForTransactionReceipt({ hash });
@@ -1399,47 +1501,13 @@ export default function EarnPage() {
     }
   }
 
-  const howWorksText = (
-    <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-semibold text-neutral-100">How referrals + weekly rewards work</div>
-        <Pill tone="good">10% weekly</Pill>
-      </div>
-
-      <div className="mt-2 text-[12px] text-neutral-400">
-        You earn <b className="text-neutral-200">10%</b> of your referees’ <b className="text-neutral-200">net losses</b>, bundled weekly and claimable on-chain.
-      </div>
-
-      <div className="mt-3 grid gap-3 md:grid-cols-3">
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
-          <div className="text-[12px] font-semibold text-neutral-200">1) Share your code</div>
-          <div className="mt-1 text-[12px] text-neutral-500">Copy your referral code and send it to friends.</div>
-        </div>
-
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
-          <div className="text-[12px] font-semibold text-neutral-200">2) Referee binds on Earn</div>
-          <div className="mt-1 text-[12px] text-neutral-500">Your friend enters your code and signs a binding transaction.</div>
-        </div>
-
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
-          <div className="text-[12px] font-semibold text-neutral-200">3) Claim weekly</div>
-          <div className="mt-1 text-[12px] text-neutral-500">Every week, a claim bundle is published. Load it and claim on the same chain (Linea/Base).</div>
-        </div>
-      </div>
-
-      {diag ? (
-        <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-          {diag}
-        </div>
-      ) : null}
-    </div>
-  );
-
   const claimButton = useMemo(() => {
     if (!ready || bundleLoading || (!bundleChecked && isConnected && !!address)) {
       const title =
         baseDisabledReason ||
-        (wrongWalletForSelected ? "Switch wallet network to match selected chain" : "Loading bundle…");
+        (wrongWalletForSelected
+          ? "Switch wallet network to match selected chain"
+          : "Loading bundle…");
 
       return (
         <button
@@ -1498,14 +1566,26 @@ export default function EarnPage() {
         CLAIM
       </button>
     );
-  }, [ready, bundleLoading, bundleChecked, isConnected, address, baseDisabledReason, wrongWalletForSelected, alreadyClaimed, nothingToClaim, claimable]);
+  }, [
+    ready,
+    bundleLoading,
+    bundleChecked,
+    isConnected,
+    address,
+    baseDisabledReason,
+    wrongWalletForSelected,
+    alreadyClaimed,
+    nothingToClaim,
+    claimable,
+  ]);
 
   const nothingToClaimHelper =
     nothingToClaim && ready && isConnected && !wrongWalletForSelected ? (
       <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">
         You didn’t earn referral rewards this week.
         <div className="mt-1 text-[11px] text-red-200/80">
-          Share your referral code, invite friends to play, and start earning <b>10% weekly</b>.
+          Share your referral code, invite friends to play, and start earning{" "}
+          <b>10% weekly</b>.
         </div>
       </div>
     ) : null;
@@ -1521,6 +1601,22 @@ export default function EarnPage() {
     bindBusy ||
     isBound;
 
+  const howWorksText = (
+    <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-neutral-100">
+          How referrals + weekly rewards work
+        </div>
+        <Pill tone="good">10% weekly</Pill>
+      </div>
+
+      <div className="mt-2 text-[12px] text-neutral-400">
+        You earn <b className="text-neutral-200">10%</b> of your referees’{" "}
+        <b className="text-neutral-200">net losses</b>, bundled weekly and claimable on-chain.
+      </div>
+    </div>
+  );
+
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
       <TopNav />
@@ -1530,34 +1626,46 @@ export default function EarnPage() {
           <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-bold">Earn</h1>
-              <p className="mt-2 text-neutral-300">Earn weekly referral rewards on Linea + Base.</p>
+              <p className="mt-2 text-neutral-300">
+                Earn weekly referral rewards on Linea + Base.
+              </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-sm text-neutral-400">
               <span>
-                Selected: <span className="text-neutral-100">{selectedChain?.name ?? "—"}</span>
+                Selected:{" "}
+                <span className="text-neutral-100">{selectedChain?.name ?? "—"}</span>
               </span>
               {ready && isConnected ? (
                 <span className="text-neutral-500">
-                  (wallet: <span className="text-neutral-300">{walletNetworkName}</span>)
+                  (wallet:{" "}
+                  <span className="text-neutral-300">{walletNetworkName}</span>)
                 </span>
               ) : null}
 
               {!ready ? <Pill tone="neutral">Initializing</Pill> : null}
               {ready && !isConnected ? <Pill tone="warn">Not connected</Pill> : null}
-              {ready && isConnected && wrongWalletForSelected ? <Pill tone="warn">Wrong network</Pill> : null}
-              {ready && isConnected && !wrongWalletForSelected ? <Pill tone="good">Ready</Pill> : null}
+              {ready && isConnected && wrongWalletForSelected ? (
+                <Pill tone="warn">Wrong network</Pill>
+              ) : null}
+              {ready && isConnected && !wrongWalletForSelected ? (
+                <Pill tone="good">Ready</Pill>
+              ) : null}
             </div>
           </div>
 
           {howWorksText}
 
+          {/* Network picker */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-4">
               <div>
                 <div className="text-sm font-semibold text-neutral-100">Network</div>
                 <div className="mt-1 text-xs text-neutral-500">
-                  Selected: <span className="font-semibold text-neutral-200">{selectedChain?.name ?? "—"}</span>
+                  Selected:{" "}
+                  <span className="font-semibold text-neutral-200">
+                    {selectedChain?.name ?? "—"}
+                  </span>
                 </div>
               </div>
 
@@ -1582,14 +1690,18 @@ export default function EarnPage() {
                           <ChainIcon chainKey={c.key} alt={`${c.name} icon`} />
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <div className="text-sm font-semibold text-neutral-50">{c.name}</div>
+                              <div className="text-sm font-semibold text-neutral-50">
+                                {c.name}
+                              </div>
                               {active ? (
                                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-500/20">
                                   LIVE
                                 </span>
                               ) : null}
                             </div>
-                            <div className="mt-0.5 text-[11px] text-neutral-400">Chain ID: {c.chainId}</div>
+                            <div className="mt-0.5 text-[11px] text-neutral-400">
+                              Chain ID: {c.chainId}
+                            </div>
                           </div>
                         </div>
                       </button>
@@ -1597,7 +1709,9 @@ export default function EarnPage() {
                   })}
                 </div>
 
-                {switchStatus ? <div className="mt-2 text-[11px] text-amber-200">{switchStatus}</div> : null}
+                {switchStatus ? (
+                  <div className="mt-2 text-[11px] text-amber-200">{switchStatus}</div>
+                ) : null}
 
                 {!ready ? (
                   <div className="mt-2 text-[11px] text-neutral-600">Initializing…</div>
@@ -1606,7 +1720,8 @@ export default function EarnPage() {
                     Wallet network:{" "}
                     <span className="text-neutral-300">
                       {isTokenChain(walletChainId)
-                        ? chains.find((c) => c.chainId === walletChainId)?.name ?? walletChainId
+                        ? chains.find((c) => c.chainId === walletChainId)?.name ??
+                          walletChainId
                         : walletChainId ?? "—"}
                     </span>
                   </div>
@@ -1619,35 +1734,62 @@ export default function EarnPage() {
             </div>
           </div>
 
+          {/* Wallet section */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="text-sm font-semibold text-neutral-100">Wallet</div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-neutral-300">
-              {ready && isConnected && address ? `Connected: ${truncateAddr(address)}` : "Not connected"}
-              {ready && isConnected && address ? <Pill tone="good">Connected</Pill> : <Pill tone="warn">Connect</Pill>}
+              {ready && isConnected && address
+                ? `Connected: ${truncateAddr(address)}`
+                : "Not connected"}
+              {ready && isConnected && address ? (
+                <Pill tone="good">Connected</Pill>
+              ) : (
+                <Pill tone="warn">Connect</Pill>
+              )}
             </div>
 
-            <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
               <div className="text-[12px] text-neutral-500">
                 Registry:{" "}
-                <span className="font-mono text-neutral-300">{registryAddress !== zeroAddress ? registryAddress : "—"}</span>
+                <span className="font-mono text-neutral-300">
+                  {registryAddress !== zeroAddress ? registryAddress : "—"}
+                </span>
               </div>
               <div className="text-[12px] text-neutral-500">
                 Distributor:{" "}
-                <span className="font-mono text-neutral-300">{distributorAddress !== zeroAddress ? distributorAddress : "—"}</span>
+                <span className="font-mono text-neutral-300">
+                  {distributorAddress !== zeroAddress ? distributorAddress : "—"}
+                </span>
+              </div>
+              <div className="text-[12px] text-neutral-500">
+                Game:{" "}
+                <span className="font-mono text-neutral-300">
+                  {gameAddress !== zeroAddress ? gameAddress : "—"}
+                </span>
               </div>
             </div>
 
             {ready && isConnected && wrongWalletForSelected ? (
               <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-                You’re viewing <b>{selectedChain?.name ?? "—"}</b>, but your wallet is on <b>{walletNetworkName}</b>. Switch wallet network using the toggle above.
+                You’re viewing <b>{selectedChain?.name ?? "—"}</b>, but your wallet is on{" "}
+                <b>{walletNetworkName}</b>. Switch wallet network using the toggle above.
               </div>
             ) : null}
           </div>
 
+          {/* Bind */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-semibold text-neutral-100">Bind to a referrer</div>
-              {ready && isConnected && address ? (isBound ? <Pill tone="good">Bound</Pill> : <Pill tone="warn">Not bound</Pill>) : <Pill tone="neutral">—</Pill>}
+              {ready && isConnected && address ? (
+                isBound ? (
+                  <Pill tone="good">Bound</Pill>
+                ) : (
+                  <Pill tone="warn">Not bound</Pill>
+                )
+              ) : (
+                <Pill tone="neutral">—</Pill>
+              )}
             </div>
 
             <div className="mt-2 text-sm text-neutral-300">
@@ -1657,7 +1799,9 @@ export default function EarnPage() {
                     Bound to: <span className="font-mono">{truncateAddr(referrerOfMe)}</span>
                   </span>
                 ) : (
-                  <span className="text-neutral-400">Enter a referral code, bytes32, or a wallet address and sign a binding transaction.</span>
+                  <span className="text-neutral-400">
+                    Enter a referral code, bytes32, or a wallet address and sign a binding transaction.
+                  </span>
                 )
               ) : (
                 <span className="text-neutral-400">Connect your wallet to bind.</span>
@@ -1692,7 +1836,15 @@ export default function EarnPage() {
                       ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
                       : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15",
                   ].join(" ")}
-                  title={wrongWalletForSelected ? "Switch wallet network to match selected chain" : isBound ? "Already bound" : bindBusy ? "Binding…" : undefined}
+                  title={
+                    wrongWalletForSelected
+                      ? "Switch wallet network to match selected chain"
+                      : isBound
+                        ? "Already bound"
+                        : bindBusy
+                          ? "Binding…"
+                          : undefined
+                  }
                 >
                   {isBound ? "BOUND" : bindBusy ? "BINDING…" : "BIND"}
                 </button>
@@ -1700,19 +1852,30 @@ export default function EarnPage() {
             </div>
           </div>
 
+          {/* My code */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-semibold text-neutral-100">Your referral code</div>
-                <div className="mt-1 text-[12px] text-neutral-500">Your code is per-chain. Registering is optional.</div>
+                <div className="mt-1 text-[12px] text-neutral-500">
+                  Your code is per-chain. Registering is optional.
+                </div>
               </div>
 
               <button
                 type="button"
                 onClick={() => void registerCode()}
                 className="rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-xs font-extrabold text-neutral-100 hover:bg-neutral-800/60"
-                disabled={!ready || !isConnected || !address || registryAddress === zeroAddress || wrongWalletForSelected}
-                title={wrongWalletForSelected ? `Switch wallet to ${selectedChain?.name ?? "selected chain"}` : undefined}
+                disabled={
+                  !ready ||
+                  !isConnected ||
+                  !address ||
+                  registryAddress === zeroAddress ||
+                  wrongWalletForSelected
+                }
+                title={
+                  wrongWalletForSelected ? `Switch wallet to ${selectedChain?.name ?? "selected chain"}` : undefined
+                }
               >
                 {haveCode ? "RE-REGISTER (optional)" : "REGISTER MY CODE (optional)"}
               </button>
@@ -1734,12 +1897,16 @@ export default function EarnPage() {
 
                 <div>
                   <div className="text-[12px] text-neutral-400">Public code (bytes32)</div>
-                  <div className="mt-1 break-all font-mono text-[12px] text-neutral-200">{haveCode ? myCodeHex : "—"}</div>
+                  <div className="mt-1 break-all font-mono text-[12px] text-neutral-200">
+                    {haveCode ? myCodeHex : "—"}
+                  </div>
                 </div>
               </div>
 
               <div className="mt-3 text-[12px] text-neutral-400">Optional link (uses code)</div>
-              <div className="mt-1 break-all font-mono text-[12px] text-neutral-200">{myCodeFriendly ? referralLink : "—"}</div>
+              <div className="mt-1 break-all font-mono text-[12px] text-neutral-200">
+                {myCodeFriendly ? referralLink : "—"}
+              </div>
 
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
@@ -1787,11 +1954,14 @@ export default function EarnPage() {
             </div>
           </div>
 
+          {/* Weekly rewards */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-semibold text-neutral-100">💰 Weekly rewards</div>
-                <div className="mt-1 text-[12px] text-neutral-500">Load your claim bundle (GitHub) then claim on-chain.</div>
+                <div className="mt-1 text-[12px] text-neutral-500">
+                  Load your claim bundle (GitHub) then claim on-chain.
+                </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -1800,7 +1970,13 @@ export default function EarnPage() {
                   onClick={() => void fetchBundle()}
                   className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-extrabold text-neutral-100 hover:bg-neutral-800/60"
                   disabled={!ready || !address || !effectiveChainId || wrongWalletForSelected || bundleLoading}
-                  title={wrongWalletForSelected ? "Switch wallet network to match selected chain" : bundleLoading ? "Loading bundle…" : undefined}
+                  title={
+                    wrongWalletForSelected
+                      ? "Switch wallet network to match selected chain"
+                      : bundleLoading
+                        ? "Loading bundle…"
+                        : undefined
+                  }
                 >
                   {bundleLoading ? "REFRESHING…" : "REFRESH BUNDLE"}
                 </button>
@@ -1812,17 +1988,23 @@ export default function EarnPage() {
             <div className="mt-3 grid gap-3 md:grid-cols-3">
               <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
                 <div className="text-[12px] text-neutral-400">Current epoch</div>
-                <div className="mt-1 font-mono text-sm text-neutral-200">{currentEpoch.toString()}</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">
+                  {currentEpoch.toString()}
+                </div>
               </div>
 
               <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
                 <div className="text-[12px] text-neutral-400">Bundle amount (DTC)</div>
-                <div className="mt-1 font-mono text-sm text-neutral-200">{bundleChecked ? (bundle ? amountLabel : "0") : "—"}</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">
+                  {bundleChecked ? (bundle ? amountLabel : "0") : "—"}
+                </div>
               </div>
 
               <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
                 <div className="text-[12px] text-neutral-400">Bundle net loss basis (DTC)</div>
-                <div className="mt-1 font-mono text-sm text-neutral-200">{bundleChecked ? (bundle ? genLossLabel : "0") : "—"}</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">
+                  {bundleChecked ? (bundle ? genLossLabel : "0") : "—"}
+                </div>
               </div>
             </div>
 
@@ -1830,7 +2012,8 @@ export default function EarnPage() {
               <div className="mt-3 text-[12px] text-neutral-500">
                 Epoch window (unix):{" "}
                 <span className="font-mono text-neutral-300">
-                  {(epochMetaRaw as any)?.[1]?.toString?.() ?? "—"} → {(epochMetaRaw as any)?.[2]?.toString?.() ?? "—"}
+                  {(epochMetaRaw as any)?.[1]?.toString?.() ?? "—"} →{" "}
+                  {(epochMetaRaw as any)?.[2]?.toString?.() ?? "—"}
                 </span>
               </div>
             ) : null}
@@ -1848,7 +2031,10 @@ export default function EarnPage() {
                 {bundleErr}
                 {ready && effectiveChainId && address ? (
                   <div className="mt-2 text-[11px] text-red-200/80">
-                    Expected URL: <span className="break-all font-mono">{claimBundleUrl(effectiveChainId, address)}</span>
+                    Expected URL:{" "}
+                    <span className="break-all font-mono">
+                      {claimBundleUrl(effectiveChainId, address)}
+                    </span>
                   </div>
                 ) : null}
               </div>
@@ -1859,6 +2045,7 @@ export default function EarnPage() {
             ) : null}
           </div>
 
+          {/* Referees */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -1908,49 +2095,162 @@ export default function EarnPage() {
             <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-[12px] text-neutral-400">
-                  Showing {refsOpen ? Math.min(refsList.length, refsCount) : Math.min(refsList.length, 25)} of{" "}
+                  Showing{" "}
+                  {refsOpen ? Math.min(refsList.length, refsCount) : Math.min(refsList.length, 25)} of{" "}
                   <span className="text-neutral-200">{refsCount}</span>
                 </div>
-                {refsLoading ? <Pill tone="neutral">Loading</Pill> : refsCount > 0 ? <Pill tone="good">Live</Pill> : <Pill tone="warn">None</Pill>}
+                {refsLoading ? (
+                  <Pill tone="neutral">Loading</Pill>
+                ) : refsCount > 0 ? (
+                  <Pill tone="good">Live</Pill>
+                ) : (
+                  <Pill tone="warn">None</Pill>
+                )}
               </div>
 
               {refsError ? (
-                <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">{refsError}</div>
+                <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">
+                  {refsError}
+                </div>
               ) : null}
 
-              <div className={["mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3", refsOpen ? "max-h-80 overflow-auto" : ""].join(" ")}>
+              <div
+                className={[
+                  "mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3",
+                  refsOpen ? "max-h-80 overflow-auto" : "",
+                ].join(" ")}
+              >
                 {refsCount === 0 ? (
                   <div className="text-[12px] text-neutral-500">No referees yet.</div>
                 ) : refsList.length === 0 ? (
-                  <div className="text-[12px] text-neutral-500">{refsLoading ? "Loading referees…" : "No on-chain list available; fallback requires Etherscan V2 env."}</div>
+                  <div className="text-[12px] text-neutral-500">
+                    {refsLoading ? "Loading referees…" : "No on-chain list available in this build."}
+                  </div>
                 ) : (
                   <div className="grid gap-2 md:grid-cols-2">
-                    {refsList.slice(0, refsOpen ? refsList.length : Math.min(refsList.length, 25)).map((a) => (
-                      <div key={a} className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-900/40 px-3 py-2">
-                        <div className="font-mono text-[12px] text-neutral-200">{truncateAddr(a)}</div>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            const ok = await copyText(a);
-                            if (ok) {
-                              setStatus("Address copied ✅");
-                              window.setTimeout(() => setStatus(""), 900);
-                            }
-                          }}
-                          className="rounded-lg border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-extrabold text-neutral-100 hover:bg-neutral-800/60"
+                    {refsList
+                      .slice(0, refsOpen ? refsList.length : Math.min(refsList.length, 25))
+                      .map((a) => (
+                        <div
+                          key={a}
+                          className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-900/40 px-3 py-2"
                         >
-                          COPY
-                        </button>
-                      </div>
-                    ))}
+                          <div className="font-mono text-[12px] text-neutral-200">
+                            {truncateAddr(a)}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const ok = await copyText(a);
+                              if (ok) {
+                                setStatus("Address copied ✅");
+                                window.setTimeout(() => setStatus(""), 900);
+                              }
+                            }}
+                            className="rounded-lg border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-extrabold text-neutral-100 hover:bg-neutral-800/60"
+                          >
+                            COPY
+                          </button>
+                        </div>
+                      ))}
                   </div>
                 )}
               </div>
             </div>
           </div>
 
+          {/* Weekly referee stats */}
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-            <div className="text-sm font-semibold text-neutral-100">Lifetime totals</div>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-neutral-100">This week: referees performance</div>
+                <div className="mt-1 text-[12px] text-neutral-500">
+                  Computed from on-chain game logs within the current epoch window (cached locally).
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2">
+                  <span className="text-[11px] font-bold text-neutral-400">REF LIMIT</span>
+                  <input
+                    value={weeklyRefLimit}
+                    onChange={(e) => setWeeklyRefLimit(clamp(Number(e.target.value || "0"), 1, 500))}
+                    className="w-16 rounded-lg border border-neutral-800 bg-neutral-950 px-2 py-1 text-[12px] text-neutral-200 outline-none"
+                    type="number"
+                    min={1}
+                    max={500}
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void computeWeeklyRefStats()}
+                  disabled={!ready || !isConnected || wrongWalletForSelected || weeklyLoading || !epochWindow || refsCount === 0}
+                  className={[
+                    "rounded-xl border px-3 py-2 text-xs font-extrabold",
+                    !ready || !isConnected || wrongWalletForSelected || weeklyLoading || !epochWindow || refsCount === 0
+                      ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
+                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15",
+                  ].join(" ")}
+                  title={!epochWindow ? "Epoch not set yet" : refsCount === 0 ? "No referees" : undefined}
+                >
+                  {weeklyLoading ? "COMPUTING…" : weeklyStats ? "RECOMPUTE" : "COMPUTE"}
+                </button>
+              </div>
+            </div>
+
+            {weeklyErr ? (
+              <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">
+                {weeklyErr}
+              </div>
+            ) : null}
+
+            <div className="mt-3 grid gap-3 md:grid-cols-4">
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="text-[12px] text-neutral-400">Referees counted</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">
+                  {weeklyStats ? String(weeklyStats.refereesCount) : "—"}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="text-[12px] text-neutral-400">Volume (DTC)</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">
+                  {weeklyStats ? dtc(BigInt(weeklyStats.volume)) : "—"}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="text-[12px] text-neutral-400">Wins (DTC)</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">
+                  {weeklyStats ? dtc(BigInt(weeklyStats.wins)) : "—"}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
+                <div className="text-[12px] text-neutral-400">Losses (DTC)</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">
+                  {weeklyStats ? dtc(BigInt(weeklyStats.losses)) : "—"}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 text-[12px] text-neutral-500">
+              Net (wins − losses):{" "}
+              <span className="font-mono text-neutral-200">
+                {weeklyStats ? dtc(BigInt(weeklyStats.net)) : "—"}
+              </span>
+              {weeklyStats?.computedAt ? (
+                <span className="ml-2 text-neutral-600">
+                  (cached at {new Date(weeklyStats.computedAt).toLocaleString()})
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Lifetime totals (registry optional) */}
+          <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
+            <div className="text-sm font-semibold text-neutral-100">Lifetime totals (registry)</div>
 
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
@@ -1967,13 +2267,23 @@ export default function EarnPage() {
             </div>
 
             <div className="mt-3 text-[12px] text-neutral-500">
-              If these are still 0 while you have activity, the registry contract is not being updated by the game (it only stores bindings), or it stores totals under different storage/contract. In that case, totals must be computed from game events off-chain (indexer) or a dedicated on-chain aggregator.
+              Note: your current <span className="font-mono text-neutral-300">LilypadLeapGame</span> contract does not write referral totals into the registry
+              (it never calls <span className="font-mono text-neutral-300">ReferralRegistry.addTotals()</span>), so these lifetime totals will stay 0 unless you:
+              (A) update the game to call it, or (B) run an off-chain “rewards writer” bot that calls it.
             </div>
           </div>
 
-          {status ? <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-200">{status}</div> : null}
+          {status ? (
+            <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-200">
+              {status}
+            </div>
+          ) : null}
 
-          {err ? <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">{err}</div> : null}
+          {err ? (
+            <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">
+              {err}
+            </div>
+          ) : null}
         </div>
       </section>
     </main>
