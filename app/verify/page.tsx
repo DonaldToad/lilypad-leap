@@ -1,3 +1,4 @@
+// app/verify/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -196,10 +197,11 @@ type SettledFromTx = {
   txHash: Hex;
 } | null;
 
-type VerifyKey = "VERIFIED" | "NOT_VERIFIED" | "NO_SECRET" | "COMMIT_OK" | "MAX_HIT";
+type VerifyKey = "VERIFIED" | "NOT_VERIFIED" | "NO_SECRET" | "COMMIT_OK" | "CASHED_OUT" | "MAX_HIT";
 function verifyChipClasses(k: VerifyKey) {
+  if (k === "MAX_HIT") return "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25";
+  if (k === "CASHED_OUT") return "bg-amber-500/10 text-amber-200 ring-amber-500/25";
   if (k === "VERIFIED") return "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25";
-  if (k === "MAX_HIT") return "bg-fuchsia-500/10 text-fuchsia-200 ring-fuchsia-500/25";
   if (k === "NOT_VERIFIED") return "bg-red-500/10 text-red-200 ring-red-500/25";
   if (k === "COMMIT_OK") return "bg-sky-500/10 text-sky-200 ring-sky-500/25";
   return "bg-neutral-50/10 text-neutral-300 ring-neutral-200/20";
@@ -243,103 +245,44 @@ const SECRET_STORE_KEY = "lilypadLeapSecretsV1";
 function secretKey(chainId: number, game: Hex, gameId: Hex) {
   return `${chainId}:${game.toLowerCase()}:${gameId.toLowerCase()}`;
 }
-
-type SecretStore = Record<string, string | string[]>;
-
-function readStore(): SecretStore {
+function getStoredSecret(chainId: number, game: Hex, gameId: Hex): Hex | null {
   try {
     const raw = localStorage.getItem(SECRET_STORE_KEY);
-    if (!raw) return {};
-    const obj = JSON.parse(raw) as SecretStore;
-    if (!obj || typeof obj !== "object") return {};
-    return obj;
+    if (!raw) return null;
+    const obj = JSON.parse(raw) as Record<string, string>;
+    const v = obj[secretKey(chainId, game, gameId)];
+    if (v && isHex(v) && v.length === 66) return v as Hex;
+    return null;
   } catch {
-    return {};
+    return null;
   }
 }
-
-function writeStore(obj: SecretStore) {
+function setStoredSecret(chainId: number, game: Hex, gameId: Hex, secret: Hex) {
   try {
+    const raw = localStorage.getItem(SECRET_STORE_KEY);
+    const obj = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    obj[secretKey(chainId, game, gameId)] = secret;
     localStorage.setItem(SECRET_STORE_KEY, JSON.stringify(obj));
   } catch {}
-}
-
-function normalizeSecrets(v: unknown): Hex[] {
-  const out: Hex[] = [];
-  const pushIf = (x: unknown) => {
-    if (typeof x === "string" && isHex(x) && x.length === 66) out.push(x as Hex);
-  };
-  if (Array.isArray(v)) {
-    for (const x of v) pushIf(x);
-  } else {
-    pushIf(v);
-  }
-  const dedup: Hex[] = [];
-  const seen = new Set<string>();
-  for (const s of out) {
-    const k = s.toLowerCase();
-    if (!seen.has(k)) {
-      seen.add(k);
-      dedup.push(s);
-    }
-  }
-  return dedup;
-}
-
-function getStoredSecrets(chainId: number, game: Hex, gameId: Hex): Hex[] {
-  try {
-    const obj = readStore();
-    return normalizeSecrets(obj[secretKey(chainId, game, gameId)]);
-  } catch {
-    return [];
-  }
-}
-
-function getStoredSecretMatching(chainId: number, game: Hex, gameId: Hex, expectedCommit?: Hex): Hex | null {
-  const all = getStoredSecrets(chainId, game, gameId);
-  if (!all.length) return null;
-  if (!expectedCommit) return all[0] ?? null;
-  const want = expectedCommit.toLowerCase();
-  for (const s of all) {
-    const c = computeCommit(s).toLowerCase();
-    if (c === want) return s;
-  }
-  return null;
-}
-
-function addStoredSecret(chainId: number, game: Hex, gameId: Hex, secret: Hex) {
-  try {
-    const key = secretKey(chainId, game, gameId);
-    const obj = readStore();
-    const existing = normalizeSecrets(obj[key]);
-    const lower = new Set(existing.map((x) => x.toLowerCase()));
-    if (!lower.has(secret.toLowerCase())) existing.unshift(secret);
-    obj[key] = existing.slice(0, 6);
-    writeStore(obj);
-  } catch {}
-}
-
-function isMaxHitSettled(row: { settled: boolean; cashoutHop: number; payoutWei: bigint }) {
-  return row.settled && clampHop(row.cashoutHop) === 10 && row.payoutWei > 0n;
 }
 
 function autoVerifyRow(params: { seedVault: Hex; row: RecentGameRow; secret: Hex | null }) {
   const { seedVault, row, secret } = params;
 
-  if (!secret) {
-    if (isMaxHitSettled(row)) return { key: "MAX_HIT" as const, label: "MAX HIT 🎉" };
-    return { key: "NO_SECRET" as const, label: "NO SECRET" };
-  }
+  if (!secret) return { key: "NO_SECRET" as const, label: "NO SECRET" };
 
   const commit = computeCommit(secret);
   if (commit.toLowerCase() !== row.userCommit.toLowerCase()) {
-    if (isMaxHitSettled(row)) return { key: "MAX_HIT" as const, label: "MAX HIT 🎉" };
     return { key: "NOT_VERIFIED" as const, label: "NOT VERIFIED", detail: "commit mismatch" };
   }
 
   if (!row.settled) return { key: "COMMIT_OK" as const, label: "COMMIT OK" };
 
   const hop = normalizeSettledHop(true, row.cashoutHop, row.payoutWei, row.cashoutHop);
+
+  if (row.payoutWei > 0n && hop === 10) return { key: "MAX_HIT" as const, label: "MAX HIT" };
+  if (row.payoutWei > 0n && hop < 10) return { key: "CASHED_OUT" as const, label: "CASHED OUT" };
+
   const seed = computeSeed(secret, row.randAnchor, seedVault, row.gameId);
   const pBps = P_BPS[row.mode];
 
@@ -362,12 +305,9 @@ function autoVerifyRow(params: { seedVault: Hex; row: RecentGameRow; secret: Hex
   const wonMatches = won ? row.payoutWei > 0n : row.payoutWei === 0n;
   const ok = payoutMatches && wonMatches;
 
-  if (ok && hop === 10 && row.payoutWei > 0n) return { key: "VERIFIED" as const, label: "VERIFIED ✅" };
   return ok
     ? { key: "VERIFIED" as const, label: "VERIFIED" }
-    : isMaxHitSettled(row)
-      ? { key: "MAX_HIT" as const, label: "MAX HIT 🎉" }
-      : { key: "NOT_VERIFIED" as const, label: "NOT VERIFIED", detail: "payout/win mismatch" };
+    : { key: "NOT_VERIFIED" as const, label: "NOT VERIFIED", detail: "payout/win mismatch" };
 }
 
 async function findTxHashesForGame(params: {
@@ -453,6 +393,13 @@ const CHAIN_ICON: Record<number, string> = {
   59144: "/chains/linea.png",
   8453: "/chains/base.png",
 };
+
+function isCashedOutPre10(settled: boolean, hop: number, payoutWei: bigint) {
+  return settled && payoutWei > 0n && hop >= 1 && hop < 10;
+}
+function isMaxHitCashout(settled: boolean, hop: number, payoutWei: bigint) {
+  return settled && payoutWei > 0n && hop === 10;
+}
 
 export default function VerifyPage() {
   const { isConnected, address } = useAccount();
@@ -543,7 +490,6 @@ export default function VerifyPage() {
 
   const [result, setResult] = useState<null | {
     ok: boolean;
-    variant: "VERIFIED" | "NOT_VERIFIED" | "MAX_HIT";
     summary: string;
     bundleJson: string;
 
@@ -692,9 +638,8 @@ export default function VerifyPage() {
             payoutDtc: formatUnits(payoutWei, 18),
           };
 
-          const secret = ready ? getStoredSecretMatching(selectedChainId, gameAddress, gid, onUserCommit) : null;
-          const v =
-            seedVault !== (zeroAddress as Hex) ? autoVerifyRow({ seedVault, row: baseRow, secret }) : undefined;
+          const secret = ready ? getStoredSecret(selectedChainId, gameAddress, gid) : null;
+          const v = seedVault !== (zeroAddress as Hex) ? autoVerifyRow({ seedVault, row: baseRow, secret }) : undefined;
 
           return { ...baseRow, verify: v };
         })
@@ -703,16 +648,9 @@ export default function VerifyPage() {
       setRecent(rows);
 
       const verifiedCount = rows.filter((r) => r.verify?.key === "VERIFIED").length;
-      const maxHitCount = rows.filter((r) => r.verify?.key === "MAX_HIT").length;
       const noSecretCount = rows.filter((r) => r.verify?.key === "NO_SECRET").length;
 
-      const parts: string[] = [];
-      parts.push(`Loaded ${rows.length} games.`);
-      parts.push(`Verified: ${verifiedCount}.`);
-      if (maxHitCount) parts.push(`Max hit: ${maxHitCount}.`);
-      parts.push(`Missing secret: ${noSecretCount}.`);
-
-      setRecentStatus(parts.join(" "));
+      setRecentStatus(`Loaded ${rows.length} games. Verified: ${verifiedCount}. Missing secret: ${noSecretCount}.`);
       window.setTimeout(() => setRecentStatus(""), 1600);
     } catch (e: any) {
       setErr(e?.shortMessage || e?.message || "Failed to load recent games.");
@@ -740,6 +678,7 @@ export default function VerifyPage() {
       const receipt = await publicClient.getTransactionReceipt({ hash });
 
       let foundGameId: Hex | null = null;
+      let foundHop: number | null = null;
       let settled: SettledFromTx = null;
 
       for (const log of receipt.logs as Array<{ address: Hex; data: Hex; topics: Hex[] }>) {
@@ -768,9 +707,9 @@ export default function VerifyPage() {
             const payoutRaw = toUInt(BigInt((decoded.args as any).payout ?? 0));
             const wonRaw = Boolean((decoded.args as any).won);
 
-            const normalizedHop = wonRaw
-              ? normalizeSettledHop(true, hopRaw, payoutRaw, hopRaw)
-              : clampHop(hopRaw || 1);
+            foundHop = hopRaw;
+
+            const normalizedHop = wonRaw ? normalizeSettledHop(true, hopRaw, payoutRaw, hopRaw) : clampHop(hopRaw || 1);
 
             settled = {
               gameId: gid,
@@ -795,10 +734,8 @@ export default function VerifyPage() {
 
       if (settled) {
         setCashoutHop(settled.cashoutHop);
-        if (ready && settled.userCommitHash) {
-          const match = getStoredSecretMatching(selectedChainId, gameAddress, foundGameId, settled.userCommitHash);
-          if (match) setUserSecret(match);
-        }
+      } else if (foundHop != null) {
+        setCashoutHop(clampHop(foundHop));
       }
 
       setFromTx(settled);
@@ -883,14 +820,14 @@ export default function VerifyPage() {
       const hopMatchesIfSettled = !settled ? true : hop === normalizedOnHopForCompare;
 
       const payoutMatchesIfSettled = !settled ? true : payoutWei === onPayoutWei;
-      const wonMatchesIfSettled = !settled ? true : (won ? onPayoutWei > 0n : onPayoutWei === 0n);
+      const wonMatchesIfSettled = !settled ? true : won ? onPayoutWei > 0n : onPayoutWei === 0n;
 
       const txPayoutMatches = fromTx ? payoutWei === fromTx.payoutWei : undefined;
       const txWonMatches = fromTx ? won === fromTx.won : undefined;
       const txHopMatches = fromTx ? hop === fromTx.cashoutHop : undefined;
       const txCommitMatches = fromTx?.userCommitHash ? commit.toLowerCase() === fromTx.userCommitHash.toLowerCase() : undefined;
 
-      const ok =
+      const strictOk =
         commitMatches &&
         hopMatchesIfSettled &&
         payoutMatchesIfSettled &&
@@ -900,23 +837,30 @@ export default function VerifyPage() {
         (txHopMatches ?? true) &&
         (txCommitMatches ?? true);
 
-      const isMaxHit = settled && hop === 10 && onPayoutWei > 0n;
+      const cashoutPre10 = isCashedOutPre10(settled, hop, onPayoutWei);
+      const maxHit = isMaxHitCashout(settled, hop, onPayoutWei);
 
-      let variant: "VERIFIED" | "NOT_VERIFIED" | "MAX_HIT" = ok ? "VERIFIED" : "NOT_VERIFIED";
+      let ok = strictOk;
       let summary: string;
 
-      if (ok) {
+      if (maxHit && commitMatches && strictOk) {
+        summary = "MAX HIT CASHOUT!";
+        ok = true;
+      } else if (cashoutPre10 && commitMatches) {
+        summary = "Cashed Out 💰!";
+        ok = true;
+      } else if (strictOk) {
         summary = "✅ Verified. Your secret reproduces the exact on-chain outcome.";
-      } else if (isMaxHit) {
-        variant = "MAX_HIT";
-        summary = "🎉🐸 MAX HIT CASHOUT! Congrats on cashing out at hop 10!";
+        ok = true;
       } else if (!commitMatches) {
         summary = "❌ Not verified: secret → commit does not match stored on-chain userCommit.";
+        ok = false;
       } else {
         summary = "❌ Not verified: one or more checks failed (hop / payout / win-bust).";
+        ok = false;
       }
 
-      if (ready) addStoredSecret(selectedChainId, gameAddress, gid, secret);
+      if (ready) setStoredSecret(selectedChainId, gameAddress, gid, secret);
 
       const bundle = {
         chainId: selectedChainId,
@@ -925,12 +869,11 @@ export default function VerifyPage() {
         gameId: gid,
         userSecret: secret,
         cashoutHop: hop,
-        txHash: isHex(txHash.trim()) ? (txHash.trim() as Hex) : undefined,
+        txHash: isHex(txHash.trim()) ? txHash.trim() : undefined,
       };
 
       setResult({
         ok,
-        variant,
         summary,
         bundleJson: JSON.stringify(bundle, null, 2),
         chainId: selectedChainId,
@@ -987,12 +930,6 @@ export default function VerifyPage() {
     setGameId(row.gameId);
     setCashoutHop(row.settled && row.cashoutHop >= 1 ? clampHop(row.cashoutHop) : 1);
 
-    if (ready) {
-      const match = getStoredSecretMatching(selectedChainId, gameAddress, row.gameId, row.userCommit);
-      if (match) setUserSecret(match);
-      else setUserSecret("");
-    }
-
     if (ready && publicClient && canUseChain) {
       setRecentStatus("Finding tx…");
       const found = await findTxHashesForGame({
@@ -1017,6 +954,11 @@ export default function VerifyPage() {
         setTxHash("");
       }
       setRecentStatus("");
+    }
+
+    if (ready) {
+      const s = getStoredSecret(selectedChainId, gameAddress, row.gameId);
+      if (s) setUserSecret(s);
     }
   }
 
@@ -1053,7 +995,9 @@ export default function VerifyPage() {
       setCashoutHop(clampHop(bHop));
       setTxHash(isHex(bTx) ? bTx : "");
 
-      if (ready) addStoredSecret(bChainId, bGame as Hex, bGameId as Hex, bSecret as Hex);
+      if (ready) {
+        setStoredSecret(bChainId, bGame as Hex, bGameId as Hex, bSecret as Hex);
+      }
 
       setBundleStatus("Bundle imported and secret stored on this device.");
       window.setTimeout(() => setBundleStatus(""), 1500);
@@ -1066,17 +1010,110 @@ export default function VerifyPage() {
   const displayGame = gameAddress === (zeroAddress as Hex) ? "—" : gameAddress;
   const displayVault = seedVault === (zeroAddress as Hex) ? "—" : seedVault;
 
-  const headerChip = useMemo(() => {
-    if (!result) return { label: "Awaiting input", cls: "bg-neutral-50/10 text-neutral-200 ring-neutral-200/20" };
-    if (result.variant === "VERIFIED")
-      return { label: "VERIFIED", cls: "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25" };
-    if (result.variant === "MAX_HIT")
-      return { label: "MAX HIT 🎉", cls: "bg-fuchsia-500/10 text-fuchsia-200 ring-fuchsia-500/25" };
-    return { label: "NOT VERIFIED", cls: "bg-red-500/10 text-red-200 ring-red-500/25" };
-  }, [result]);
+  const resultHop = result?.computed.cashoutHop ?? 0;
+  const resultSettled = result?.onchain.settled ?? false;
+  const resultPayoutWei = result?.onchain.payoutWei ?? 0n;
+  const showCashedOut = !!result && isCashedOutPre10(resultSettled, resultHop, resultPayoutWei);
+  const showMaxHit = !!result && isMaxHitCashout(resultSettled, resultHop, resultPayoutWei);
+
+  const chipLabel = !result
+    ? "Awaiting input"
+    : showMaxHit
+    ? "MAX HIT"
+    : showCashedOut
+    ? "CASHED OUT"
+    : result.ok
+    ? "VERIFIED"
+    : "NOT VERIFIED";
+
+  const chipClasses = !result
+    ? "bg-neutral-50/10 text-neutral-200 ring-neutral-200/20"
+    : showMaxHit
+    ? "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25"
+    : showCashedOut
+    ? "bg-amber-500/10 text-amber-200 ring-amber-500/25"
+    : result.ok
+    ? "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25"
+    : "bg-red-500/10 text-red-200 ring-red-500/25";
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
+      <style jsx global>{`
+        @keyframes goldShine {
+          0% {
+            transform: translateX(-30%);
+            opacity: 0;
+          }
+          35% {
+            opacity: 0.9;
+          }
+          70% {
+            opacity: 0.6;
+          }
+          100% {
+            transform: translateX(130%);
+            opacity: 0;
+          }
+        }
+        @keyframes coinFloat {
+          0% {
+            transform: translateY(0px) rotate(0deg);
+            opacity: 0;
+          }
+          15% {
+            opacity: 0.9;
+          }
+          100% {
+            transform: translateY(-34px) rotate(18deg);
+            opacity: 0;
+          }
+        }
+        @keyframes maxGlowPulse {
+          0% {
+            opacity: 0.35;
+            transform: scale(1);
+          }
+          50% {
+            opacity: 0.65;
+            transform: scale(1.03);
+          }
+          100% {
+            opacity: 0.35;
+            transform: scale(1);
+          }
+        }
+        @keyframes maxAuraDrift {
+          0% {
+            opacity: 0.18;
+            transform: translateX(-10px) translateY(6px) scale(1);
+          }
+          50% {
+            opacity: 0.34;
+            transform: translateX(12px) translateY(-8px) scale(1.05);
+          }
+          100% {
+            opacity: 0.18;
+            transform: translateX(-10px) translateY(6px) scale(1);
+          }
+        }
+        @keyframes maxEdgeShimmer {
+          0% {
+            opacity: 0;
+            transform: translateX(-35%);
+          }
+          10% {
+            opacity: 0.65;
+          }
+          40% {
+            opacity: 0.35;
+          }
+          100% {
+            opacity: 0;
+            transform: translateX(135%);
+          }
+        }
+      `}</style>
+
       <TopNav playMode={"demo" as any} setPlayMode={() => {}} soundOn={true} setSoundOn={() => {}} controlsLocked={false} />
 
       <section className="mx-auto w-full max-w-6xl px-4 py-10">
@@ -1145,9 +1182,7 @@ export default function VerifyPage() {
                           : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800/60",
                       ].join(" ")}
                     >
-                      {iconSrc ? (
-                        <Image src={iconSrc} alt={`${c.name} icon`} width={16} height={16} className="h-4 w-4" />
-                      ) : null}
+                      {iconSrc ? <Image src={iconSrc} alt={`${c.name} icon`} width={16} height={16} className="h-4 w-4" /> : null}
                       {c.name}
                     </button>
                   );
@@ -1279,12 +1314,7 @@ export default function VerifyPage() {
                         </div>
 
                         <div className="flex flex-col items-end gap-2">
-                          <span
-                            className={[
-                              "rounded-full px-2 py-0.5 text-xs font-semibold ring-1",
-                              statusChipClasses(st),
-                            ].join(" ")}
-                          >
+                          <span className={["rounded-full px-2 py-0.5 text-xs font-semibold ring-1", statusChipClasses(st)].join(" ")}>
                             {st}
                           </span>
 
@@ -1399,8 +1429,8 @@ export default function VerifyPage() {
                   </div>
                 </div>
 
-                <span className={["rounded-full px-3 py-1 text-xs font-extrabold ring-1", headerChip.cls].join(" ")}>
-                  {headerChip.label}
+                <span className={["rounded-full px-3 py-1 text-xs font-extrabold ring-1", chipClasses].join(" ")}>
+                  {chipLabel}
                 </span>
               </div>
 
@@ -1410,17 +1440,116 @@ export default function VerifyPage() {
                 </div>
               ) : (
                 <>
-                  <div
-                    className={[
-                      "mt-4 rounded-2xl border p-4 text-sm",
-                      result.variant === "VERIFIED"
-                        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-100"
-                        : result.variant === "MAX_HIT"
-                          ? "border-fuchsia-500/20 bg-fuchsia-500/10 text-fuchsia-100"
-                          : "border-red-500/20 bg-red-500/10 text-red-100",
-                    ].join(" ")}
-                  >
-                    {result.summary}
+                  <div className="relative mt-4 overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4">
+                    {showCashedOut ? (
+                      <div className="relative overflow-hidden rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
+                        <div className="absolute inset-0 opacity-60">
+                          <div
+                            className="absolute -left-1/3 top-0 h-full w-1/2 bg-gradient-to-r from-transparent via-amber-200/50 to-transparent"
+                            style={{ animation: "goldShine 1.6s linear infinite" }}
+                          />
+                        </div>
+
+                        <div className="relative flex items-center justify-between gap-4">
+                          <div className="text-sm font-extrabold tracking-wide text-amber-100">Cashed Out 💰!</div>
+                          <div className="flex items-center gap-2 text-xs font-semibold text-amber-200">
+                            Hop {result.computed.cashoutHop}/10 •{" "}
+                            {Number(result.onchain.payoutDtc).toLocaleString("en-US", { maximumFractionDigits: 6 })} DTC
+                          </div>
+                        </div>
+
+                        <div className="pointer-events-none absolute inset-0">
+                          {Array.from({ length: 10 }).map((_, i) => (
+                            <span
+                              key={i}
+                              className="absolute text-lg"
+                              style={{
+                                left: `${6 + i * 9}%`,
+                                bottom: `-6px`,
+                                animation: `coinFloat ${1.1 + (i % 4) * 0.1}s ease-out infinite`,
+                                animationDelay: `${(i % 6) * 0.12}s`,
+                                filter: "drop-shadow(0 0 8px rgba(251, 191, 36, 0.35))",
+                              }}
+                              aria-hidden
+                            >
+                              🪙
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : showMaxHit ? (
+                      <div className="relative overflow-hidden rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+                        <div className="absolute inset-0 opacity-70">
+                          <div
+                            className="absolute -left-1/3 top-0 h-full w-1/2 bg-gradient-to-r from-transparent via-amber-200/45 to-transparent"
+                            style={{ animation: "goldShine 1.35s linear infinite" }}
+                          />
+                        </div>
+
+                        <div className="pointer-events-none absolute inset-0">
+                          <div
+                            className="absolute left-1/2 top-1/2 h-[260px] w-[260px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+                            style={{
+                              background:
+                                "radial-gradient(circle at 35% 35%, rgba(255,255,255,0.35), rgba(52,211,153,0.20) 40%, rgba(251,191,36,0.12) 70%, rgba(0,0,0,0) 74%)",
+                              filter:
+                                "blur(2px) drop-shadow(0 0 18px rgba(52, 211, 153, 0.20)) drop-shadow(0 0 22px rgba(251, 191, 36, 0.16))",
+                              animation: "maxGlowPulse 1.05s ease-in-out infinite",
+                            }}
+                            aria-hidden
+                          />
+                          <div
+                            className="absolute -left-10 -top-8 h-40 w-64 rounded-full"
+                            style={{
+                              background: "radial-gradient(circle at 35% 40%, rgba(52,211,153,0.28), rgba(0,0,0,0) 68%)",
+                              filter: "blur(10px)",
+                              animation: "maxAuraDrift 1.7s ease-in-out infinite",
+                            }}
+                            aria-hidden
+                          />
+                          <div
+                            className="absolute -right-16 -bottom-10 h-44 w-72 rounded-full"
+                            style={{
+                              background: "radial-gradient(circle at 55% 45%, rgba(251,191,36,0.22), rgba(0,0,0,0) 70%)",
+                              filter: "blur(12px)",
+                              animation: "maxAuraDrift 1.9s ease-in-out infinite",
+                            }}
+                            aria-hidden
+                          />
+                          <div
+                            className="absolute -left-1/3 top-0 h-full w-1/2"
+                            style={{
+                              background:
+                                "linear-gradient(90deg, rgba(0,0,0,0), rgba(255,255,255,0.22), rgba(52,211,153,0.14), rgba(251,191,36,0.10), rgba(0,0,0,0))",
+                              filter: "blur(1px)",
+                              animation: "maxEdgeShimmer 1.25s ease-in-out infinite",
+                            }}
+                            aria-hidden
+                          />
+                        </div>
+
+                        <div className="relative flex items-center justify-between gap-4">
+                          <div className="text-sm font-extrabold tracking-wide text-emerald-100">⚡ MAX HIT CASHOUT! 🏆💰</div>
+                          <div className="flex items-center gap-2 text-xs font-semibold text-emerald-200">
+                            Hop 10/10 •{" "}
+                            {Number(result.onchain.payoutDtc).toLocaleString("en-US", { maximumFractionDigits: 6 })} DTC
+                          </div>
+                        </div>
+
+                        <div className="relative mt-2 text-[11px] text-amber-200/80">Legendary run.</div>
+                      </div>
+                    ) : (
+                      <div
+                        className={[
+                          "rounded-2xl border p-4 text-sm",
+                          result.ok
+                            ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-100"
+                            : "border-red-500/20 bg-red-500/10 text-red-100",
+                        ].join(" ")}
+                      >
+                        {result.summary}
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-5 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4">
