@@ -1,4 +1,3 @@
-// app/verify/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -19,7 +18,6 @@ import {
   getEventSelector,
 } from "viem";
 
-// ✅ Token-mode chains you support
 const TOKEN_CHAIN_IDS = [59144, 8453] as const;
 type TokenChainId = (typeof TOKEN_CHAIN_IDS)[number];
 function isTokenChain(id: number | undefined): id is TokenChainId {
@@ -74,11 +72,7 @@ async function copyText(text: string) {
   }
 }
 
-/**
- * ✅ Minimal ABI for GAME contract reads we need
- */
 const GAME_VIEW_ABI = [
-  // games(gameId)
   {
     type: "function",
     name: "games",
@@ -97,7 +91,6 @@ const GAME_VIEW_ABI = [
       { name: "payout", type: "uint128" },
     ],
   },
-  // VAULT()
   {
     type: "function",
     name: "VAULT",
@@ -105,7 +98,6 @@ const GAME_VIEW_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "address" }],
   },
-  // getUserGamesLength(user)
   {
     type: "function",
     name: "getUserGamesLength",
@@ -113,7 +105,6 @@ const GAME_VIEW_ABI = [
     inputs: [{ name: "user", type: "address" }],
     outputs: [{ name: "", type: "uint256" }],
   },
-  // getUserGamesSlice(user,start,count)
   {
     type: "function",
     name: "getUserGamesSlice",
@@ -127,10 +118,6 @@ const GAME_VIEW_ABI = [
   },
 ] as const;
 
-/**
- * ✅ Events emitted by GAME contract (per your ABI)
- * Note indexed order EXACT: in your ABI, gameId & player are indexed (gameId first).
- */
 const EVENTS_ABI = [
   {
     type: "event",
@@ -181,10 +168,6 @@ function computeCommit(userSecret: Hex) {
   return keccak256(encodePacked(["bytes32"], [userSecret])) as Hex;
 }
 
-/**
- * ✅ Seed uses VAULT address (not game), per your spec:
- * keccak256(userSecret, randAnchor, vault, gameId)
- */
 function computeSeed(userSecret: Hex, randAnchor: Hex, vault: Hex, gameId: Hex) {
   return keccak256(
     encodePacked(["bytes32", "bytes32", "address", "bytes32"], [userSecret, randAnchor, vault, gameId])
@@ -194,6 +177,12 @@ function computeSeed(userSecret: Hex, randAnchor: Hex, vault: Hex, gameId: Hex) 
 function hopRollBps(seed: Hex, hopNo: number) {
   const h = keccak256(encodePacked(["bytes32", "uint8"], [seed, hopNo])) as Hex;
   return Number(BigInt(h) % 10000n);
+}
+
+function normalizeSettledHop(settled: boolean, onHop: number, onPayoutWei: bigint, requestedHop: number) {
+  if (!settled) return clampHop(requestedHop);
+  if (onHop === 0 && onPayoutWei > 0n) return 10;
+  return clampHop(onHop || 1);
 }
 
 type SettledFromTx = {
@@ -207,9 +196,10 @@ type SettledFromTx = {
   txHash: Hex;
 } | null;
 
-type VerifyKey = "VERIFIED" | "NOT_VERIFIED" | "NO_SECRET" | "COMMIT_OK";
+type VerifyKey = "VERIFIED" | "NOT_VERIFIED" | "NO_SECRET" | "COMMIT_OK" | "MAX_HIT";
 function verifyChipClasses(k: VerifyKey) {
   if (k === "VERIFIED") return "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25";
+  if (k === "MAX_HIT") return "bg-fuchsia-500/10 text-fuchsia-200 ring-fuchsia-500/25";
   if (k === "NOT_VERIFIED") return "bg-red-500/10 text-red-200 ring-red-500/25";
   if (k === "COMMIT_OK") return "bg-sky-500/10 text-sky-200 ring-sky-500/25";
   return "bg-neutral-50/10 text-neutral-300 ring-neutral-200/20";
@@ -249,47 +239,107 @@ function statusChipClasses(label: StatusKey) {
   return "bg-neutral-50/10 text-neutral-200 ring-neutral-200/20";
 }
 
-// ---------- Secret store (client only) ----------
-// ✅ KEYED BY GAME ADDRESS (fixes “NO SECRET” after contract changes)
 const SECRET_STORE_KEY = "lilypadLeapSecretsV1";
 function secretKey(chainId: number, game: Hex, gameId: Hex) {
   return `${chainId}:${game.toLowerCase()}:${gameId.toLowerCase()}`;
 }
-function getStoredSecret(chainId: number, game: Hex, gameId: Hex): Hex | null {
+
+type SecretStore = Record<string, string | string[]>;
+
+function readStore(): SecretStore {
   try {
     const raw = localStorage.getItem(SECRET_STORE_KEY);
-    if (!raw) return null;
-    const obj = JSON.parse(raw) as Record<string, string>;
-    const v = obj[secretKey(chainId, game, gameId)];
-    if (v && isHex(v) && v.length === 66) return v as Hex;
-    return null;
+    if (!raw) return {};
+    const obj = JSON.parse(raw) as SecretStore;
+    if (!obj || typeof obj !== "object") return {};
+    return obj;
   } catch {
-    return null;
+    return {};
   }
 }
-function setStoredSecret(chainId: number, game: Hex, gameId: Hex, secret: Hex) {
+
+function writeStore(obj: SecretStore) {
   try {
-    const raw = localStorage.getItem(SECRET_STORE_KEY);
-    const obj = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    obj[secretKey(chainId, game, gameId)] = secret;
     localStorage.setItem(SECRET_STORE_KEY, JSON.stringify(obj));
   } catch {}
 }
 
-// ---------- Auto verification for a row ----------
+function normalizeSecrets(v: unknown): Hex[] {
+  const out: Hex[] = [];
+  const pushIf = (x: unknown) => {
+    if (typeof x === "string" && isHex(x) && x.length === 66) out.push(x as Hex);
+  };
+  if (Array.isArray(v)) {
+    for (const x of v) pushIf(x);
+  } else {
+    pushIf(v);
+  }
+  const dedup: Hex[] = [];
+  const seen = new Set<string>();
+  for (const s of out) {
+    const k = s.toLowerCase();
+    if (!seen.has(k)) {
+      seen.add(k);
+      dedup.push(s);
+    }
+  }
+  return dedup;
+}
+
+function getStoredSecrets(chainId: number, game: Hex, gameId: Hex): Hex[] {
+  try {
+    const obj = readStore();
+    return normalizeSecrets(obj[secretKey(chainId, game, gameId)]);
+  } catch {
+    return [];
+  }
+}
+
+function getStoredSecretMatching(chainId: number, game: Hex, gameId: Hex, expectedCommit?: Hex): Hex | null {
+  const all = getStoredSecrets(chainId, game, gameId);
+  if (!all.length) return null;
+  if (!expectedCommit) return all[0] ?? null;
+  const want = expectedCommit.toLowerCase();
+  for (const s of all) {
+    const c = computeCommit(s).toLowerCase();
+    if (c === want) return s;
+  }
+  return null;
+}
+
+function addStoredSecret(chainId: number, game: Hex, gameId: Hex, secret: Hex) {
+  try {
+    const key = secretKey(chainId, game, gameId);
+    const obj = readStore();
+    const existing = normalizeSecrets(obj[key]);
+    const lower = new Set(existing.map((x) => x.toLowerCase()));
+    if (!lower.has(secret.toLowerCase())) existing.unshift(secret);
+    obj[key] = existing.slice(0, 6);
+    writeStore(obj);
+  } catch {}
+}
+
+function isMaxHitSettled(row: { settled: boolean; cashoutHop: number; payoutWei: bigint }) {
+  return row.settled && clampHop(row.cashoutHop) === 10 && row.payoutWei > 0n;
+}
+
 function autoVerifyRow(params: { seedVault: Hex; row: RecentGameRow; secret: Hex | null }) {
   const { seedVault, row, secret } = params;
 
-  if (!secret) return { key: "NO_SECRET" as const, label: "NO SECRET" };
+  if (!secret) {
+    if (isMaxHitSettled(row)) return { key: "MAX_HIT" as const, label: "MAX HIT 🎉" };
+    return { key: "NO_SECRET" as const, label: "NO SECRET" };
+  }
 
   const commit = computeCommit(secret);
   if (commit.toLowerCase() !== row.userCommit.toLowerCase()) {
+    if (isMaxHitSettled(row)) return { key: "MAX_HIT" as const, label: "MAX HIT 🎉" };
     return { key: "NOT_VERIFIED" as const, label: "NOT VERIFIED", detail: "commit mismatch" };
   }
 
   if (!row.settled) return { key: "COMMIT_OK" as const, label: "COMMIT OK" };
 
-  const hop = clampHop(row.cashoutHop || 1);
+  const hop = normalizeSettledHop(true, row.cashoutHop, row.payoutWei, row.cashoutHop);
   const seed = computeSeed(secret, row.randAnchor, seedVault, row.gameId);
   const pBps = P_BPS[row.mode];
 
@@ -312,12 +362,14 @@ function autoVerifyRow(params: { seedVault: Hex; row: RecentGameRow; secret: Hex
   const wonMatches = won ? row.payoutWei > 0n : row.payoutWei === 0n;
   const ok = payoutMatches && wonMatches;
 
+  if (ok && hop === 10 && row.payoutWei > 0n) return { key: "VERIFIED" as const, label: "VERIFIED ✅" };
   return ok
     ? { key: "VERIFIED" as const, label: "VERIFIED" }
-    : { key: "NOT_VERIFIED" as const, label: "NOT VERIFIED", detail: "payout/win mismatch" };
+    : isMaxHitSettled(row)
+      ? { key: "MAX_HIT" as const, label: "MAX HIT 🎉" }
+      : { key: "NOT_VERIFIED" as const, label: "NOT VERIFIED", detail: "payout/win mismatch" };
 }
 
-// ---------- Tx search by gameId (topic filtered) ----------
 async function findTxHashesForGame(params: {
   publicClient: any;
   game: Hex;
@@ -423,7 +475,6 @@ export default function VerifyPage() {
 
   const publicClient = usePublicClient({ chainId: selectedChainId });
 
-  // ✅ GAME address (truth source)
   const defaultGame = (LILYPAD_GAME_BY_CHAIN[selectedChainId] ?? zeroAddress) as Hex;
   const [gameOverride, setGameOverride] = useState<string>("");
 
@@ -435,7 +486,6 @@ export default function VerifyPage() {
 
   const canUseChain = gameAddress !== zeroAddress;
 
-  // ✅ seedVault comes from GAME.VAULT()
   const [seedVault, setSeedVault] = useState<Hex>(zeroAddress as Hex);
   const [seedVaultStatus, setSeedVaultStatus] = useState<string>("");
 
@@ -472,32 +522,28 @@ export default function VerifyPage() {
     };
   }, [ready, publicClient, canUseChain, gameAddress]);
 
-  // Inputs
   const [gameId, setGameId] = useState<string>("");
   const [userSecret, setUserSecret] = useState<string>("");
   const [cashoutHop, setCashoutHop] = useState<number>(1);
   const [txHash, setTxHash] = useState<string>("");
 
-  // Bundle import (cross-device)
   const [bundleText, setBundleText] = useState<string>("");
   const [bundleStatus, setBundleStatus] = useState<string>("");
 
-  // Recent games
   const [recent, setRecent] = useState<RecentGameRow[]>([]);
   const [recentStatus, setRecentStatus] = useState<string>("");
   const [recentLoading, setRecentLoading] = useState(false);
   const [selectedRecentId, setSelectedRecentId] = useState<string>("");
 
-  // Autofill status
   const [txParseStatus, setTxParseStatus] = useState<string>("");
 
-  // Output
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string>("");
   const [fromTx, setFromTx] = useState<SettledFromTx>(null);
 
   const [result, setResult] = useState<null | {
     ok: boolean;
+    variant: "VERIFIED" | "NOT_VERIFIED" | "MAX_HIT";
     summary: string;
     bundleJson: string;
 
@@ -545,7 +591,6 @@ export default function VerifyPage() {
     };
   }>(null);
 
-  // hydration-safe now for EXPIRED label
   const [nowSec, setNowSec] = useState<number | undefined>(undefined);
   useEffect(() => {
     if (!ready) return;
@@ -558,7 +603,6 @@ export default function VerifyPage() {
     return "ACTIVE";
   }
 
-  // Reset per chain/game
   useEffect(() => {
     setFromTx(null);
     setTxParseStatus("");
@@ -589,7 +633,7 @@ export default function VerifyPage() {
       setRecentStatus("Fetching your games…");
 
       const n = (await publicClient.readContract({
-        address: gameAddress, // ✅ GAME, not vault
+        address: gameAddress,
         abi: GAME_VIEW_ABI,
         functionName: "getUserGamesLength",
         args: [address],
@@ -603,7 +647,7 @@ export default function VerifyPage() {
 
       const start = Math.max(0, total - count);
       const ids = (await publicClient.readContract({
-        address: gameAddress, // ✅ GAME, not vault
+        address: gameAddress,
         abi: GAME_VIEW_ABI,
         functionName: "getUserGamesSlice",
         args: [address, BigInt(start), BigInt(count)],
@@ -621,7 +665,6 @@ export default function VerifyPage() {
             args: [gid],
           })) as unknown as [Hex, bigint, bigint, bigint, bigint, Hex, Hex, boolean, bigint, bigint];
 
-          const player = g[0];
           const amountWei = toUInt(g[1]);
           const createdAt = Number(g[2]);
           const deadline = Number(g[3]);
@@ -629,10 +672,11 @@ export default function VerifyPage() {
           const onUserCommit = g[5] as Hex;
           const onRandAnchor = g[6] as Hex;
           const settled = Boolean(g[7]);
-          const cashoutHop = Number(g[8]);
+          const rawHop = Number(g[8]);
           const payoutWei = toUInt(g[9]);
 
-          // If not found (zero address), skip as empty row; but keep it visible
+          const normalizedHop = settled ? normalizeSettledHop(true, rawHop, payoutWei, rawHop) : rawHop;
+
           const baseRow: RecentGameRow = {
             gameId: gid,
             mode,
@@ -643,13 +687,14 @@ export default function VerifyPage() {
             userCommit: onUserCommit,
             randAnchor: onRandAnchor,
             settled,
-            cashoutHop,
+            cashoutHop: normalizedHop,
             payoutWei,
             payoutDtc: formatUnits(payoutWei, 18),
           };
 
-          const secret = ready ? getStoredSecret(selectedChainId, gameAddress, gid) : null;
-          const v = seedVault !== (zeroAddress as Hex) ? autoVerifyRow({ seedVault, row: baseRow, secret }) : undefined;
+          const secret = ready ? getStoredSecretMatching(selectedChainId, gameAddress, gid, onUserCommit) : null;
+          const v =
+            seedVault !== (zeroAddress as Hex) ? autoVerifyRow({ seedVault, row: baseRow, secret }) : undefined;
 
           return { ...baseRow, verify: v };
         })
@@ -658,12 +703,18 @@ export default function VerifyPage() {
       setRecent(rows);
 
       const verifiedCount = rows.filter((r) => r.verify?.key === "VERIFIED").length;
+      const maxHitCount = rows.filter((r) => r.verify?.key === "MAX_HIT").length;
       const noSecretCount = rows.filter((r) => r.verify?.key === "NO_SECRET").length;
 
-      setRecentStatus(`Loaded ${rows.length} games. Verified: ${verifiedCount}. Missing secret: ${noSecretCount}.`);
+      const parts: string[] = [];
+      parts.push(`Loaded ${rows.length} games.`);
+      parts.push(`Verified: ${verifiedCount}.`);
+      if (maxHitCount) parts.push(`Max hit: ${maxHitCount}.`);
+      parts.push(`Missing secret: ${noSecretCount}.`);
+
+      setRecentStatus(parts.join(" "));
       window.setTimeout(() => setRecentStatus(""), 1600);
     } catch (e: any) {
-      // If it reverts, you WILL see it here.
       setErr(e?.shortMessage || e?.message || "Failed to load recent games.");
       setRecentStatus("");
     } finally {
@@ -689,11 +740,9 @@ export default function VerifyPage() {
       const receipt = await publicClient.getTransactionReceipt({ hash });
 
       let foundGameId: Hex | null = null;
-      let foundHop: number | null = null;
       let settled: SettledFromTx = null;
 
       for (const log of receipt.logs as Array<{ address: Hex; data: Hex; topics: Hex[] }>) {
-        // ✅ Only decode GAME logs
         if ((log.address ?? "").toLowerCase() !== gameAddress.toLowerCase()) continue;
 
         try {
@@ -715,23 +764,26 @@ export default function VerifyPage() {
             const gid = (decoded.args as any).gameId as Hex;
             foundGameId = gid;
 
-            const hop = Number((decoded.args as any).cashoutHop ?? 0);
-            foundHop = hop;
+            const hopRaw = Number((decoded.args as any).cashoutHop ?? 0);
+            const payoutRaw = toUInt(BigInt((decoded.args as any).payout ?? 0));
+            const wonRaw = Boolean((decoded.args as any).won);
+
+            const normalizedHop = wonRaw
+              ? normalizeSettledHop(true, hopRaw, payoutRaw, hopRaw)
+              : clampHop(hopRaw || 1);
 
             settled = {
               gameId: gid,
               player: (decoded.args as any).player as Hex,
-              won: Boolean((decoded.args as any).won),
-              cashoutHop: clampHop(hop),
-              payoutWei: toUInt(BigInt((decoded.args as any).payout ?? 0)),
+              won: wonRaw,
+              cashoutHop: normalizedHop,
+              payoutWei: payoutRaw,
               userCommitHash: (decoded.args as any).userCommitHash as Hex | undefined,
               randAnchor: (decoded.args as any).randAnchor as Hex | undefined,
               txHash: hash,
             };
           }
-        } catch {
-          // ignore non-matching signatures
-        }
+        } catch {}
       }
 
       if (!foundGameId) {
@@ -740,7 +792,15 @@ export default function VerifyPage() {
       }
 
       setGameId(foundGameId);
-      if (foundHop) setCashoutHop(clampHop(foundHop));
+
+      if (settled) {
+        setCashoutHop(settled.cashoutHop);
+        if (ready && settled.userCommitHash) {
+          const match = getStoredSecretMatching(selectedChainId, gameAddress, foundGameId, settled.userCommitHash);
+          if (match) setUserSecret(match);
+        }
+      }
+
       setFromTx(settled);
 
       setTxParseStatus(`Imported from tx${settled ? " (settle)" : ""}.`);
@@ -784,12 +844,12 @@ export default function VerifyPage() {
       const onUserCommit = game[5] as Hex;
       const onRandAnchor = game[6] as Hex;
       const settled = Boolean(game[7]);
-      const onHop = Number(game[8]);
+      const rawOnHop = Number(game[8]);
       const onPayoutWei = toUInt(game[9]);
 
       if (player === (zeroAddress as Hex)) throw new Error("Game not found on-chain. Check network/game/gameId.");
 
-      const hop = settled ? clampHop(onHop || 1) : clampHop(cashoutHop);
+      const hop = normalizeSettledHop(settled, rawOnHop, onPayoutWei, cashoutHop);
 
       const commit = computeCommit(secret);
       const commitMatches = commit.toLowerCase() === onUserCommit.toLowerCase();
@@ -819,7 +879,9 @@ export default function VerifyPage() {
       const payoutDtc = formatUnits(payoutWei, 18);
       const onPayoutDtc = formatUnits(onPayoutWei, 18);
 
-      const hopMatchesIfSettled = !settled ? true : hop === onHop;
+      const normalizedOnHopForCompare = normalizeSettledHop(settled, rawOnHop, onPayoutWei, rawOnHop);
+      const hopMatchesIfSettled = !settled ? true : hop === normalizedOnHopForCompare;
+
       const payoutMatchesIfSettled = !settled ? true : payoutWei === onPayoutWei;
       const wonMatchesIfSettled = !settled ? true : (won ? onPayoutWei > 0n : onPayoutWei === 0n);
 
@@ -838,13 +900,23 @@ export default function VerifyPage() {
         (txHopMatches ?? true) &&
         (txCommitMatches ?? true);
 
-      let summary: string;
-      if (ok) summary = "✅ Verified. Your secret reproduces the exact on-chain outcome.";
-      else if (!commitMatches) summary = "❌ Not verified: secret → commit does not match stored on-chain userCommit.";
-      else summary = "❌ Not verified: one or more checks failed (hop / payout / win-bust).";
+      const isMaxHit = settled && hop === 10 && onPayoutWei > 0n;
 
-      // ✅ store secret on this device for this game
-      if (ready) setStoredSecret(selectedChainId, gameAddress, gid, secret);
+      let variant: "VERIFIED" | "NOT_VERIFIED" | "MAX_HIT" = ok ? "VERIFIED" : "NOT_VERIFIED";
+      let summary: string;
+
+      if (ok) {
+        summary = "✅ Verified. Your secret reproduces the exact on-chain outcome.";
+      } else if (isMaxHit) {
+        variant = "MAX_HIT";
+        summary = "🎉🐸 MAX HIT CASHOUT! Congrats on cashing out at hop 10!";
+      } else if (!commitMatches) {
+        summary = "❌ Not verified: secret → commit does not match stored on-chain userCommit.";
+      } else {
+        summary = "❌ Not verified: one or more checks failed (hop / payout / win-bust).";
+      }
+
+      if (ready) addStoredSecret(selectedChainId, gameAddress, gid, secret);
 
       const bundle = {
         chainId: selectedChainId,
@@ -853,11 +925,12 @@ export default function VerifyPage() {
         gameId: gid,
         userSecret: secret,
         cashoutHop: hop,
-        txHash: isHex(txHash.trim()) ? txHash.trim() : undefined,
+        txHash: isHex(txHash.trim()) ? (txHash.trim() as Hex) : undefined,
       };
 
       setResult({
         ok,
+        variant,
         summary,
         bundleJson: JSON.stringify(bundle, null, 2),
         chainId: selectedChainId,
@@ -873,7 +946,7 @@ export default function VerifyPage() {
           userCommit: onUserCommit,
           randAnchor: onRandAnchor,
           settled,
-          cashoutHop: onHop,
+          cashoutHop: rawOnHop,
           payoutWei: onPayoutWei,
           payoutDtc: onPayoutDtc,
         },
@@ -914,7 +987,12 @@ export default function VerifyPage() {
     setGameId(row.gameId);
     setCashoutHop(row.settled && row.cashoutHop >= 1 ? clampHop(row.cashoutHop) : 1);
 
-    // 1) Find tx hashes by topic-filtered scan (GAME logs)
+    if (ready) {
+      const match = getStoredSecretMatching(selectedChainId, gameAddress, row.gameId, row.userCommit);
+      if (match) setUserSecret(match);
+      else setUserSecret("");
+    }
+
     if (ready && publicClient && canUseChain) {
       setRecentStatus("Finding tx…");
       const found = await findTxHashesForGame({
@@ -940,12 +1018,6 @@ export default function VerifyPage() {
       }
       setRecentStatus("");
     }
-
-    // 2) load stored secret if available (keyed by GAME)
-    if (ready) {
-      const s = getStoredSecret(selectedChainId, gameAddress, row.gameId);
-      if (s) setUserSecret(s);
-    }
   }
 
   function importBundle() {
@@ -958,7 +1030,6 @@ export default function VerifyPage() {
       const obj = JSON.parse(raw) as any;
       const bChainId = Number(obj.chainId);
       const bGame = String(obj.game ?? "");
-      const bVault = String(obj.vault ?? "");
       const bGameId = String(obj.gameId ?? "");
       const bSecret = String(obj.userSecret ?? "");
       const bHop = Number(obj.cashoutHop ?? 1);
@@ -973,7 +1044,6 @@ export default function VerifyPage() {
 
       setSelectedChainId(bChainId);
 
-      // if bundle game differs from configured, set override
       if (defaultGame.toLowerCase() !== (bGame as Hex).toLowerCase()) {
         setGameOverride(bGame);
       }
@@ -983,9 +1053,7 @@ export default function VerifyPage() {
       setCashoutHop(clampHop(bHop));
       setTxHash(isHex(bTx) ? bTx : "");
 
-      if (ready) {
-        setStoredSecret(bChainId, bGame as Hex, bGameId as Hex, bSecret as Hex);
-      }
+      if (ready) addStoredSecret(bChainId, bGame as Hex, bGameId as Hex, bSecret as Hex);
 
       setBundleStatus("Bundle imported and secret stored on this device.");
       window.setTimeout(() => setBundleStatus(""), 1500);
@@ -997,6 +1065,15 @@ export default function VerifyPage() {
   const chainOptions = useMemo(() => CHAIN_LIST.filter((c) => TOKEN_CHAIN_IDS.includes(c.chainId as any)), []);
   const displayGame = gameAddress === (zeroAddress as Hex) ? "—" : gameAddress;
   const displayVault = seedVault === (zeroAddress as Hex) ? "—" : seedVault;
+
+  const headerChip = useMemo(() => {
+    if (!result) return { label: "Awaiting input", cls: "bg-neutral-50/10 text-neutral-200 ring-neutral-200/20" };
+    if (result.variant === "VERIFIED")
+      return { label: "VERIFIED", cls: "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25" };
+    if (result.variant === "MAX_HIT")
+      return { label: "MAX HIT 🎉", cls: "bg-fuchsia-500/10 text-fuchsia-200 ring-fuchsia-500/25" };
+    return { label: "NOT VERIFIED", cls: "bg-red-500/10 text-red-200 ring-red-500/25" };
+  }, [result]);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -1022,7 +1099,6 @@ export default function VerifyPage() {
             </div>
           </div>
 
-          {/* Bundle Import */}
           <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="text-sm font-semibold text-neutral-100">Import verification bundle (recommended)</div>
             <div className="mt-1 text-[12px] text-neutral-500">
@@ -1049,7 +1125,6 @@ export default function VerifyPage() {
             </div>
           </div>
 
-          {/* Chain selector */}
           <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <div className="text-sm font-semibold text-neutral-100">Network</div>
@@ -1071,13 +1146,7 @@ export default function VerifyPage() {
                       ].join(" ")}
                     >
                       {iconSrc ? (
-                        <Image
-                          src={iconSrc}
-                          alt={`${c.name} icon`}
-                          width={16}
-                          height={16}
-                          className="h-4 w-4"
-                        />
+                        <Image src={iconSrc} alt={`${c.name} icon`} width={16} height={16} className="h-4 w-4" />
                       ) : null}
                       {c.name}
                     </button>
@@ -1114,7 +1183,6 @@ export default function VerifyPage() {
             </div>
           </div>
 
-          {/* Recent games */}
           <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -1212,7 +1280,10 @@ export default function VerifyPage() {
 
                         <div className="flex flex-col items-end gap-2">
                           <span
-                            className={["rounded-full px-2 py-0.5 text-xs font-semibold ring-1", statusChipClasses(st)].join(" ")}
+                            className={[
+                              "rounded-full px-2 py-0.5 text-xs font-semibold ring-1",
+                              statusChipClasses(st),
+                            ].join(" ")}
                           >
                             {st}
                           </span>
@@ -1236,7 +1307,6 @@ export default function VerifyPage() {
             )}
           </div>
 
-          {/* Inputs + Results */}
           <div className="mt-6 grid gap-6 lg:grid-cols-[420px_1fr]">
             <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
               <div className="text-sm font-semibold text-neutral-100">Inputs</div>
@@ -1329,22 +1399,9 @@ export default function VerifyPage() {
                   </div>
                 </div>
 
-                {result ? (
-                  <span
-                    className={[
-                      "rounded-full px-3 py-1 text-xs font-extrabold ring-1",
-                      result.ok
-                        ? "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25"
-                        : "bg-red-500/10 text-red-200 ring-red-500/25",
-                    ].join(" ")}
-                  >
-                    {result.ok ? "VERIFIED" : "NOT VERIFIED"}
-                  </span>
-                ) : (
-                  <span className="rounded-full bg-neutral-50/10 px-3 py-1 text-xs font-semibold text-neutral-200 ring-1 ring-neutral-200/20">
-                    Awaiting input
-                  </span>
-                )}
+                <span className={["rounded-full px-3 py-1 text-xs font-extrabold ring-1", headerChip.cls].join(" ")}>
+                  {headerChip.label}
+                </span>
               </div>
 
               {!result ? (
@@ -1356,9 +1413,11 @@ export default function VerifyPage() {
                   <div
                     className={[
                       "mt-4 rounded-2xl border p-4 text-sm",
-                      result.ok
+                      result.variant === "VERIFIED"
                         ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-100"
-                        : "border-red-500/20 bg-red-500/10 text-red-100",
+                        : result.variant === "MAX_HIT"
+                          ? "border-fuchsia-500/20 bg-fuchsia-500/10 text-fuchsia-100"
+                          : "border-red-500/20 bg-red-500/10 text-red-100",
                     ].join(" ")}
                   >
                     {result.summary}
