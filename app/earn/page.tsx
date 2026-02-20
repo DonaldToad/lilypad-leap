@@ -541,15 +541,11 @@ async function shareTextOrTweet(text: string) {
     typeof navigator !== "undefined" &&
     /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
 
-  // Desktop: Twitter intent is the most reliable way to preserve text
-  // Mobile: allow native share, but send ONLY text (X often drops `url` field)
   if (isMobile && (navigator as any)?.share) {
     try {
-      await (navigator as any).share({ text }); // <-- ONLY text
+      await (navigator as any).share({ text });
       return { ok: true as const, mode: "native" as const };
-    } catch {
-      // fall through to twitter intent
-    }
+    } catch {}
   }
 
   const tweetText = text.replace(SHARE_URL, "").trim();
@@ -588,7 +584,10 @@ export default function EarnPage() {
     if (isTokenChain(walletChainId)) setSelectedChainId(walletChainId);
   }, [ready, walletChainId]);
 
-  const selectedChain = useMemo(() => chains.find((c) => c.chainId === selectedChainId) ?? chains[0], [chains, selectedChainId]);
+  const selectedChain = useMemo(
+    () => chains.find((c) => c.chainId === selectedChainId) ?? chains[0],
+    [chains, selectedChainId]
+  );
 
   const effectiveChainId = ready ? selectedChainId : undefined;
 
@@ -626,7 +625,8 @@ export default function EarnPage() {
     const baseFallback = ["https://base-rpc.publicnode.com", "https://1rpc.io/base", "https://rpc.ankr.com/base"];
     const lineaFallback = ["https://linea-rpc.publicnode.com", "https://rpc.linea.build", "https://1rpc.io/linea"];
 
-    const rawUrls = chainId === 8453 ? [alchemyBase, ...baseFallback] : chainId === 59144 ? [infuraLinea, ...lineaFallback] : [];
+    const rawUrls =
+      chainId === 8453 ? [alchemyBase, ...baseFallback] : chainId === 59144 ? [infuraLinea, ...lineaFallback] : [];
     const urls = normalizeRpcList(rawUrls).filter((u) => u && !isBadRpc(u));
 
     const chainObj = chainId === 8453 ? base : chainId === 59144 ? linea : undefined;
@@ -1794,8 +1794,6 @@ export default function EarnPage() {
     refreshLiveEpochEstimate,
   ]);
 
-  const ownerFundingLabelResolved = ownerFundingLabel;
-
   const canShare = useMemo(() => {
     if (!ready || !isConnected || !address) return false;
     if (!myShareableCode) return false;
@@ -1827,6 +1825,8 @@ export default function EarnPage() {
       setShareBusy(false);
     }
   }
+
+  const ownerFundingLabelResolved = ownerFundingLabel;
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -2324,76 +2324,6 @@ claim(epochId):
                 <div className="text-[12px] text-neutral-400">Epoch boundary (UTC)</div>
                 <div className="mt-1 font-mono text-[11px] text-neutral-200">{finalizableAtIso}</div>
               </div>
-            </div>
-
-            <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-sm font-semibold text-neutral-100">Last epoch credit check</div>
-                <button
-                  type="button"
-                  onClick={() => void refreshClaimEpochComputed()}
-                  disabled={!ready || !readsEnabled}
-                  className={[
-                    "rounded-lg border px-2 py-1 text-[11px] font-extrabold",
-                    !ready || !readsEnabled
-                      ? "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500"
-                      : "border-neutral-800 bg-neutral-900 text-neutral-100 hover:bg-neutral-800/60",
-                  ].join(" ")}
-                >
-                  REFRESH CHECK
-                </button>
-              </div>
-
-              <div className="mt-2 grid gap-3 md:grid-cols-4">
-                <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Registry epochBaseOf</div>
-                  <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(myEpochBaseRegistry)}</div>
-                  <div className="mt-1 text-[11px] text-neutral-500">claim epoch</div>
-                </div>
-
-                <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Transfer-based base</div>
-                  <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(claimEpochBaseComputed)}</div>
-                  <div className="mt-1 text-[11px] text-neutral-500">vault transfers</div>
-                </div>
-
-                <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Registry rewards est.</div>
-                  <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(estRewardsRegistry)}</div>
-                  <div className="mt-1 text-[11px] text-neutral-500">claimable if finalized</div>
-                </div>
-
-                <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Transfer rewards est.</div>
-                  <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(claimEpochRewardsComputed)}</div>
-                  <div className="mt-1 text-[11px] text-neutral-500">diagnostic</div>
-                </div>
-              </div>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-neutral-500">
-                <span>Claim epoch status:</span>
-                {claimEpochFinalized ? <Pill tone="good">Finalized</Pill> : <Pill tone="warn">Not finalized</Pill>}
-                <span className="ml-2">Claimed:</span>
-                {alreadyClaimed ? <Pill tone="good">Yes</Pill> : <Pill tone="warn">No</Pill>}
-                {claimMismatch ? <Pill tone="bad">Mismatch</Pill> : <Pill tone="good">Match</Pill>}
-                {!claimable && baseDisabledReason ? <span className="text-neutral-600">({baseDisabledReason})</span> : null}
-              </div>
-
-              {claimEpochComputedStatus ? (
-                <div className="mt-2 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-300">{claimEpochComputedStatus}</div>
-              ) : null}
-
-              {claimMismatch ? (
-                <div className="mt-2 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">
-                  Registry credit does not match transfer-based diagnostic for the claim epoch. Claim uses registry numbers. Do not finalize until this matches.
-                </div>
-              ) : null}
-
-              {potLow ? (
-                <div className="mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-                  Registry pot low: registry DTC balance is below your claim amount. Fund the registry or reduce pending obligations before claiming.
-                </div>
-              ) : null}
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-neutral-500">
