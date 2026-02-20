@@ -1,31 +1,37 @@
-import { createPublicClient, fallback, http, type PublicClient } from "viem";
+import { createPublicClient, fallback, http } from "viem";
 import { base, linea } from "viem/chains";
 
 export const RPC_URLS_BY_CHAIN: Record<number, string[]> = {
-  59144: [
-    "https://rpc.linea.build",
-    "https://linea.drpc.org",
-  ],
-  8453: [
-    "https://rpc.ankr.com/base",
-    "https://base.drpc.org",
-  ],
+  8453: ["https://base-rpc.publicnode.com", "https://1rpc.io/base", "https://rpc.ankr.com/base"],
+  59144: ["https://linea-rpc.publicnode.com", "https://rpc.linea.build", "https://1rpc.io/linea"],
 };
 
-export function makePublicClient(chainId: number): PublicClient {
-  if (chainId === 59144) {
-    return createPublicClient({
-      chain: linea,
-      transport: fallback(RPC_URLS_BY_CHAIN[59144].map((u) => http(u, { timeout: 15_000, retryCount: 0 }))),
-    });
+function normalizeRpcList(urls: string[]) {
+  const cleaned = urls.map((u) => (u || "").trim()).filter(Boolean);
+  const uniq: string[] = [];
+  const seen = new Set<string>();
+  for (const u of cleaned) {
+    const k = u.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(u);
   }
+  return uniq;
+}
 
-  if (chainId === 8453) {
-    return createPublicClient({
-      chain: base,
-      transport: fallback(RPC_URLS_BY_CHAIN[8453].map((u) => http(u, { timeout: 15_000, retryCount: 0 }))),
-    });
-  }
+export function getPublicClient(chainId: number) {
+  const urls = normalizeRpcList(RPC_URLS_BY_CHAIN[chainId] || []);
+  if (!urls.length) return null;
 
-  throw new Error(`Unsupported chainId: ${chainId}`);
+  const chainObj = chainId === 8453 ? base : chainId === 59144 ? linea : null;
+  if (!chainObj) return null;
+
+  const transports = urls.map((u) => http(u, { timeout: 15_000, retryCount: 0 }));
+  const transport = transports.length === 1 ? transports[0] : fallback(transports, { rank: false });
+
+  return createPublicClient({
+    chain: chainObj,
+    transport,
+    batch: { multicall: true },
+  }) as any;
 }
