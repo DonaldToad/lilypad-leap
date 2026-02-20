@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "build": "next build"
+    
   },
   "dependencies": {
     "@relayprotocol/relay-kit-ui": "^7.1.0",
@@ -30,4 +32,3 @@
     "tailwindcss": "^4",
     "typescript": "^5"
   }
-}

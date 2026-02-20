@@ -1,0 +1,5 @@
+name = "lilypad-leap"
+compatibility_date = "2026-02-20"
+
+[vars]
+DTC_COINGECKO_ID = "donald-toad-coin"
