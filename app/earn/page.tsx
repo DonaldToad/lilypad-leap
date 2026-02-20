@@ -565,33 +565,6 @@ async function shareTextOrTweet(text: string) {
   }
 }
 
-async function onShare() {
-  setErr("");
-  setStatus("");
-  if (!canShare) {
-    setErr("Register your code first, then share.");
-    return;
-  }
-  if (shareBusy) return;
-
-  try {
-    setShareBusy(true);
-    const msg = buildShareMessage(myShareableCode);
-    const r = await shareTextOrTweet(msg);
-
-    if (r.ok) {
-      setStatus(r.mode === "native" ? "Share opened ✅" : "Tweet draft opened ✅");
-      window.setTimeout(() => setStatus(""), 1200);
-    } else {
-      setErr("Share failed.");
-    }
-  } catch (e: any) {
-    setErr(e?.shortMessage || e?.message || "Share failed.");
-  } finally {
-    setShareBusy(false);
-  }
-}
-
 export default function EarnPage() {
   const { address, isConnected } = useAccount();
   const walletChainId = useChainId();
