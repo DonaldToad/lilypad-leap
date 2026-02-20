@@ -1092,19 +1092,19 @@ export default function EarnPage() {
     const pc = publicClient as any;
 
     try {
-      const res = await withBackoff(
-        () =>
-          pc.multicall({
-            allowFailure: true,
-            contracts: [
-              { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "currentEpoch", args: [] },
-              { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "BPS_DENOM", args: [] },
-              { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "getRefBps", args: [address as `0x${string}`] },
-              { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "WEEK", args: [] },
-            ],
-          }),
-        2
-      );
+      const res = (await withBackoff(
+  () =>
+    pc.multicall({
+      allowFailure: true,
+      contracts: [
+        { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "currentEpoch", args: [] },
+        { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "BPS_DENOM", args: [] },
+        { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "getRefBps", args: [address as `0x${string}`] },
+        { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "WEEK", args: [] },
+      ],
+    }),
+  2
+)) as any[];
 
       const eNow = res?.[0]?.status === "success" ? (bi(res[0].result) ?? 0n) : 0n;
       const denom = res?.[1]?.status === "success" ? (bi(res[1].result) ?? 10000n) : 10000n;
@@ -1145,17 +1145,17 @@ export default function EarnPage() {
       setNextEpochIn(fmtCountdown(Number((nextBoundarySec - nowSec) * 1000n)));
 
       if (claimableEpoch > 0n) {
-        const [claimedR, baseR] = await withBackoff(
-          () =>
-            pc.multicall({
-              allowFailure: true,
-              contracts: [
-                { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "claimed", args: [claimableEpoch, address as `0x${string}`] },
-                { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "epochBaseOf", args: [claimableEpoch, address as `0x${string}`] },
-              ],
-            }),
-          2
-        );
+        const [claimedR, baseR] = (await withBackoff(
+  () =>
+    pc.multicall({
+      allowFailure: true,
+      contracts: [
+        { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "claimed", args: [claimableEpoch, address as `0x${string}`] },
+        { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "epochBaseOf", args: [claimableEpoch, address as `0x${string}`] },
+      ],
+    }),
+  2
+)) as any[];
 
         setAlreadyClaimed(claimedR?.status === "success" ? Boolean(claimedR.result) : false);
         setMyEpochBaseRegistry(baseR?.status === "success" ? (bi(baseR.result) ?? 0n) : 0n);
@@ -1207,19 +1207,19 @@ export default function EarnPage() {
     const pc = publicClient as any;
 
     try {
-      const res = await withBackoff(
-        () =>
-          pc.multicall({
-            allowFailure: true,
-            contracts: [
-              { address: registryAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "owner", args: [] },
-              { address: registryAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "defaultRefBps", args: [] },
-              { address: registryAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "partnerRefBps", args: [] },
-              { address: registryAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "currentEpoch", args: [] },
-            ],
-          }),
-        2
-      );
+      const res = (await withBackoff(
+  () =>
+    pc.multicall({
+      allowFailure: true,
+      contracts: [
+        { address: registryAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "owner", args: [] },
+        { address: registryAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "defaultRefBps", args: [] },
+        { address: registryAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "partnerRefBps", args: [] },
+        { address: registryAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "currentEpoch", args: [] },
+      ],
+    }),
+  2
+)) as any[];
 
       const owner = res?.[0]?.status === "success" && typeof res[0].result === "string" ? (res[0].result as string) : zeroAddress;
       const dBps = res?.[1]?.status === "success" ? (bi(res[1].result) ?? 0n) : 0n;
