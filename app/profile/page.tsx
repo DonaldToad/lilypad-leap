@@ -334,7 +334,7 @@ export default function ProfilePage() {
     chainId: effectiveChainId,
     abi: REFERRAL_REGISTRY_ABI,
     address: registryAddress,
-    functionName: "referrer_total_rewards",
+    functionName: "referrer_total_rewards_base",
     args: [address ?? (zeroAddress as `0x${string}`)],
     query: { enabled: readsEnabled && registryAddress !== zeroAddress },
   });
