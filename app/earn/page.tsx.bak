@@ -1,3 +1,4 @@
+// app/earn/page.tsx
 "use client";
 
 import TopNav from "../components/TopNav";
@@ -239,7 +240,7 @@ const ZERO_B32 = ("0x" + "00".repeat(32)) as Hex;
 function isNonZeroBytes32(x?: string | null) {
   if (!x) return false;
   const s = x.toLowerCase();
-  return s.startsWith("0x") && s.length === 66 && (s as Hex) !== ZERO_B32;
+  return s.startsWith("0x") && s.length === 66 && s !== ZERO_B32;
 }
 
 function hexToBytes32(hex: string) {
@@ -285,6 +286,7 @@ function base32DecodeToBytes32(code: string) {
     .toUpperCase()
     .replace(/^TOAD[-\s]*/i, "")
     .replace(/[-\s]/g, "");
+
   if (!cleaned) return null;
 
   const map: Record<string, number> = {};
@@ -347,7 +349,13 @@ function bi(v: any) {
   return null;
 }
 
-function Pill({ tone, children }: { tone: "neutral" | "good" | "warn" | "bad"; children: React.ReactNode }) {
+function Pill({
+  tone,
+  children,
+}: {
+  tone: "neutral" | "good" | "warn" | "bad";
+  children: React.ReactNode;
+}) {
   const cls =
     tone === "good"
       ? "bg-emerald-500/10 text-emerald-200 ring-1 ring-emerald-500/20"
@@ -357,7 +365,11 @@ function Pill({ tone, children }: { tone: "neutral" | "good" | "warn" | "bad"; c
       ? "bg-red-500/10 text-red-200 ring-1 ring-red-500/20"
       : "bg-neutral-800/40 text-neutral-200 ring-1 ring-neutral-700/60";
 
-  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${cls}`}>{children}</span>;
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${cls}`}>
+      {children}
+    </span>
+  );
 }
 
 function padTopicAddress(addr: string) {
@@ -427,8 +439,8 @@ async function withBackoff<T>(fn: () => Promise<T>, maxAttempts = 3) {
       return await fn();
     } catch (e: any) {
       lastErr = e;
-      const backoffMs = Math.min(8000, 700 * Math.pow(2, i));
-      if (isRateLimitOrUnavailable(e)) await sleep(backoffMs);
+      const backoff = Math.min(8000, 700 * Math.pow(2, i));
+      if (isRateLimitOrUnavailable(e)) await sleep(backoff);
       else break;
     }
   }
@@ -438,15 +450,16 @@ async function withBackoff<T>(fn: () => Promise<T>, maxAttempts = 3) {
 async function getLogsAdaptive(pc: any, req: any, depth = 0): Promise<any[]> {
   const from = req.fromBlock as bigint;
   const to = req.toBlock as bigint;
+
   try {
     return await withBackoff(() => pc.getLogs(req), 2);
   } catch {
     if (from >= to) return [];
-    if (depth >= 10) return [];
+    if (depth >= 8) return [];
     const mid = from + (to - from) / 2n;
-    const right = await getLogsAdaptive(pc, { ...req, fromBlock: mid, toBlock: to }, depth + 1);
-    const left = mid > from ? await getLogsAdaptive(pc, { ...req, fromBlock: from, toBlock: mid - 1n }, depth + 1) : [];
-    return [...right, ...left];
+    const a = await getLogsAdaptive(pc, { ...req, fromBlock: mid, toBlock: to }, depth + 1);
+    const b = mid > from ? await getLogsAdaptive(pc, { ...req, fromBlock: from, toBlock: mid - 1n }, depth + 1) : [];
+    return [...a, ...b];
   }
 }
 
@@ -497,9 +510,9 @@ function normalizeRpcList(urls: string[]) {
   const uniq: string[] = [];
   const seen = new Set<string>();
   for (const u of cleaned) {
-    const k = u.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
+    const key = u.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     uniq.push(u);
   }
   return uniq;
@@ -512,84 +525,6 @@ function isBadRpc(url: string) {
   if (u.includes("base.public-rpc.com")) return true;
   if (u.includes("base.drpc.org")) return true;
   return false;
-}
-
-const ERC20_MIN_ABI = [
-  {
-    type: "function",
-    name: "balanceOf",
-    stateMutability: "view",
-    inputs: [{ name: "account", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
-
-const SHARE_URL = "https://hop.donaldtoad.com/earn";
-
-function buildShareMessage(code: string) {
-  return `🐸 Join me on Lilypad Leap!
-
-Bind my referral code: 
-${code}
-${SHARE_URL}
-
-Start hopping to earn rewards 🎮`;
-}
-
-async function shareTextOrTweet(text: string) {
-  const isMobile =
-    typeof navigator !== "undefined" &&
-    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
-
-  // Desktop: Twitter intent is the most reliable way to preserve text
-  // Mobile: allow native share, but send ONLY text (X often drops `url` field)
-  if (isMobile && (navigator as any)?.share) {
-    try {
-      await (navigator as any).share({ text }); // <-- ONLY text
-      return { ok: true as const, mode: "native" as const };
-    } catch {
-      // fall through to twitter intent
-    }
-  }
-
-  const tweetText = text.replace(SHARE_URL, "").trim();
-  const tweetUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(
-    tweetText + "\n\n"
-  )}&url=${encodeURIComponent(SHARE_URL)}`;
-
-  try {
-    window.open(tweetUrl, "_blank", "noopener,noreferrer");
-    return { ok: true as const, mode: "twitter" as const };
-  } catch {
-    return { ok: false as const, mode: "twitter" as const };
-  }
-}
-
-async function onShare() {
-  setErr("");
-  setStatus("");
-  if (!canShare) {
-    setErr("Register your code first, then share.");
-    return;
-  }
-  if (shareBusy) return;
-
-  try {
-    setShareBusy(true);
-    const msg = buildShareMessage(myShareableCode);
-    const r = await shareTextOrTweet(msg);
-
-    if (r.ok) {
-      setStatus(r.mode === "native" ? "Share opened ✅" : "Tweet draft opened ✅");
-      window.setTimeout(() => setStatus(""), 1200);
-    } else {
-      setErr("Share failed.");
-    }
-  } catch (e: any) {
-    setErr(e?.shortMessage || e?.message || "Share failed.");
-  } finally {
-    setShareBusy(false);
-  }
 }
 
 export default function EarnPage() {
@@ -615,7 +550,10 @@ export default function EarnPage() {
     if (isTokenChain(walletChainId)) setSelectedChainId(walletChainId);
   }, [ready, walletChainId]);
 
-  const selectedChain = useMemo(() => chains.find((c) => c.chainId === selectedChainId) ?? chains[0], [chains, selectedChainId]);
+  const selectedChain = useMemo(
+    () => chains.find((c) => c.chainId === selectedChainId) ?? chains[0],
+    [chains, selectedChainId]
+  );
 
   const effectiveChainId = ready ? selectedChainId : undefined;
 
@@ -642,20 +580,20 @@ export default function EarnPage() {
   const distributorAddress = registryAddress;
 
   const rpcClientCache = useRef<Record<number, any>>({});
-
   const getRpcClient = useCallback((chainId: number | undefined) => {
     if (!chainId) return null;
     if (rpcClientCache.current[chainId]) return rpcClientCache.current[chainId];
 
-    const infuraLinea = (process.env.NEXT_PUBLIC_INFURA_LINEA || "").trim();
-    const alchemyBase = (process.env.NEXT_PUBLIC_ALCHEMY_BASE || "").trim();
+    const baseEnv = (process.env.NEXT_PUBLIC_BASE_RPC_URL || "").trim();
+    const lineaEnv = (process.env.NEXT_PUBLIC_LINEA_RPC_URL || "").trim();
 
-    const baseFallback = ["https://base-rpc.publicnode.com", "https://1rpc.io/base", "https://rpc.ankr.com/base"];
-    const lineaFallback = ["https://linea-rpc.publicnode.com", "https://rpc.linea.build", "https://1rpc.io/linea"];
+    const basePublic = ["https://base-rpc.publicnode.com", "https://1rpc.io/base", "https://rpc.ankr.com/base"];
+    const lineaPublic = ["https://linea-rpc.publicnode.com", "https://rpc.linea.build", "https://1rpc.io/linea"];
 
-    const rawUrls = chainId === 8453 ? [alchemyBase, ...baseFallback] : chainId === 59144 ? [infuraLinea, ...lineaFallback] : [];
+    const rawUrls =
+      chainId === 8453 ? [baseEnv, ...basePublic] : chainId === 59144 ? [lineaEnv, ...lineaPublic] : [];
+
     const urls = normalizeRpcList(rawUrls).filter((u) => u && !isBadRpc(u));
-
     const chainObj = chainId === 8453 ? base : chainId === 59144 ? linea : undefined;
     if (!chainObj || !urls.length) return null;
 
@@ -716,7 +654,8 @@ export default function EarnPage() {
     const msg = String(e?.shortMessage || e?.message || "RPC unavailable.");
     const lower = msg.toLowerCase();
     if (lower.includes("403") || lower.includes("forbidden")) setRpcIssue("RPC forbidden (403). Pausing reads briefly…");
-    else if (lower.includes("400") || lower.includes("bad request")) setRpcIssue("RPC bad request (400). Pausing reads briefly…");
+    else if (lower.includes("400") || lower.includes("bad request"))
+      setRpcIssue("RPC bad request (400). Pausing reads briefly…");
     else if (lower.includes("429")) setRpcIssue("RPC rate-limited (429). Pausing reads briefly…");
     else setRpcIssue("RPC unavailable. Pausing reads briefly…");
   }, []);
@@ -817,9 +756,10 @@ export default function EarnPage() {
         functionName: "computePublicCode",
         args: [me],
       });
-
       const computed =
-        compR.ok && typeof compR.value === "string" && isHex(compR.value) && compR.value.length === 66 ? (compR.value as Hex) : null;
+        compR.ok && typeof compR.value === "string" && isHex(compR.value) && compR.value.length === 66
+          ? (compR.value as Hex)
+          : null;
       setMyComputedCode(computed);
 
       const codeToR =
@@ -852,7 +792,9 @@ export default function EarnPage() {
       });
 
       const pub =
-        pubR.ok && typeof pubR.value === "string" && isHex(pubR.value) && pubR.value.length === 66 ? (pubR.value as Hex) : (ZERO_B32 as Hex);
+        pubR.ok && typeof pubR.value === "string" && isHex(pubR.value) && pubR.value.length === 66
+          ? (pubR.value as Hex)
+          : (ZERO_B32 as Hex);
 
       setMyPublicCode(pub);
 
@@ -865,7 +807,9 @@ export default function EarnPage() {
       });
 
       const ref =
-        refR.ok && typeof refR.value === "string" && isHexAddress(refR.value) ? (refR.value as `0x${string}`) : (zeroAddress as `0x${string}`);
+        refR.ok && typeof refR.value === "string" && isHexAddress(refR.value)
+          ? (refR.value as `0x${string}`)
+          : (zeroAddress as `0x${string}`);
       setReferrerOfMe(ref);
 
       setRpcIssue("");
@@ -915,6 +859,7 @@ export default function EarnPage() {
           return;
         }
         refsLatestRef.current = latest;
+
         if (refsCursorRef.current === null) refsCursorRef.current = latest;
 
         const cursor = refsCursorRef.current ?? latest;
@@ -1027,8 +972,18 @@ export default function EarnPage() {
         let wagerLogs: any[] = [];
         let payoutLogs: any[] = [];
         try {
-          wagerLogs = await getLogsAdaptive(pc, { address: tokenAddr, fromBlock: from, toBlock: to, topics: [TOPIC_TRANSFER, null, vaultTopic] });
-          payoutLogs = await getLogsAdaptive(pc, { address: tokenAddr, fromBlock: from, toBlock: to, topics: [TOPIC_TRANSFER, vaultTopic, null] });
+          wagerLogs = await getLogsAdaptive(pc, {
+            address: tokenAddr,
+            fromBlock: from,
+            toBlock: to,
+            topics: [TOPIC_TRANSFER, null, vaultTopic],
+          });
+          payoutLogs = await getLogsAdaptive(pc, {
+            address: tokenAddr,
+            fromBlock: from,
+            toBlock: to,
+            topics: [TOPIC_TRANSFER, vaultTopic, null],
+          });
         } catch (e: any) {
           markRpcIssue(e);
           setRefStatsLoading(false);
@@ -1126,7 +1081,12 @@ export default function EarnPage() {
             contracts: [
               { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "currentEpoch", args: [] },
               { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "BPS_DENOM", args: [] },
-              { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "getRefBps", args: [address as `0x${string}`] },
+              {
+                address: distributorAddress,
+                abi: REFERRAL_REGISTRY_ABI,
+                functionName: "getRefBps",
+                args: [address as `0x${string}`],
+              },
               { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "WEEK", args: [] },
             ],
           }),
@@ -1177,8 +1137,18 @@ export default function EarnPage() {
             pc.multicall({
               allowFailure: true,
               contracts: [
-                { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "claimed", args: [claimableEpoch, address as `0x${string}`] },
-                { address: distributorAddress, abi: REFERRAL_REGISTRY_ABI, functionName: "epochBaseOf", args: [claimableEpoch, address as `0x${string}`] },
+                {
+                  address: distributorAddress,
+                  abi: REFERRAL_REGISTRY_ABI,
+                  functionName: "claimed",
+                  args: [claimableEpoch, address as `0x${string}`],
+                },
+                {
+                  address: distributorAddress,
+                  abi: REFERRAL_REGISTRY_ABI,
+                  functionName: "epochBaseOf",
+                  args: [claimableEpoch, address as `0x${string}`],
+                },
               ],
             }),
           2
@@ -1224,8 +1194,25 @@ export default function EarnPage() {
   }, [ready, refreshDistributor]);
 
   const claimEpochFinalized = Boolean((epochRaw as any)?.[0]);
-  const claimEpochTotalBase = bi((epochRaw as any)?.[2]) ?? 0n;
-  const claimEpochRewardsTotal = bi((epochRaw as any)?.[3]) ?? 0n;
+
+  const isOwner = useMemo(() => {
+    if (!ready || !isConnected || !address) return false;
+    return safeLower(address) === safeLower(registryOwner);
+  }, [ready, isConnected, address, registryOwner]);
+
+  const ERC20_MIN_ABI = useMemo(
+    () =>
+      [
+        {
+          type: "function",
+          name: "balanceOf",
+          stateMutability: "view",
+          inputs: [{ name: "account", type: "address" }],
+          outputs: [{ name: "", type: "uint256" }],
+        },
+      ] as const,
+    []
+  );
 
   const refreshAdmin = useCallback(async () => {
     if (!readsEnabled || !publicClient || !effectiveChainId || !address) return;
@@ -1248,7 +1235,8 @@ export default function EarnPage() {
         2
       );
 
-      const owner = res?.[0]?.status === "success" && typeof res[0].result === "string" ? (res[0].result as string) : zeroAddress;
+      const owner =
+        res?.[0]?.status === "success" && typeof res[0].result === "string" ? (res[0].result as string) : zeroAddress;
       const dBps = res?.[1]?.status === "success" ? (bi(res[1].result) ?? 0n) : 0n;
       const pBps = res?.[2]?.status === "success" ? (bi(res[2].result) ?? 0n) : 0n;
       const eNow = res?.[3]?.status === "success" ? (bi(res[3].result) ?? 0n) : 0n;
@@ -1295,7 +1283,7 @@ export default function EarnPage() {
     } catch (e: any) {
       markRpcIssue(e);
     }
-  }, [readsEnabled, publicClient, effectiveChainId, address, registryAddress, tokenAddress, markRpcIssue]);
+  }, [readsEnabled, publicClient, effectiveChainId, address, registryAddress, tokenAddress, ERC20_MIN_ABI, markRpcIssue]);
 
   useEffect(() => {
     if (!ready || !readsEnabled) return;
@@ -1328,55 +1316,6 @@ export default function EarnPage() {
     return need > bal ? need - bal : 0n;
   }, [neededToMeetAllClaims, registryTokenBal]);
 
-  const dtc = (v: bigint) => fmtNum(Number(formatUnits(v, 18)), 6);
-
-  const [liveEpochBase, setLiveEpochBase] = useState<bigint>(0n);
-  const [liveEpochRewards, setLiveEpochRewards] = useState<bigint>(0n);
-  const [liveEpochStatus, setLiveEpochStatus] = useState<string>("");
-
-  const [claimEpochBaseComputed, setClaimEpochBaseComputed] = useState<bigint>(0n);
-  const [claimEpochRewardsComputed, setClaimEpochRewardsComputed] = useState<bigint>(0n);
-  const [claimEpochComputedStatus, setClaimEpochComputedStatus] = useState<string>("");
-
-  const refreshLiveEpochEstimate = useCallback(async () => {
-    if (!readsEnabled) return;
-    setLiveEpochBase(0n);
-    setLiveEpochRewards(0n);
-    setLiveEpochStatus("Live estimate uses transfer scanning in SYNC (Referee performance table).");
-  }, [readsEnabled]);
-
-  const refreshClaimEpochComputed = useCallback(async () => {
-    if (!readsEnabled) return;
-    setClaimEpochBaseComputed(0n);
-    setClaimEpochRewardsComputed(0n);
-    setClaimEpochComputedStatus("Credit check uses registry epochBaseOf (canonical).");
-  }, [readsEnabled]);
-
-  useEffect(() => {
-    if (!ready || !readsEnabled) return;
-    void refreshLiveEpochEstimate();
-  }, [ready, readsEnabled, refreshLiveEpochEstimate]);
-
-  useEffect(() => {
-    if (!ready || !readsEnabled) return;
-    void refreshClaimEpochComputed();
-  }, [ready, readsEnabled, refreshClaimEpochComputed]);
-
-  const estRewardsRegistry = useMemo(() => {
-    if (!claimEpochFinalized) return 0n;
-    if (myEpochBaseRegistry <= 0n) return 0n;
-    if (claimEpochRewardsTotal <= 0n) return 0n;
-    if (claimEpochTotalBase <= 0n) return 0n;
-    return (claimEpochRewardsTotal * myEpochBaseRegistry) / claimEpochTotalBase;
-  }, [claimEpochFinalized, myEpochBaseRegistry, claimEpochRewardsTotal, claimEpochTotalBase]);
-
-  const claimMismatch = useMemo(() => false, []);
-
-  const isOwner = useMemo(() => {
-    if (!ready || !isConnected || !address) return false;
-    return safeLower(address) === safeLower(registryOwner);
-  }, [ready, isConnected, address, registryOwner]);
-
   const canFinalizeLastEpoch = useMemo(() => {
     if (!ready || !isConnected || !address) return false;
     if (!readsEnabled) return false;
@@ -1384,9 +1323,10 @@ export default function EarnPage() {
     if (adminBusy) return false;
     if (adminTargetEpoch <= 0n) return false;
     if (adminFinalized) return false;
-    if (claimMismatch) return false;
     return true;
-  }, [ready, isConnected, address, readsEnabled, isOwner, adminBusy, adminTargetEpoch, adminFinalized, claimMismatch]);
+  }, [ready, isConnected, address, readsEnabled, isOwner, adminBusy, adminTargetEpoch, adminFinalized]);
+
+  const dtc = (v: bigint) => fmtNum(Number(formatUnits(v, 18)), 6);
 
   async function finalizeLastEpoch() {
     setAdminMsg("");
@@ -1408,7 +1348,6 @@ export default function EarnPage() {
       window.setTimeout(() => setAdminMsg(""), 1500);
       await refreshDistributor();
       await refreshAdmin();
-      await refreshClaimEpochComputed();
     } catch (e: any) {
       setAdminMsg(e?.shortMessage || e?.message || "Finalize failed.");
     } finally {
@@ -1444,7 +1383,13 @@ export default function EarnPage() {
         args: [parsedRef.address],
       });
 
-      if (r1.ok && typeof r1.value === "string" && isHex(r1.value) && r1.value.length === 66 && isNonZeroBytes32(r1.value)) {
+      if (
+        r1.ok &&
+        typeof r1.value === "string" &&
+        isHex(r1.value) &&
+        r1.value.length === 66 &&
+        isNonZeroBytes32(r1.value)
+      ) {
         if (alive) setRefAddrPublicCode(r1.value as Hex);
         return;
       }
@@ -1458,6 +1403,7 @@ export default function EarnPage() {
       });
 
       if (!alive) return;
+
       if (r2.ok && typeof r2.value === "string" && isHex(r2.value) && r2.value.length === 66) setRefAddrPublicCode(r2.value as Hex);
     }
     void run();
@@ -1482,7 +1428,6 @@ export default function EarnPage() {
     async function run() {
       setResolvesTo(zeroAddress);
       if (!readsEnabled || !publicClient || !effectiveRefCode) return;
-
       const r = await tryReadContract<any>({
         publicClient: publicClient as any,
         address: registryAddress,
@@ -1490,7 +1435,6 @@ export default function EarnPage() {
         functionName: "codeToReferrer",
         args: [effectiveRefCode as Hex],
       });
-
       if (!r.ok) {
         markRpcIssue(r.error);
         return;
@@ -1508,7 +1452,6 @@ export default function EarnPage() {
   const [err, setErr] = useState<string>("");
   const [copiedCode, setCopiedCode] = useState(false);
   const [bindBusy, setBindBusy] = useState(false);
-  const [shareBusy, setShareBusy] = useState(false);
 
   async function registerCode() {
     setErr("");
@@ -1578,6 +1521,7 @@ export default function EarnPage() {
       setErr("Invalid code format.");
       return;
     }
+
     if (!resolvesTo || resolvesTo === zeroAddress) {
       setErr("This code/address does not resolve to a referrer on this chain. (They must register their code first.)");
       return;
@@ -1609,11 +1553,6 @@ export default function EarnPage() {
     }
   }
 
-  const potLow = useMemo(() => {
-    if (estRewardsRegistry <= 0n) return false;
-    return registryTokenBal < estRewardsRegistry;
-  }, [registryTokenBal, estRewardsRegistry]);
-
   const claimable = useMemo(() => {
     if (!ready) return false;
     if (!isConnected || !address) return false;
@@ -1623,8 +1562,7 @@ export default function EarnPage() {
     if (claimEpoch <= 0n) return false;
     if (!claimEpochFinalized) return false;
     if (alreadyClaimed) return false;
-    if (estRewardsRegistry <= 0n) return false;
-    if (potLow) return false;
+    if (myEpochBaseRegistry <= 0n) return false;
     return true;
   }, [
     ready,
@@ -1636,8 +1574,7 @@ export default function EarnPage() {
     claimEpoch,
     claimEpochFinalized,
     alreadyClaimed,
-    estRewardsRegistry,
-    potLow,
+    myEpochBaseRegistry,
   ]);
 
   const baseDisabledReason = useMemo(() => {
@@ -1649,8 +1586,7 @@ export default function EarnPage() {
     if (claimEpoch <= 0n) return "No claim epoch";
     if (!claimEpochFinalized) return "Epoch not finalized";
     if (alreadyClaimed) return "Already claimed";
-    if (estRewardsRegistry <= 0n) return "Nothing to claim";
-    if (potLow) return "Registry pot low";
+    if (myEpochBaseRegistry <= 0n) return "Nothing to claim";
     return "";
   }, [
     ready,
@@ -1662,8 +1598,7 @@ export default function EarnPage() {
     claimEpoch,
     claimEpochFinalized,
     alreadyClaimed,
-    estRewardsRegistry,
-    potLow,
+    myEpochBaseRegistry,
   ]);
 
   async function claimWeeklyRewards() {
@@ -1694,7 +1629,6 @@ export default function EarnPage() {
       await refreshDistributor();
       await refreshCore();
       await refreshAdmin();
-      await refreshClaimEpochComputed();
     } catch (e: any) {
       setStatus("");
       setErr(e?.shortMessage || e?.message || "Claim failed.");
@@ -1715,8 +1649,8 @@ export default function EarnPage() {
   }, [myCodeForDisplay]);
 
   const myCodeFriendlyPretty = useMemo(() => (myCodeFriendly ? formatCodeGroups(myCodeFriendly) : ""), [myCodeFriendly]);
+
   const myCodeFriendlyPrettyLabel = myCodeFriendlyPretty ? `TOAD-${myCodeFriendlyPretty}` : "—";
-  const myShareableCode = useMemo(() => (myCodeFriendly ? `TOAD-${myCodeFriendly}` : ""), [myCodeFriendly]);
 
   const bindDisabled =
     !ready ||
@@ -1791,12 +1725,6 @@ export default function EarnPage() {
         await sleep(150);
       }
 
-      setSyncMsg("Refreshing on-chain claim + admin…");
-      await refreshDistributor();
-      await refreshAdmin();
-      await refreshClaimEpochComputed();
-      await refreshLiveEpochEstimate();
-
       setSyncMsg("Sync complete ✅");
       window.setTimeout(() => setSyncMsg(""), 1200);
     } catch (e: any) {
@@ -1806,54 +1734,207 @@ export default function EarnPage() {
       if (!prevOpen) setRefsOpen(false);
       setSyncBusy(false);
     }
-  }, [
-    ready,
-    readsEnabled,
-    syncBusy,
-    refsOpen,
-    loadRefereesStep,
-    computeRefStatsStep,
-    refsScanComplete,
-    refStatsPartial,
-    refreshDistributor,
-    refreshAdmin,
-    refreshClaimEpochComputed,
-    refreshLiveEpochEstimate,
-  ]);
+  }, [ready, readsEnabled, syncBusy, refsOpen, loadRefereesStep, computeRefStatsStep, refsScanComplete, refStatsPartial]);
+
+  const blockTsCacheRef = useRef<Map<string, bigint>>(new Map());
+
+  const getBlockTs = useCallback(
+    async (pc: any, n: bigint) => {
+      const key = `${effectiveChainId || 0}:${n.toString()}`;
+      const cached = blockTsCacheRef.current.get(key);
+      if (cached !== undefined) return cached;
+      const b = await withBackoff(() => pc.getBlock({ blockNumber: n }), 2);
+      const ts = bi((b as any)?.timestamp) ?? 0n;
+      blockTsCacheRef.current.set(key, ts);
+      return ts;
+    },
+    [effectiveChainId]
+  );
+
+  const findFirstBlockAtOrAfterTs = useCallback(
+    async (pc: any, targetTs: bigint) => {
+      const latest = await withBackoff(() => pc.getBlockNumber(), 2);
+      let lo = 0n;
+      let hi = latest;
+      let ans = latest;
+
+      while (lo <= hi) {
+        const mid = (lo + hi) / 2n;
+        const ts = await getBlockTs(pc, mid);
+        if (ts >= targetTs) {
+          ans = mid;
+          if (mid === 0n) break;
+          hi = mid - 1n;
+        } else {
+          lo = mid + 1n;
+        }
+      }
+      return ans;
+    },
+    [getBlockTs]
+  );
+
+  const [liveEpochBase, setLiveEpochBase] = useState<bigint>(0n);
+  const [liveEpochRewards, setLiveEpochRewards] = useState<bigint>(0n);
+  const [liveEpochStatus, setLiveEpochStatus] = useState<string>("");
+
+  const [claimEpochBaseComputed, setClaimEpochBaseComputed] = useState<bigint>(0n);
+  const [claimEpochRewardsComputed, setClaimEpochRewardsComputed] = useState<bigint>(0n);
+  const [claimEpochComputedStatus, setClaimEpochComputedStatus] = useState<string>("");
+
+  const computeEpochBaseFromTransfers = useCallback(
+    async (epochId: bigint) => {
+      if (!readsEnabled || !publicClient || !effectiveChainId) return { base: 0n, games: 0 };
+      if (epochId <= 0n) return { base: 0n, games: 0 };
+
+      const pc = publicClient as any;
+      const tokenAddr = tokenAddress;
+      const vault = vaultAddress;
+      if (tokenAddr === zeroAddress || vault === zeroAddress) return { base: 0n, games: 0 };
+
+      const bound = boundSetRef.current;
+      if (!bound.size) return { base: 0n, games: 0 };
+
+      const startTs = epochId * weekSec;
+      const endTs = (epochId + 1n) * weekSec;
+
+      const startBlock = await findFirstBlockAtOrAfterTs(pc, startTs);
+      const endBlockPlus = await findFirstBlockAtOrAfterTs(pc, endTs);
+      const endBlock = endBlockPlus > 0n ? endBlockPlus - 1n : 0n;
+      if (endBlock < startBlock) return { base: 0n, games: 0 };
+
+      const vaultTopic = padTopicAddress(vault);
+      if (!vaultTopic) return { base: 0n, games: 0 };
+
+      const wagerLogs = await getLogsAdaptive(pc, {
+        address: tokenAddr,
+        fromBlock: startBlock,
+        toBlock: endBlock,
+        topics: [TOPIC_TRANSFER, null, vaultTopic],
+      });
+
+      const payoutLogs = await getLogsAdaptive(pc, {
+        address: tokenAddr,
+        fromBlock: startBlock,
+        toBlock: endBlock,
+        topics: [TOPIC_TRANSFER, vaultTopic, null],
+      });
+
+      let wagered = 0n;
+      let won = 0n;
+      let games = 0;
+
+      for (const l of wagerLogs) {
+        try {
+          const decoded = decodeEventLog({ abi: [ERC20_EVENT_TRANSFER], data: l.data, topics: l.topics }) as any;
+          const fromAddr = String(decoded?.args?.from || "").toLowerCase();
+          const toAddr = String(decoded?.args?.to || "").toLowerCase();
+          if (!isHexAddress(fromAddr) || !isHexAddress(toAddr)) continue;
+          if (safeLower(toAddr) !== safeLower(vault)) continue;
+          if (!bound.has(fromAddr)) continue;
+          const value = bi(decoded?.args?.value) ?? 0n;
+          if (value <= 0n) continue;
+          wagered += value;
+          games += 1;
+        } catch {}
+      }
+
+      for (const l of payoutLogs) {
+        try {
+          const decoded = decodeEventLog({ abi: [ERC20_EVENT_TRANSFER], data: l.data, topics: l.topics }) as any;
+          const fromAddr = String(decoded?.args?.from || "").toLowerCase();
+          const toAddr = String(decoded?.args?.to || "").toLowerCase();
+          if (!isHexAddress(fromAddr) || !isHexAddress(toAddr)) continue;
+          if (safeLower(fromAddr) !== safeLower(vault)) continue;
+          if (!bound.has(toAddr)) continue;
+          const value = bi(decoded?.args?.value) ?? 0n;
+          if (value <= 0n) continue;
+          won += value;
+        } catch {}
+      }
+
+      const baseLoss = wagered > won ? wagered - won : 0n;
+      return { base: baseLoss, games };
+    },
+    [
+      readsEnabled,
+      publicClient,
+      effectiveChainId,
+      tokenAddress,
+      vaultAddress,
+      weekSec,
+      findFirstBlockAtOrAfterTs,
+    ]
+  );
+
+  const refreshLiveEpochEstimate = useCallback(async () => {
+    if (!readsEnabled || !publicClient || !effectiveChainId) return;
+    if (Date.now() < pauseUntilRef.current) return;
+
+    try {
+      setLiveEpochStatus("Calculating current epoch…");
+      const { base: baseLoss, games } = await computeEpochBaseFromTransfers(currentEpoch);
+      const rewards = myRefBps > 0n && bpsDenom > 0n ? (baseLoss * myRefBps) / bpsDenom : 0n;
+      setLiveEpochBase(baseLoss);
+      setLiveEpochRewards(rewards);
+      setLiveEpochStatus(games ? "" : "No referee games in the current epoch yet.");
+      setRpcIssue("");
+    } catch (e: any) {
+      markRpcIssue(e);
+      setLiveEpochStatus("Live epoch estimate failed (RPC). Try again.");
+    }
+  }, [readsEnabled, publicClient, effectiveChainId, computeEpochBaseFromTransfers, currentEpoch, myRefBps, bpsDenom, markRpcIssue]);
+
+  const refreshClaimEpochComputed = useCallback(async () => {
+    if (!readsEnabled || !publicClient || !effectiveChainId) return;
+    if (Date.now() < pauseUntilRef.current) return;
+    if (claimEpoch <= 0n) {
+      setClaimEpochBaseComputed(0n);
+      setClaimEpochRewardsComputed(0n);
+      setClaimEpochComputedStatus("");
+      return;
+    }
+
+    try {
+      setClaimEpochComputedStatus("Computing last epoch credit check…");
+      const { base: baseLoss, games } = await computeEpochBaseFromTransfers(claimEpoch);
+      const rewards = myRefBps > 0n && bpsDenom > 0n ? (baseLoss * myRefBps) / bpsDenom : 0n;
+      setClaimEpochBaseComputed(baseLoss);
+      setClaimEpochRewardsComputed(rewards);
+      setClaimEpochComputedStatus(games ? "" : "No referee games detected for last epoch (transfer-based).");
+      setRpcIssue("");
+    } catch (e: any) {
+      markRpcIssue(e);
+      setClaimEpochComputedStatus("Credit check failed (RPC). Try again.");
+    }
+  }, [readsEnabled, publicClient, effectiveChainId, claimEpoch, computeEpochBaseFromTransfers, myRefBps, bpsDenom, markRpcIssue]);
+
+  useEffect(() => {
+    if (!ready || !readsEnabled) return;
+    void refreshLiveEpochEstimate();
+  }, [ready, readsEnabled, effectiveChainId, currentEpoch, weekSec, myRefBps, bpsDenom, refsCount, refreshLiveEpochEstimate]);
+
+  useEffect(() => {
+    if (!ready || !readsEnabled) return;
+    void refreshClaimEpochComputed();
+  }, [ready, readsEnabled, effectiveChainId, claimEpoch, refsCount, myRefBps, bpsDenom, refreshClaimEpochComputed]);
 
   const ownerFundingLabelResolved = ownerFundingLabel;
 
-  const canShare = useMemo(() => {
-    if (!ready || !isConnected || !address) return false;
-    if (!myShareableCode) return false;
-    if (!myRegistered) return false;
-    return true;
-  }, [ready, isConnected, address, myShareableCode, myRegistered]);
+  const estRewardsRegistry = useMemo(() => {
+    if (myEpochBaseRegistry <= 0n || myRefBps <= 0n || bpsDenom <= 0n) return 0n;
+    return (myEpochBaseRegistry * myRefBps) / bpsDenom;
+  }, [myEpochBaseRegistry, myRefBps, bpsDenom]);
 
-  async function onShare() {
-    setErr("");
-    setStatus("");
-    if (!canShare) {
-      setErr("Register your code first, then share.");
-      return;
-    }
-    if (shareBusy) return;
-    try {
-      setShareBusy(true);
-      const msg = buildShareMessage(myShareableCode);
-      const r = await shareTextOrTweet(msg);
-      if (r.ok) {
-        setStatus(r.mode === "native" ? "Share opened ✅" : "Tweet draft opened ✅");
-        window.setTimeout(() => setStatus(""), 1200);
-      } else {
-        setErr("Share failed.");
-      }
-    } catch (e: any) {
-      setErr(e?.shortMessage || e?.message || "Share failed.");
-    } finally {
-      setShareBusy(false);
-    }
-  }
+  const claimMismatch = useMemo(() => {
+    if (claimEpoch <= 0n) return false;
+    if (claimEpochBaseComputed <= 0n && myEpochBaseRegistry <= 0n) return false;
+    const a = myEpochBaseRegistry;
+    const b = claimEpochBaseComputed;
+    const diff = a > b ? a - b : b - a;
+    const tol = (b / 100n) + 1n;
+    return diff > tol;
+  }, [claimEpoch, claimEpochBaseComputed, myEpochBaseRegistry]);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
@@ -1887,95 +1968,19 @@ export default function EarnPage() {
 
           {rpcIssue ? (
             <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-              {rpcIssue} Use a stable HTTPS RPC via <span className="font-mono">NEXT_PUBLIC_ALCHEMY_BASE</span> /{" "}
-              <span className="font-mono">NEXT_PUBLIC_INFURA_LINEA</span>.
+              {rpcIssue} Set a stable HTTPS RPC in <span className="font-mono">NEXT_PUBLIC_BASE_RPC_URL</span> /{" "}
+              <span className="font-mono">NEXT_PUBLIC_LINEA_RPC_URL</span>.
             </div>
           ) : null}
 
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-neutral-100">How referrals work</div>
-              <Pill tone="good">On-chain</Pill>
+              <div className="text-sm font-semibold text-neutral-100">How referrals + weekly rewards work</div>
+              <Pill tone="good">10% weekly</Pill>
             </div>
-
-            <div className="mt-2 text-[12px] text-neutral-300">
-              <div className="grid gap-2">
-                <div className="grid gap-1">
-                  <div className="text-neutral-200 font-semibold">Create + share</div>
-                  <ul className="list-disc pl-5 text-neutral-400">
-                    <li>Create your referral code (per-chain) and share it.</li>
-                    <li>New players can bind your code once (on that chain).</li>
-                  </ul>
-                </div>
-
-                <div className="grid gap-1">
-                  <div className="text-neutral-200 font-semibold">Weekly rewards</div>
-                  <ul className="list-disc pl-5 text-neutral-400">
-                    <li>Each week (epoch), the vault may end with a surplus.</li>
-                    <li>If it does, a portion of that surplus is allocated to referral rewards.</li>
-                    <li>Rewards are split across referrers based on their epoch base (activity attributed to their referees).</li>
-                  </ul>
-                </div>
-
-                <div className="mt-1 rounded-xl border border-neutral-800 bg-neutral-900/30 p-3">
-                  <div className="text-[12px] font-semibold text-neutral-200">When rewards are 0</div>
-                  <div className="mt-1 text-[12px] text-neutral-400">
-                    If the vault ends the epoch with no surplus (or a deficit), there is nothing to distribute, so claims for that epoch will be 0.
-                    Referral rewards are paid from the vault’s weekly surplus (the net difference between amounts sent to the vault and amounts paid out
-                    during that epoch). If the vault does not finish the epoch with a surplus, the reward pool is 0 and no referral rewards are distributed.
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
-              <details className="group">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-xl border border-neutral-800 bg-neutral-900/30 px-3 py-2 text-sm font-extrabold text-neutral-100 hover:bg-neutral-900/45">
-                  <span className="inline-flex items-center gap-2">
-                    <span>🧪</span>
-                    <span>FORMULA</span>
-                  </span>
-                  <span className="text-[11px] font-semibold text-neutral-500 group-open:hidden">expand</span>
-                  <span className="text-[11px] font-semibold text-neutral-500 hidden group-open:inline">collapse</span>
-                </summary>
-
-                <div className="mt-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-[12px] text-neutral-500">
-                      bps: <span className="font-mono text-neutral-200">{myRefBps.toString()}</span> /{" "}
-                      <span className="font-mono text-neutral-200">{bpsDenom.toString()}</span>
-                    </div>
-                    <Pill tone="neutral">Exact</Pill>
-                  </div>
-
-                  <div className="mt-2 whitespace-pre-wrap rounded-xl border border-neutral-800 bg-neutral-900/30 p-3 font-mono text-[11px] leading-5 text-neutral-200">
-{`epochId          = floor(block.timestamp / WEEK)
-
-houseDelta        = int(amountReceived) - int(payout)
-profit(epochId)  += houseDelta
-
-if houseDelta > 0 and referrerOf[player] != 0x0:
-  refBps          = getRefBps(referrer)   // partnerRefBps or defaultRefBps
-  baseAdded       = uint(houseDelta) * refBps / BPS_DENOM
-  epochBaseOf[epochId][referrer] += baseAdded
-  totalBase(epochId)             += baseAdded
-else:
-  baseAdded       = 0
-
-finalizeEpoch(epochId):
-  cap             = profit(epochId) > 0 ? uint(profit(epochId)) : 0
-  rewardsTotal    = min(totalBase(epochId), cap)
-
-claim(epochId):
-  userBase        = epochBaseOf[epochId][msg.sender]
-  amount          = rewardsTotal * userBase / totalBase(epochId)`}
-                  </div>
-
-                  <div className="mt-2 text-[11px] text-neutral-500">
-                    Notes: only <span className="font-semibold text-neutral-200">positive</span> houseDelta contributes to base; if profit ≤ 0, then cap = 0 and rewardsTotal = 0 → claims are 0.
-                  </div>
-                </div>
-              </details>
+            <div className="mt-2 text-[12px] text-neutral-400">
+              You earn <b className="text-neutral-200">10%</b> of your referees’ <b className="text-neutral-200">net losses</b>.
+              Claims are only enabled for the <b className="text-neutral-200">past finalized epoch</b>.
             </div>
           </div>
 
@@ -2032,7 +2037,9 @@ claim(epochId):
                     Wallet network: <span className="text-neutral-300">{walletNetworkName}</span>
                   </div>
                 ) : (
-                  <div className="mt-2 text-[11px] text-neutral-600">Not connected. The toggle will switch your wallet network after you connect.</div>
+                  <div className="mt-2 text-[11px] text-neutral-600">
+                    Not connected. The toggle will switch your wallet network after you connect.
+                  </div>
                 )}
               </div>
             </div>
@@ -2081,11 +2088,6 @@ claim(epochId):
                   <div className="mt-1 text-[12px] text-neutral-500">
                     Owner wallet: <span className="font-mono text-neutral-300">{truncateAddr(registryOwner)}</span>
                   </div>
-                  {claimMismatch ? (
-                    <div className="mt-2 text-[12px] text-red-200">
-                      Finalize blocked: claim epoch mismatch detected for this referrer. Run SYNC and ensure registry credit matches transfers before finalizing.
-                    </div>
-                  ) : null}
                 </div>
 
                 <button
@@ -2199,12 +2201,9 @@ claim(epochId):
 
           <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div className="flex items-center gap-3">
-                <img src="/logo.png" alt="Lilypad Leap" width={40} height={40} className="h-10 w-10 rounded-xl ring-1 ring-neutral-800" />
-                <div>
-                  <div className="text-sm font-semibold text-neutral-100">Your referral code</div>
-                  <div className="mt-1 text-[12px] text-neutral-500">Your code is per-chain. Registering is required to share.</div>
-                </div>
+              <div>
+                <div className="text-sm font-semibold text-neutral-100">Your referral code</div>
+                <div className="mt-1 text-[12px] text-neutral-500">Your code is per-chain. Registering is optional.</div>
               </div>
 
               <button
@@ -2213,20 +2212,14 @@ claim(epochId):
                 className="rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-2 text-xs font-extrabold text-neutral-100 hover:bg-neutral-800/60"
                 disabled={!ready || !isConnected || !address || registryAddress === zeroAddress || wrongWalletForSelected}
               >
-                {myRegistered ? "RE-REGISTER (optional)" : "REGISTER MY CODE"}
+                {myRegistered ? "RE-REGISTER (optional)" : "REGISTER MY CODE (optional)"}
               </button>
             </div>
 
             <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-[12px] text-neutral-400">Code</div>
-                {myRegistered ? (
-                  <Pill tone="good">Registered</Pill>
-                ) : myCodeForDisplay ? (
-                  <Pill tone="warn">Not registered</Pill>
-                ) : (
-                  <Pill tone="warn">Not created</Pill>
-                )}
+                {myRegistered ? <Pill tone="good">Registered</Pill> : myCodeForDisplay ? <Pill tone="warn">Not registered yet</Pill> : <Pill tone="warn">Not created yet</Pill>}
               </div>
 
               <div className="mt-2 grid gap-3 md:grid-cols-2">
@@ -2245,47 +2238,27 @@ claim(epochId):
                 <button
                   type="button"
                   onClick={async () => {
-                    if (!myShareableCode || !myRegistered) return;
-                    const ok = await copyText(myShareableCode);
+                    if (!myCodeFriendly || !myRegistered) return;
+                    const ok = await copyText(`TOAD-${myCodeFriendly}`);
                     if (ok) {
                       setCopiedCode(true);
                       window.setTimeout(() => setCopiedCode(false), 900);
                     }
                   }}
-                  disabled={!myShareableCode || !myRegistered}
+                  disabled={!myCodeFriendly || !myRegistered}
                   className={[
                     "rounded-xl border px-3 py-2 text-xs font-extrabold",
-                    myShareableCode && myRegistered
+                    myCodeFriendly && myRegistered
                       ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15"
                       : "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500",
                   ].join(" ")}
                 >
-                  {copiedCode ? "COPIED" : "COPY REFERRAL CODE"}
+                  {copiedCode ? "COPIED" : "COPY CODE"}
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => void onShare()}
-                  disabled={!canShare || shareBusy}
-                  className={[
-                    "rounded-xl border px-3 py-2 text-xs font-extrabold",
-                    canShare && !shareBusy
-                      ? "border-neutral-800 bg-neutral-900 text-neutral-100 hover:bg-neutral-800/60"
-                      : "cursor-not-allowed border-neutral-800 bg-neutral-900 text-neutral-500",
-                  ].join(" ")}
-                >
-                  {shareBusy ? "SHARING…" : "SHARE"}
-                </button>
-
-                {!myRegistered && myShareableCode ? (
+                {!myRegistered && myCodeFriendly ? (
                   <div className="text-[12px] text-neutral-500">
-                    Share unlock: click <span className="font-semibold text-neutral-200">REGISTER MY CODE</span> first.
-                  </div>
-                ) : null}
-
-                {myRegistered && myShareableCode ? (
-                  <div className="text-[12px] text-neutral-500">
-                    Share link: <span className="font-mono text-neutral-300">{SHARE_URL}</span>
+                    Shareable only after you click <span className="font-semibold text-neutral-200">REGISTER MY CODE</span>.
                   </div>
                 ) : null}
               </div>
@@ -2297,7 +2270,7 @@ claim(epochId):
               <div>
                 <div className="text-sm font-semibold text-neutral-100">💰 Weekly rewards</div>
                 <div className="mt-1 text-[12px] text-neutral-500">
-                  Claim uses <b className="text-neutral-200">registry-tracked</b> base for the <b className="text-neutral-200">past finalized epoch</b>. Live estimate is shown below.
+                  Top numbers = <b className="text-neutral-200">current epoch live estimate</b>. Claim uses <b className="text-neutral-200">past finalized epoch</b>.
                 </div>
               </div>
 
@@ -2329,14 +2302,14 @@ claim(epochId):
               </div>
 
               <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3 md:col-span-1">
-                <div className="text-[12px] text-neutral-400">Claim base (DTC)</div>
-                <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(myEpochBaseRegistry)}</div>
-                <div className="mt-1 text-[11px] text-neutral-500">registry epochBaseOf</div>
+                <div className="text-[12px] text-neutral-400">Your base (DTC)</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(liveEpochBase)}</div>
+                <div className="mt-1 text-[11px] text-neutral-500">current epoch</div>
               </div>
 
               <div className="rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3 md:col-span-1">
-                <div className="text-[12px] text-neutral-400">Claim rewards (DTC)</div>
-                <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(estRewardsRegistry)}</div>
+                <div className="text-[12px] text-neutral-400">Est. rewards (DTC)</div>
+                <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(liveEpochRewards)}</div>
                 <div className="mt-1 text-[11px] text-neutral-500">
                   bps: {myRefBps.toString()} / {bpsDenom.toString()}
                 </div>
@@ -2355,7 +2328,7 @@ claim(epochId):
 
             <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-sm font-semibold text-neutral-100">Last epoch credit check</div>
+                <div className="text-sm font-semibold text-neutral-100">Last epoch credit check (before finalize)</div>
                 <button
                   type="button"
                   onClick={() => void refreshClaimEpochComputed()}
@@ -2375,7 +2348,7 @@ claim(epochId):
                 <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
                   <div className="text-[12px] text-neutral-400">Registry epochBaseOf</div>
                   <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(myEpochBaseRegistry)}</div>
-                  <div className="mt-1 text-[11px] text-neutral-500">claim epoch</div>
+                  <div className="mt-1 text-[11px] text-neutral-500">registry-tracked</div>
                 </div>
 
                 <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
@@ -2385,15 +2358,15 @@ claim(epochId):
                 </div>
 
                 <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Registry rewards est.</div>
+                  <div className="text-[12px] text-neutral-400">Registry est. rewards</div>
                   <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(estRewardsRegistry)}</div>
-                  <div className="mt-1 text-[11px] text-neutral-500">claimable if finalized</div>
+                  <div className="mt-1 text-[11px] text-neutral-500">base * bps</div>
                 </div>
 
                 <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-[12px] text-neutral-400">Transfer rewards est.</div>
+                  <div className="text-[12px] text-neutral-400">Transfer-based est. rewards</div>
                   <div className="mt-1 font-mono text-sm text-neutral-200">{dtc(claimEpochRewardsComputed)}</div>
-                  <div className="mt-1 text-[11px] text-neutral-500">diagnostic</div>
+                  <div className="mt-1 text-[11px] text-neutral-500">base * bps</div>
                 </div>
               </div>
 
@@ -2407,26 +2380,22 @@ claim(epochId):
               </div>
 
               {claimEpochComputedStatus ? (
-                <div className="mt-2 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-300">{claimEpochComputedStatus}</div>
+                <div className="mt-2 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-300">
+                  {claimEpochComputedStatus}
+                </div>
               ) : null}
 
               {claimMismatch ? (
                 <div className="mt-2 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-[12px] text-red-200">
-                  Registry credit does not match transfer-based diagnostic for the claim epoch. Claim uses registry numbers. Do not finalize until this matches.
-                </div>
-              ) : null}
-
-              {potLow ? (
-                <div className="mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-                  Registry pot low: registry DTC balance is below your claim amount. Fund the registry or reduce pending obligations before claiming.
+                  Registry credit is not matching transfer-based credit for the claim epoch. This usually means the game did not
+                  successfully report settlements into the registry (e.g., game not allowed / wrong registry / old contract).
+                  Do not finalize until this matches.
                 </div>
               ) : null}
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-neutral-500">
-              <span>Live estimate:</span>
-              <span className="font-mono text-neutral-200">{dtc(liveEpochRewards)}</span>
-              <span className="text-neutral-600">DTC (current epoch)</span>
+              <span>Live estimate status:</span>
               {liveEpochStatus ? <Pill tone="warn">Info</Pill> : <Pill tone="good">OK</Pill>}
               <button
                 type="button"
@@ -2444,7 +2413,9 @@ claim(epochId):
             </div>
 
             {liveEpochStatus ? (
-              <div className="mt-2 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-300">{liveEpochStatus}</div>
+              <div className="mt-2 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-300">
+                {liveEpochStatus}
+              </div>
             ) : null}
           </div>
 
@@ -2452,7 +2423,7 @@ claim(epochId):
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-semibold text-neutral-100">Referees</div>
-                <div className="mt-1 text-[12px] text-neutral-500">One-click sync loads referees + computes stats + refreshes claim/admin.</div>
+                <div className="mt-1 text-[12px] text-neutral-500">One-click sync loads referees + computes stats.</div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -2518,14 +2489,19 @@ claim(epochId):
               </div>
             </div>
 
-            {syncMsg ? <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-200">{syncMsg}</div> : null}
+            {syncMsg ? (
+              <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950 p-3 text-[12px] text-neutral-200">
+                {syncMsg}
+              </div>
+            ) : null}
 
             <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-[12px] text-neutral-400">
                   Referee list source: <span className="font-mono text-neutral-200">Bound</span> events (player → referrer).
                   <span className="ml-2 text-neutral-600">
-                    {refsScanComplete ? "Scan complete" : "Partial scan"} • cursor: <span className="font-mono text-neutral-300">{refsScanFromBlock}</span>
+                    {refsScanComplete ? "Scan complete" : "Partial scan"} • cursor:{" "}
+                    <span className="font-mono text-neutral-300">{refsScanFromBlock}</span>
                   </span>
                 </div>
                 {refsLoading ? <Pill tone="neutral">Loading</Pill> : refsScanComplete ? <Pill tone="good">Complete</Pill> : <Pill tone="warn">Partial</Pill>}
@@ -2568,7 +2544,8 @@ claim(epochId):
                   <div className="mt-1 text-[12px] text-neutral-500">
                     Canonical from DTC <span className="font-mono text-neutral-300">Transfer</span> logs (player ↔ vault).
                     <span className="ml-2 text-neutral-600">
-                      {refStatsPartial ? "Partial scan" : "Scan complete"} • cursor: <span className="font-mono text-neutral-300">{refStatsFromBlock}</span>
+                      {refStatsPartial ? "Partial scan" : "Scan complete"} • cursor:{" "}
+                      <span className="font-mono text-neutral-300">{refStatsFromBlock}</span>
                     </span>
                   </div>
                 </div>

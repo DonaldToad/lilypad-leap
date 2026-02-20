@@ -12,6 +12,7 @@
     "@relayprotocol/relay-kit-ui": "^7.1.0",
     "@relayprotocol/relay-sdk": "^5.1.0",
     "@tanstack/react-query": "^5.90.20",
+    "dotenv": "^17.3.1",
     "next": "^16.1.6",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",

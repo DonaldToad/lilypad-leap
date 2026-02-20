@@ -35,49 +35,41 @@ import {
 type ModeKey = "safe" | "wild" | "insane";
 
 const MAX_HOPS = 10;
-
-// IMPORTANT: Liquidity protection
-const MAX_AMOUNT = 12_000; // ALWAYS 12,000
+const MAX_AMOUNT = 12_000;
 const MIN_AMOUNT = 1;
 
-// ✅ Supported TOKEN-mode chains (Linea + Base)
 const TOKEN_CHAIN_IDS = [59144, 8453] as const;
 type TokenChainId = (typeof TOKEN_CHAIN_IDS)[number];
 function isTokenChain(id: number | undefined): id is TokenChainId {
-  return !!id && TOKEN_CHAIN_IDS.includes(id as TokenChainId);
+  return !!id && (TOKEN_CHAIN_IDS as readonly number[]).includes(id);
 }
 
-/**
- * ✅ CONTRACT CONFIG (FIXED)
- * - Spender for approvals must be the GAME contract (it calls transferFrom).
- * - createGame / cashOut are on the GAME contract (LilypadLeapGame).
- */
-const DTC_BY_CHAIN: Record<number, Hex> = {
-  // Linea
+export const DTC_BY_CHAIN: Record<number, `0x${string}`> = {
   59144: "0xEb1fD1dBB8aDDA4fa2b5A5C4bcE34F6F20d125D2",
-  // Base (keep whatever you already use in your app if different)
-  // If your Base DTC differs, replace it here.
-  8453: "0xFbA669C72b588439B29F050b93500D8b645F9354", // 
+  8453: "0xFbA669C72b588439B29F050b93500D8b645F9354",
 };
 
-const VAULT_BY_CHAIN: Record<number, Hex> = {
-  // Linea
+export const VAULT_BY_CHAIN: Record<number, `0x${string}`> = {
   59144: "0xF4Bf262565e0Cc891857DF08Fe55de5316d0Db45",
-  // Base
   8453: "0x2C853B5a06A1F6C3A0aF4c1627993150c6585eb3",
 };
 
-const GAME_BY_CHAIN: Record<number, Hex> = {
-  // Linea
-  59144: "0x71dF04f70b87994C4cB2a69A735D821169fE7148",
-  // Base
-  8453: "0x7f4EAc0BDBeF0b782ff57E6897112DB9D31E6AB3",
+export const GAME_BY_CHAIN: Record<number, `0x${string}`> = {
+  59144: "0x5Eb6920Af0163e749274619E8076666885Bf0B57",
+  8453: "0x05df07E37B8dF836549B28AA3195FD54D57DD845",
 };
 
-// ✅ LilypadLeapGame ABI (as provided by you)
-const LILYPAD_LEAP_GAME_ABI = [
+export const REFERRAL_REGISTRY_BY_CHAIN: Record<number, `0x${string}`> = {
+  59144: "0xAbD4c0dF150025a1982FC8236e5880EcC9156BeE",
+  8453: "0x994a28Bb8d84AacB691bA8773e81dAFC1acEb39B",
+};
+
+const LILYPAD_LEAP_GAME_V2_ABI = [
   {
-    inputs: [{ internalType: "address", name: "vault", type: "address" }],
+    inputs: [
+      { internalType: "address", name: "vault", type: "address" },
+      { internalType: "address", name: "registry", type: "address" },
+    ],
     stateMutability: "nonpayable",
     type: "constructor",
   },
@@ -93,7 +85,7 @@ const LILYPAD_LEAP_GAME_ABI = [
       { indexed: true, internalType: "bytes32", name: "gameId", type: "bytes32" },
       { indexed: true, internalType: "address", name: "player", type: "address" },
       { indexed: false, internalType: "uint256", name: "amountReceived", type: "uint256" },
-      { indexed: false, internalType: "enum LilypadLeapGame.Mode", name: "mode", type: "uint8" },
+      { indexed: false, internalType: "enum LilypadLeapGameV2.Mode", name: "mode", type: "uint8" },
       { indexed: false, internalType: "bytes32", name: "userCommit", type: "bytes32" },
       { indexed: false, internalType: "bytes32", name: "randAnchor", type: "bytes32" },
       { indexed: false, internalType: "uint256", name: "createdAt", type: "uint256" },
@@ -128,9 +120,13 @@ const LILYPAD_LEAP_GAME_ABI = [
       { indexed: true, internalType: "address", name: "player", type: "address" },
       { indexed: false, internalType: "bool", name: "won", type: "bool" },
       { indexed: false, internalType: "uint8", name: "cashoutHop", type: "uint8" },
+      { indexed: false, internalType: "uint256", name: "amountReceived", type: "uint256" },
       { indexed: false, internalType: "uint256", name: "payout", type: "uint256" },
+      { indexed: false, internalType: "uint256", name: "houseProfit", type: "uint256" },
+      { indexed: false, internalType: "uint256", name: "playerNetWin", type: "uint256" },
       { indexed: false, internalType: "bytes32", name: "userCommitHash", type: "bytes32" },
       { indexed: false, internalType: "bytes32", name: "randAnchor", type: "bytes32" },
+      { indexed: false, internalType: "uint256", name: "settledAt", type: "uint256" },
     ],
     name: "GameSettled",
     type: "event",
@@ -165,6 +161,13 @@ const LILYPAD_LEAP_GAME_ABI = [
   },
   {
     inputs: [],
+    name: "REGISTRY",
+    outputs: [{ internalType: "contract IReferralRegistryV2", name: "", type: "address" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
     name: "TOKEN",
     outputs: [{ internalType: "contract IERC20", name: "", type: "address" }],
     stateMutability: "view",
@@ -191,7 +194,7 @@ const LILYPAD_LEAP_GAME_ABI = [
   {
     inputs: [
       { internalType: "uint256", name: "amount", type: "uint256" },
-      { internalType: "enum LilypadLeapGame.Mode", name: "mode", type: "uint8" },
+      { internalType: "enum LilypadLeapGameV2.Mode", name: "mode", type: "uint8" },
       { internalType: "bytes32", name: "userCommit", type: "bytes32" },
     ],
     name: "createGame",
@@ -214,7 +217,7 @@ const LILYPAD_LEAP_GAME_ABI = [
       { internalType: "uint128", name: "amount", type: "uint128" },
       { internalType: "uint40", name: "createdAt", type: "uint40" },
       { internalType: "uint40", name: "deadline", type: "uint40" },
-      { internalType: "enum LilypadLeapGame.Mode", name: "mode", type: "uint8" },
+      { internalType: "enum LilypadLeapGameV2.Mode", name: "mode", type: "uint8" },
       { internalType: "bytes32", name: "userCommit", type: "bytes32" },
       { internalType: "bytes32", name: "randAnchor", type: "bytes32" },
       { internalType: "bool", name: "settled", type: "bool" },
@@ -261,7 +264,6 @@ const LILYPAD_LEAP_GAME_ABI = [
   },
 ] as const;
 
-// Sound files (served from /public)
 const SOUND_BASE = "/lilypad-leap/sounds";
 type SoundKey = "start" | "hop" | "busted" | "cashout" | "maxhit" | "win";
 const SOUND_SRC: Record<SoundKey, string> = {
@@ -273,17 +275,7 @@ const SOUND_SRC: Record<SoundKey, string> = {
   win: `${SOUND_BASE}/win.mp3`,
 };
 
-// Fixed per-hop success + fixed payout tables (approved)
-const MODE: Record<
-  ModeKey,
-  {
-    key: ModeKey;
-    label: string;
-    subtitle: string;
-    pStep: number; // 0..1 (fixed per hop)
-    mults: number[]; // hop 1..10 cashout multipliers
-  }
-> = {
+const MODE: Record<ModeKey, { key: ModeKey; label: string; subtitle: string; pStep: number; mults: number[] }> = {
   safe: {
     key: "safe",
     label: "🛡️ SAFE",
@@ -307,7 +299,6 @@ const MODE: Record<
   },
 };
 
-// --- Deterministic RNG (xorshift32) ---
 function xorshift32(x: number) {
   let y = x >>> 0;
   y ^= y << 13;
@@ -319,7 +310,6 @@ function xorshift32(x: number) {
   return y >>> 0;
 }
 
-// Convert uint32 -> roll in [0,100)
 function uint32ToRoll(u: number) {
   const r = (u / 0xffffffff) * 100;
   return Math.max(0, Math.min(99.999, r));
@@ -361,7 +351,6 @@ function ChainIcon({ chainKey, alt }: { chainKey: string; alt: string }) {
   );
 }
 
-// DTC icon (served from your assets repo via jsdelivr)
 const DTC_ICON_SRC = "https://cdn.jsdelivr.net/gh/DonaldToad/dtc-assets@main/dtc-32.svg";
 
 function DtcIcon({ size = 14 }: { size?: number }) {
@@ -378,7 +367,6 @@ function DtcIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-// Build a deterministic 32-byte-ish hex "commit hash" from a uint32 state (DEMO placeholder)
 function buildCommitHash(seed: number) {
   let s = seed >>> 0;
   const parts: string[] = [];
@@ -435,10 +423,6 @@ function randomSecret32(): Hex {
 type Outcome = "idle" | "success" | "bust" | "cashout" | "maxhit";
 type AnimEvent = "idle" | "hop_ok" | "hop_fail" | "cash_out" | "max_hit";
 
-/**
- * ✅ Local storage for secrets (so /verify can load them on same device)
- * key: `${chainId}:${game}:${gameId}` -> userSecret
- */
 const SECRET_STORE_KEY = "lilypadLeapSecretsV2";
 function secretStoreKey(chainId: number, game: Hex, gameId: Hex) {
   return `${chainId}:${game.toLowerCase()}:${gameId.toLowerCase()}`;
@@ -452,9 +436,6 @@ function setStoredSecret(chainId: number, game: Hex, gameId: Hex, userSecret: He
   } catch {}
 }
 
-/**
- * ✅ Shareable bundle (paste into /verify)
- */
 function buildVerifyBundle(params: {
   chainId: number;
   vault: Hex;
@@ -477,13 +458,9 @@ function buildVerifyBundle(params: {
 }
 
 export default function PlayPage() {
-  // Prevent hydration mismatch
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  // -----------------------------
-  // Sounds
-  // -----------------------------
   const [soundOn, setSoundOn] = useState<boolean>(true);
   const soundsRef = useRef<Record<SoundKey, HTMLAudioElement> | null>(null);
   const winTimerRef = useRef<number | null>(null);
@@ -505,7 +482,6 @@ export default function PlayPage() {
     if (!bank) return;
     const a = bank[key];
     if (!a) return;
-
     try {
       if (opts?.restart !== false) a.currentTime = 0;
       const p = a.play();
@@ -540,17 +516,12 @@ export default function PlayPage() {
       } catch {}
       soundsRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (!soundOn) stopAllSounds();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soundOn]);
 
-  // -----------------------------
-  // Wallet + Chain
-  // -----------------------------
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { connect, connectors, isPending: connectPending } = useConnect();
@@ -565,7 +536,6 @@ export default function PlayPage() {
   const safeConnectPending = mounted ? connectPending : false;
   const safeConnectors = mounted ? connectors : [];
 
-  // Chain selection (UI-only)
   const [selectedChainKey, setSelectedChainKey] = useState<string>(PRIMARY_CHAIN.key);
   const selectedChain = CHAIN_LIST.find((c) => c.key === selectedChainKey) ?? PRIMARY_CHAIN;
 
@@ -575,15 +545,14 @@ export default function PlayPage() {
   const tokenChainOk = mounted && safeIsConnected && isTokenChain(safeChainId);
   const isWrongNetwork = mounted && safeIsConnected && playMode === "token" && !tokenChainOk;
 
-  // ✅ Effective chain for READS
   const effectiveChainId =
     playMode === "token" && tokenChainOk ? (safeChainId as number) : selectedChain.chainId;
 
   const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
   const vaultAddress = (VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
   const gameAddress = (GAME_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const registryAddress = (REFERRAL_REGISTRY_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
 
-  // If wallet disconnects, force demo.
   useEffect(() => {
     if (!safeIsConnected) setPlayMode("demo");
   }, [safeIsConnected]);
@@ -603,64 +572,51 @@ export default function PlayPage() {
   const [settledPayoutWei, setSettledPayoutWei] = useState<bigint | null>(null);
   const [settledWon, setSettledWon] = useState<boolean | null>(null);
 
-  // ✅ verification bundle (copy/paste into /verify)
   const [verifyBundle, setVerifyBundle] = useState<string>("");
   const [verifyBundleCopied, setVerifyBundleCopied] = useState<boolean>(false);
 
-  // Mode selection
   const [modeKey, setModeKey] = useState<ModeKey>("safe");
   const mode = MODE[modeKey];
 
-  // Amount input
   const [amount, setAmount] = useState<number>(1000);
   const [amountRaw, setAmountRaw] = useState<string>("1000");
   const [maxClampNotice, setMaxClampNotice] = useState<boolean>(false);
 
-  // Run lifecycle
   const [hasStarted, setHasStarted] = useState<boolean>(false);
   const [hops, setHops] = useState<number>(0);
   const [currentMult, setCurrentMult] = useState<number>(1.0);
   const [isFailed, setIsFailed] = useState<boolean>(false);
   const [isCashedOut, setIsCashedOut] = useState<boolean>(false);
 
-  // ✅ RNG state MUST be SSR-stable
   const [rngState, setRngState] = useState<number>(0x6a41f7f5);
   useEffect(() => {
     if (!mounted) return;
     setRngState((Date.now() ^ 0x6a41f7f5) >>> 0);
   }, [mounted]);
 
-  // Commit hash (demo placeholder)
   const commitHash = useMemo(() => buildCommitHash(rngState), [rngState]);
   const [commitExpanded, setCommitExpanded] = useState(false);
   const [commitCopied, setCommitCopied] = useState(false);
 
-  // Last attempt info
   const [lastRoll, setLastRoll] = useState<number | null>(null);
   const [lastAttemptHop, setLastAttemptHop] = useState<number | null>(null);
   const [lastRequiredPct, setLastRequiredPct] = useState<number | null>(null);
 
-  // Visual FX
   const [poppedHop, setPoppedHop] = useState<number | null>(null);
   const [failFlash, setFailFlash] = useState<boolean>(false);
   const [hopPulse, setHopPulse] = useState<boolean>(false);
 
-  // Outcome banner
   const [outcome, setOutcome] = useState<Outcome>("idle");
   const [outcomeText, setOutcomeText] = useState<string>("");
 
-  // Animation hooks
   const [animEvent, setAnimEvent] = useState<AnimEvent>("idle");
   const [animNonce, setAnimNonce] = useState<number>(0);
 
-  // Action lock
   const [actionLocked, setActionLocked] = useState<boolean>(false);
   const lockTimerRef = useRef<number | null>(null);
 
-  // Table expansion
   const [showAllSteps, setShowAllSteps] = useState<boolean>(true);
 
-  // Scroll helper refs
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   const boardScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -669,24 +625,13 @@ export default function PlayPage() {
 
   const lastStartedAmountRef = useRef<number>(1000);
 
-  const multTable = useMemo(() => mode.mults, [modeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const multTable = useMemo(() => mode.mults, [modeKey]);
   const stepSuccessPctExact = useMemo(() => mode.pStep * 100, [mode.pStep]);
 
-  // -----------------------------
-  // ✅ TOKEN MODE deterministic seed (MATHEMATICALLY EXACT)
-  // IMPORTANT FIX:
-  // Use GAME contract address (NOT vault) in the seed — this is what makes UI match on-chain,
-  // and fixes "I reached 10 hops but chain says busted / payout 0".
-  //
-  // seed = keccak256(abi.encodePacked(userSecret, randAnchor, gameAddress, gameId))
-  // hop roll = uint256(keccak256(abi.encodePacked(seed, hopNo))) % 10000
-  // success if roll < pBps
-  // -----------------------------
   const tokenSeed = useMemo(() => {
     if (playMode !== "token") return null;
     if (!activeUserSecret || !activeGameId || !activeRandAnchor) return null;
     if (gameAddress === zeroAddress) return null;
-
     return keccak256(
       encodePacked(
         ["bytes32", "bytes32", "address", "bytes32"],
@@ -698,9 +643,6 @@ export default function PlayPage() {
   const nextHopIndex = hops;
   const nextHopNo = hops + 1;
 
-  // -----------------------------
-  // Token mode accounting (18 decimals)
-  // -----------------------------
   const amountWei = useMemo(() => {
     try {
       return parseUnits(String(Math.max(0, Math.floor(amount))), 18);
@@ -714,18 +656,13 @@ export default function PlayPage() {
     return parseUnits(String(Math.max(1, Math.floor(approveCapDtc))), 18);
   }, [approvalPolicy, approveCapDtc]);
 
-  /**
-   * ✅ Allowance spender MUST be the GAME contract
-   */
   const { data: allowanceWei, refetch: refetchAllowance } = useReadContract({
     chainId: effectiveChainId,
     abi: ERC20_ABI,
     address: tokenAddress,
     functionName: "allowance",
     args:
-      safeAddress && gameAddress !== zeroAddress
-        ? [safeAddress, gameAddress]
-        : [zeroAddress, zeroAddress],
+      safeAddress && gameAddress !== zeroAddress ? [safeAddress, gameAddress] : [zeroAddress, zeroAddress],
     query: {
       enabled:
         mounted &&
@@ -737,7 +674,6 @@ export default function PlayPage() {
     },
   });
 
-  // ✅ Read DTC balance
   const { data: balanceWei, refetch: refetchBalance, isFetching: balanceFetching } = useReadContract({
     chainId: effectiveChainId,
     abi: ERC20_ABI,
@@ -786,16 +722,12 @@ export default function PlayPage() {
     if (startPending) return false;
     if (cashOutPending) return false;
     if (amount < MIN_AMOUNT) return false;
-
     if (playMode === "demo") return true;
-
     if (!mounted) return false;
     if (!safeIsConnected || !safeAddress) return false;
     if (!tokenChainOk) return false;
-
-    // Must have addresses
-    if (tokenAddress === zeroAddress || gameAddress === zeroAddress || vaultAddress === zeroAddress) return false;
-
+    if (tokenAddress === zeroAddress || gameAddress === zeroAddress || vaultAddress === zeroAddress || registryAddress === zeroAddress)
+      return false;
     return hasEnoughAllowance;
   }, [
     hasStarted,
@@ -810,6 +742,7 @@ export default function PlayPage() {
     tokenAddress,
     gameAddress,
     vaultAddress,
+    registryAddress,
     hasEnoughAllowance,
   ]);
 
@@ -823,7 +756,6 @@ export default function PlayPage() {
     return stepSuccessPctExact;
   }, [canHop, stepSuccessPctExact]);
 
-  // Default table behavior
   useEffect(() => {
     const isMobile = typeof window !== "undefined" && window.innerWidth < 900;
     setShowAllSteps(!isMobile);
@@ -833,7 +765,6 @@ export default function PlayPage() {
     return () => {
       if (lockTimerRef.current) window.clearTimeout(lockTimerRef.current);
       lockTimerRef.current = null;
-
       if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
       winTimerRef.current = null;
     };
@@ -842,12 +773,10 @@ export default function PlayPage() {
   function lockActions(ms: number) {
     if (lockTimerRef.current) window.clearTimeout(lockTimerRef.current);
     lockTimerRef.current = null;
-
     if (ms <= 0) {
       setActionLocked(false);
       return;
     }
-
     setActionLocked(true);
     lockTimerRef.current = window.setTimeout(() => {
       setActionLocked(false);
@@ -855,9 +784,6 @@ export default function PlayPage() {
     }, ms);
   }
 
-  // -----------------------------
-  // ✅ Robust scroll helpers (mobile safe)
-  // -----------------------------
   const isMobileNow = () => (typeof window !== "undefined" ? window.innerWidth < 900 : false);
 
   const scrollToRefTop = useCallback((ref: { current: HTMLElement | null }, offset = 84) => {
@@ -873,24 +799,17 @@ export default function PlayPage() {
       const offset = opts?.offset ?? 84;
       const tries = opts?.tries ?? 10;
       const delayMs = opts?.delayMs ?? 120;
-
       if (typeof window === "undefined") return;
       if (!isMobileNow()) return;
-
       let attempt = 0;
       const tick = () => {
         attempt += 1;
-
         window.requestAnimationFrame(() => {
           const ok = scrollToRefTop(ref, offset);
           if (ok) return;
-
-          if (attempt < tries) {
-            window.setTimeout(tick, delayMs);
-          }
+          if (attempt < tries) window.setTimeout(tick, delayMs);
         });
       };
-
       window.setTimeout(tick, 80);
     },
     [scrollToRefTop]
@@ -906,85 +825,57 @@ export default function PlayPage() {
     scrollToRefTopWithRetry(modeScrollRef as any, { offset: 96, tries: 10, delayMs: 140 });
   }
 
-  // ✅ Auto-scroll to MODE on mobile on first paint (reliable)
   useEffect(() => {
     if (!mounted) return;
     if (didAutoScrollModeRef.current) return;
     if (hasStarted) return;
     if (!isMobileNow()) return;
-
     didAutoScrollModeRef.current = true;
     scrollToMode();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mounted]);
+  }, [mounted, hasStarted, scrollToMode]);
 
   function triggerAnim(ev: AnimEvent) {
     setAnimEvent(ev);
     setAnimNonce((n) => n + 1);
-
-    const ms =
-      ev === "hop_ok"
-        ? 260
-        : ev === "hop_fail"
-        ? 520
-        : ev === "cash_out"
-        ? 520
-        : ev === "max_hit"
-        ? 680
-        : 0;
-
+    const ms = ev === "hop_ok" ? 260 : ev === "hop_fail" ? 520 : ev === "cash_out" ? 520 : ev === "max_hit" ? 680 : 0;
     lockActions(ms);
   }
 
   function resetRunNewSeed() {
     if (winTimerRef.current) window.clearTimeout(winTimerRef.current);
     winTimerRef.current = null;
-
     const newSeed = ((Date.now() ^ 0x9e3779b9) >>> 0) as number;
     setRngState(newSeed);
-
     setHasStarted(false);
     setHops(0);
     setCurrentMult(1.0);
     setIsFailed(false);
     setIsCashedOut(false);
-
     setCashOutPending(false);
-
     setLastRoll(null);
     setLastAttemptHop(null);
     setLastRequiredPct(null);
-
     setPoppedHop(null);
     setFailFlash(false);
     setHopPulse(false);
-
     setOutcome("idle");
     setOutcomeText("");
-
     setCommitExpanded(false);
     setCommitCopied(false);
-
     setAnimEvent("idle");
     setAnimNonce((n) => n + 1);
-
     lockActions(0);
-
-    // clear game-specific states
     setActiveGameId(null);
     setActiveUserSecret(null);
     setActiveRandAnchor(null);
     setSettledPayoutWei(null);
     setSettledWon(null);
-
     setVerifyBundle("");
     setVerifyBundleCopied(false);
-
     setTxStatus("");
     setTxError("");
   }
 
-  // "PLAY AGAIN" uses previous started amount, and starts immediately
   function playAgainSameAmount() {
     const v = clampInt(lastStartedAmountRef.current || amount, MIN_AMOUNT, MAX_AMOUNT);
     setAmount(v);
@@ -995,7 +886,6 @@ export default function PlayPage() {
     }, 0);
   }
 
-  // "CHANGE AMOUNT" ends the run but preserves the last used amount in input for editing
   function changeAmountFlow() {
     resetRunNewSeed();
     window.setTimeout(() => scrollToMode(), 80);
@@ -1003,23 +893,18 @@ export default function PlayPage() {
 
   function sanitizeAndSetAmount(nextRaw: string) {
     if (hasStarted || startPending || cashOutPending) return;
-
     const cleaned = nextRaw.replace(/[^\d]/g, "");
     setAmountRaw(cleaned);
-
     if (!cleaned.length) {
       setAmount(0);
       return;
     }
-
     const parsed = parseInt(cleaned, 10);
     const clamped = clampInt(parsed, MIN_AMOUNT, MAX_AMOUNT);
-
     if (parsed > MAX_AMOUNT) {
       setMaxClampNotice(true);
       window.setTimeout(() => setMaxClampNotice(false), 1400);
     }
-
     setAmount(clamped);
     setAmountRaw(String(clamped));
   }
@@ -1034,26 +919,22 @@ export default function PlayPage() {
   async function approveNow() {
     if (!mounted) return;
     if (!safeIsConnected || !safeAddress) return;
-
-    // ✅ Hard gate: no approvals off Linea/Base
     if (!tokenChainOk) {
       setTxError("Wrong network. Switch to Linea or Base.");
       return;
     }
     if (tokenAddress === zeroAddress) {
-      setTxError("Token address not set in this file. (Set tokenAddress mapping or re-import your DTC_BY_CHAIN.)");
+      setTxError("Token address not set.");
       return;
     }
     if (gameAddress === zeroAddress) {
       setTxError("Missing LilypadLeapGame address for this chain.");
       return;
     }
-
     try {
       if (!publicClient) throw new Error("No public client");
       setTxError("");
       setTxStatus("Approving DTC…");
-
       const hash = await writeContractAsync({
         chainId: safeChainId as number,
         abi: ERC20_ABI,
@@ -1061,7 +942,6 @@ export default function PlayPage() {
         functionName: "approve",
         args: [gameAddress, approvalTargetWei],
       });
-
       await publicClient.waitForTransactionReceipt({ hash });
       await refetchAllowance();
       try {
@@ -1090,10 +970,8 @@ export default function PlayPage() {
     setActiveRandAnchor(null);
     setSettledPayoutWei(null);
     setSettledWon(null);
-
     setVerifyBundle("");
     setVerifyBundleCopied(false);
-
     setTxError("");
     setCashOutPending(false);
 
@@ -1101,15 +979,12 @@ export default function PlayPage() {
       setHasStarted(true);
       setOutcome("idle");
       setOutcomeText("");
-
       playSound("start");
       window.setTimeout(() => scrollToBoard(), 120);
-
       setStartPending(false);
       return;
     }
 
-    // TOKEN MODE: createGame() at START (on GAME contract)
     if (!mounted || !safeIsConnected || !safeAddress) {
       setTxError("Connect your wallet first.");
       setStartPending(false);
@@ -1125,13 +1000,12 @@ export default function PlayPage() {
       if (!publicClient) throw new Error("No public client");
       if (gameAddress === zeroAddress) throw new Error("Missing LilypadLeapGame address for this chain.");
       if (vaultAddress === zeroAddress) throw new Error("Missing ToadArcadeVault address for this chain.");
+      if (registryAddress === zeroAddress) throw new Error("Missing ReferralRegistryV2 address for this chain.");
 
       const userSecret = randomSecret32();
-      const userCommit = keccak256(encodePacked(["bytes32"], [userSecret])); // exact: keccak256(abi.encodePacked(userSecret))
-
+      const userCommit = keccak256(encodePacked(["bytes32"], [userSecret]));
       setActiveUserSecret(userSecret);
 
-      // Use secret as a UX seed (purely for animation/demo rolls)
       const seed32 = Number(BigInt(userSecret) & 0xffffffffn);
       setRngState((seed32 >>> 0) as number);
 
@@ -1141,7 +1015,7 @@ export default function PlayPage() {
 
       const hash = await writeContractAsync({
         chainId: safeChainId as number,
-        abi: LILYPAD_LEAP_GAME_ABI,
+        abi: LILYPAD_LEAP_GAME_V2_ABI,
         address: gameAddress,
         functionName: "createGame",
         args: [amountWei, modeEnum, userCommit],
@@ -1149,18 +1023,13 @@ export default function PlayPage() {
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
 
-      // ✅ Decode GameCreated from GAME contract logs (NOT the vault)
       let gameId: Hex | null = null;
       let randAnchor: Hex | null = null;
 
       for (const log of receipt.logs) {
         if ((log.address ?? "").toLowerCase() !== gameAddress.toLowerCase()) continue;
         try {
-          const decoded = decodeEventLog({
-            abi: LILYPAD_LEAP_GAME_ABI,
-            data: log.data,
-            topics: log.topics,
-          });
+          const decoded = decodeEventLog({ abi: LILYPAD_LEAP_GAME_V2_ABI, data: log.data, topics: log.topics });
           if (decoded.eventName === "GameCreated") {
             gameId = (decoded.args as any).gameId as Hex;
             randAnchor = (decoded.args as any).randAnchor as Hex;
@@ -1170,16 +1039,14 @@ export default function PlayPage() {
       }
 
       if (!gameId || !isHex(gameId) || gameId.length !== 66) {
-        throw new Error("GameCreated event not found in receipt. (Make sure you're using the GAME address + ABI.)");
+        throw new Error("GameCreated event not found in receipt.");
       }
 
       setActiveGameId(gameId);
       setActiveRandAnchor(randAnchor);
 
-      // ✅ store secret locally so /verify can find it on same device
       setStoredSecret(effectiveChainId, gameAddress as Hex, gameId, userSecret);
 
-      // ✅ Build shareable verification bundle for cross-device
       setVerifyBundle(
         buildVerifyBundle({
           chainId: effectiveChainId,
@@ -1223,7 +1090,6 @@ export default function PlayPage() {
     let requiredPct: number;
 
     if (playMode === "token") {
-      // ✅ EXACT match with Solidity
       if (!tokenSeed) {
         setTxError("Missing token seed. Please START again.");
         return;
@@ -1233,22 +1099,20 @@ export default function PlayPage() {
         return;
       }
 
-      const hopNo = nextHopNo; // 1..10
+      const hopNo = nextHopNo;
       const h = keccak256(encodePacked(["bytes32", "uint8"], [tokenSeed, hopNo])) as Hex;
-      const rBps = Number(BigInt(h) % 10000n); // 0..9999
+      const rBps = Number(BigInt(h) % 10000n);
       rollPct = rBps / 100;
 
       const pBps = modeKey === "safe" ? 9000 : modeKey === "wild" ? 8200 : 6900;
       requiredPct = pBps / 100;
 
-      // ✅ IMPORTANT: contract uses lose if r >= p, win if r < p
       passed = rBps < pBps;
     } else {
       const u = xorshift32(rngState);
       rollPct = uint32ToRoll(u);
 
       requiredPct = stepSuccessPctExact;
-      // demo uses <= (UI-only), but token mode is exact contract math
       passed = rollPct <= requiredPct;
 
       setRngState(u);
@@ -1276,7 +1140,6 @@ export default function PlayPage() {
       return;
     }
 
-    // Passed
     const completedHop = nextHopNo;
     setHops(completedHop);
 
@@ -1285,9 +1148,7 @@ export default function PlayPage() {
 
     setOutcome("success");
     setOutcomeText(
-      `Hop ${completedHop} cleared. Roll ${rollPct.toFixed(3)} ≤ ${requiredPct.toFixed(6)}%. Cash Out now: ${fmtX(
-        newMult
-      )}.`
+      `Hop ${completedHop} cleared. Roll ${rollPct.toFixed(3)} ≤ ${requiredPct.toFixed(6)}%. Cash Out now: ${fmtX(newMult)}.`
     );
 
     setPoppedHop(completedHop);
@@ -1295,7 +1156,6 @@ export default function PlayPage() {
 
     triggerAnim("hop_ok");
 
-    // MAX HIT reached
     if (completedHop >= MAX_HOPS) {
       setOutcome("maxhit");
       setOutcomeText(`MAX HIT achieved: ${MAX_HOPS}/${MAX_HOPS}. Cash Out available at ${fmtX(newMult)}.`);
@@ -1337,7 +1197,7 @@ export default function PlayPage() {
 
       const hash = await writeContractAsync({
         chainId: safeChainId as number,
-        abi: LILYPAD_LEAP_GAME_ABI,
+        abi: LILYPAD_LEAP_GAME_V2_ABI,
         address: gameAddress,
         functionName: "cashOut",
         args: [activeGameId, activeUserSecret, cashoutHop],
@@ -1348,15 +1208,10 @@ export default function PlayPage() {
       let payout: bigint | null = null;
       let won: boolean | null = null;
 
-      // ✅ Decode GameSettled from GAME logs
       for (const log of receipt.logs) {
         if ((log.address ?? "").toLowerCase() !== gameAddress.toLowerCase()) continue;
         try {
-          const decoded = decodeEventLog({
-            abi: LILYPAD_LEAP_GAME_ABI,
-            data: log.data,
-            topics: log.topics,
-          });
+          const decoded = decodeEventLog({ abi: LILYPAD_LEAP_GAME_V2_ABI, data: log.data, topics: log.topics });
           if (decoded.eventName === "GameSettled") {
             payout = (decoded.args as any).payout as bigint;
             won = (decoded.args as any).won as boolean;
@@ -1370,10 +1225,8 @@ export default function PlayPage() {
 
       const payoutDtc = payout !== null ? Number(formatUnits(payout, 18)) : null;
 
-      // Mark as ended only after settle succeeds
       setIsCashedOut(true);
 
-      // ✅ Update bundle with cashout hop + settle tx hash
       if (verifyBundle) {
         try {
           const b = JSON.parse(verifyBundle);
@@ -1386,17 +1239,13 @@ export default function PlayPage() {
       if (payout && payout > 0n) {
         setOutcome("cashout");
         setOutcomeText(
-          `Settled on-chain at hop ${cashoutHop}. Payout: ${payoutDtc?.toLocaleString("en-US", {
-            maximumFractionDigits: 4,
-          })} DTC.`
+          `Settled on-chain at hop ${cashoutHop}. Payout: ${payoutDtc?.toLocaleString("en-US", { maximumFractionDigits: 4 })} DTC.`
         );
         playSound("cashout");
         triggerAnim("cash_out");
       } else {
         setOutcome("bust");
-        setOutcomeText(
-          `Settled on-chain at hop ${cashoutHop}. Payout: 0 DTC. (won=${String(won)})`
-        );
+        setOutcomeText(`Settled on-chain at hop ${cashoutHop}. Payout: 0 DTC. (won=${String(won)})`);
         playSound("busted");
         triggerAnim("hop_fail");
       }
@@ -1411,7 +1260,6 @@ export default function PlayPage() {
     } catch (e: any) {
       setTxStatus("");
       setTxError(e?.shortMessage || e?.message || "cashOut failed");
-      // IMPORTANT: don’t end run on failure; just unlock the UI
     } finally {
       setCashOutPending(false);
       lockActions(0);
@@ -1432,7 +1280,6 @@ export default function PlayPage() {
       return;
     }
 
-    // TOKEN MODE
     if (!hasStarted || isFailed || isCashedOut || hops <= 0) return;
 
     if (!tokenChainOk) {
@@ -1447,7 +1294,6 @@ export default function PlayPage() {
     void settleOnChain(hops);
   }
 
-  // Auto-scroll to relevant row on mobile (table)
   useEffect(() => {
     const wrap = tableWrapRef.current;
     if (!wrap) return;
@@ -1458,33 +1304,25 @@ export default function PlayPage() {
       : isCashedOut
       ? `hop-row-${hops}`
       : `hop-row-${Math.min(hops + 1, MAX_HOPS)}`;
-
     const el = document.getElementById(targetId);
     if (!el) return;
-
     el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   }, [hops, isFailed, isCashedOut, lastAttemptHop]);
 
-  // Ensure mobile scroll prefers the OUTCOME BOARD on key state changes
   useEffect(() => {
     if (!mounted) return;
     if (!isMobileNow()) return;
     window.setTimeout(() => scrollToBoard(), 180);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce, cashOutPending, mounted]);
+  }, [hasStarted, hops, isFailed, isCashedOut, actionLocked, animEvent, animNonce, cashOutPending, mounted, scrollToBoard]);
 
-  // Visible hop rows (mobile-friendly collapse)
   const visibleHopSet = useMemo(() => {
     if (showAllSteps) return new Set<number>(Array.from({ length: MAX_HOPS }, (_, i) => i + 1));
-
     const s = new Set<number>();
-
     if (!hasStarted) {
       s.add(1);
       s.add(2);
       return s;
     }
-
     if (isFailed) {
       const h = lastAttemptHop ?? 1;
       s.add(Math.max(1, h - 1));
@@ -1492,19 +1330,16 @@ export default function PlayPage() {
       s.add(Math.min(MAX_HOPS, h + 1));
       return s;
     }
-
     if (hops <= 0) {
       s.add(1);
       s.add(2);
       return s;
     }
-
     if (hops >= MAX_HOPS) {
       s.add(MAX_HOPS - 1);
       s.add(MAX_HOPS);
       return s;
     }
-
     s.add(Math.max(1, hops - 1));
     s.add(hops);
     s.add(hops + 1);
@@ -1578,7 +1413,6 @@ export default function PlayPage() {
     return selectedChain.name;
   }, [mounted, safeIsConnected, safeAddress, playMode, tokenChainOk, safeChainId, selectedChain.name]);
 
-  // ✅ TOKEN mode chooser (hard-gated; auto-switch if possible)
   async function enterTokenMode() {
     if ((hasStarted && !ended) || startPending || cashOutPending) return;
 
@@ -1588,14 +1422,15 @@ export default function PlayPage() {
       return;
     }
 
-    if (!isTokenChain(safeChainId)) {
-      const target =
-        selectedChain.chainId === 59144 || selectedChain.chainId === 8453 ? selectedChain.chainId : 59144;
+    let targetChainId: number = 59144;
+    if (selectedChain.chainId === 59144 || selectedChain.chainId === 8453) targetChainId = selectedChain.chainId;
+    if (safeChainId === 59144 || safeChainId === 8453) targetChainId = safeChainId as number;
 
+    if (!isTokenChain(safeChainId)) {
       try {
         setTxError("");
         setTxStatus("Switch network to use TOKEN mode…");
-        await switchChain?.({ chainId: target });
+        await switchChain?.({ chainId: targetChainId });
         window.setTimeout(() => setTxStatus(""), 900);
       } catch {
         setTxStatus("");
@@ -1605,45 +1440,45 @@ export default function PlayPage() {
       }
     }
 
+    const cid = targetChainId;
+
+    if (!GAME_BY_CHAIN[cid] || GAME_BY_CHAIN[cid] === zeroAddress) {
+      setTxError("TOKEN mode is not configured for this chain (missing GAME address).");
+      setPlayMode("demo");
+      return;
+    }
+    if (!VAULT_BY_CHAIN[cid] || VAULT_BY_CHAIN[cid] === zeroAddress) {
+      setTxError("TOKEN mode is not configured for this chain (missing VAULT address).");
+      setPlayMode("demo");
+      return;
+    }
+    if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
+      setTxError("TOKEN mode is not configured for this chain (missing TOKEN address).");
+      setPlayMode("demo");
+      return;
+    }
+    if (!REFERRAL_REGISTRY_BY_CHAIN[cid] || REFERRAL_REGISTRY_BY_CHAIN[cid] === zeroAddress) {
+      setTxError("TOKEN mode is not configured for this chain (missing REGISTRY address).");
+      setPlayMode("demo");
+      return;
+    }
+
     setTxError("");
-
-    // Hard guard: addresses must exist
-const cid = safeChainId as number;
-
-if (!GAME_BY_CHAIN[cid] || GAME_BY_CHAIN[cid] === zeroAddress) {
-  setTxError("TOKEN mode is not configured for this chain (missing GAME address).");
-  setPlayMode("demo");
-  return;
-}
-if (!VAULT_BY_CHAIN[cid] || VAULT_BY_CHAIN[cid] === zeroAddress) {
-  setTxError("TOKEN mode is not configured for this chain (missing VAULT address).");
-  setPlayMode("demo");
-  return;
-}
-if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
-  setTxError("TOKEN mode is not configured for this chain (missing TOKEN address).");
-  setPlayMode("demo");
-  return;
-}
-
-
     setPlayMode("token");
   }
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50">
       <style jsx global>{`
-        /* Hide scrollbars but keep scrolling */
         .noScrollbars {
-          scrollbar-width: none; /* Firefox */
-          -ms-overflow-style: none; /* IE/Edge legacy */
+          scrollbar-width: none;
+          -ms-overflow-style: none;
         }
         .noScrollbars::-webkit-scrollbar {
           width: 0;
           height: 0;
-          display: none; /* Chrome/Safari */
+          display: none;
         }
-
         @keyframes rowPop {
           0% {
             transform: scale(1);
@@ -1727,7 +1562,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
             animation: none !important;
           }
         }
-
         @keyframes selectedGlowPulse {
           0%,
           100% {
@@ -1745,7 +1579,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
             animation: none !important;
           }
         }
-
         @keyframes padBob {
           0%,
           100% {
@@ -1815,7 +1648,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
             box-shadow: 0 0 0 rgba(250, 204, 21, 0);
           }
         }
-
         .toneSafe {
           background: radial-gradient(circle at 50% 15%, rgba(56, 189, 248, 0.14), transparent 55%),
             radial-gradient(circle at 25% 85%, rgba(34, 197, 94, 0.12), transparent 55%),
@@ -1871,7 +1703,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
               <p className="mt-2 text-neutral-300">
                 Choose a route, set an amount, then decide: <b>HOP</b> or <b>CASH OUT</b> — up to <b>10 hops</b>.
               </p>
-
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                 <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-200 ring-1 ring-emerald-500/20">
                   DEMO: Local simulation
@@ -1881,7 +1712,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </span>
               </div>
             </div>
-
             <div className="text-sm text-neutral-400">
               Network:{" "}
               <span suppressHydrationWarning className="text-neutral-100">
@@ -1890,7 +1720,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
             </div>
           </div>
 
-          {/* Chain selection (compact switch) */}
           <div className="mt-6 rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <div className="text-sm font-semibold text-neutral-100">Network</div>
@@ -1908,7 +1737,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                         if (isDisabled) return;
                         setSelectedChainKey(c.key);
 
-                        // Optional wallet switch, but DON'T force-switch in TOKEN mode to unsupported chains.
                         if (mounted && safeIsConnected && switchChain) {
                           if (playMode === "token" && !isTokenChain(c.chainId)) return;
                           try {
@@ -1955,9 +1783,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
             <div className="mt-2 text-xs text-neutral-500">{selectedChain.note}</div>
           </div>
 
-          {/* Main play UI */}
           <div className="mt-6 grid gap-6 lg:grid-cols-[360px_1fr]">
-            {/* Controls */}
             <div
               className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5"
               style={isFailed ? { animation: "failShake 420ms ease-out" } : undefined}
@@ -1976,7 +1802,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </span>
               </div>
 
-              {/* Wallet / Play mode */}
               <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -2082,7 +1907,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </div>
               ) : null}
 
-              {/* ✅ Verify bundle UI (only appears after TOKEN start) */}
               {playMode === "token" && verifyBundle ? (
                 <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
                   <div className="flex items-center justify-between gap-3">
@@ -2113,7 +1937,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </div>
               ) : null}
 
-              {/* Sound toggle */}
               <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -2132,9 +1955,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                       </span>
                       Sound
                     </div>
-                    <div className="mt-0.5 text-[11px] text-neutral-500">
-                      {soundOn ? "ON (default)" : "OFF (muted)"}
-                    </div>
+                    <div className="mt-0.5 text-[11px] text-neutral-500">{soundOn ? "ON (default)" : "OFF (muted)"}</div>
                   </div>
 
                   <button
@@ -2155,7 +1976,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </div>
               </div>
 
-              {/* Mode */}
               <div ref={modeScrollRef} className="mt-4 scroll-mt-24">
                 <div className="text-xs text-neutral-400">Route</div>
                 <div className="mt-2 flex gap-2">
@@ -2187,7 +2007,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 <div className="mt-2 text-xs text-neutral-500">{mode.subtitle}</div>
               </div>
 
-              {/* Amount */}
               <div className="mt-5">
                 <div className="flex items-center justify-between">
                   <div className="text-xs text-neutral-400">Amount (DTC)</div>
@@ -2282,7 +2101,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                           <div className="text-xs font-semibold text-neutral-200">Allowance</div>
                           <div className="mt-0.5 text-[11px] text-neutral-500">
                             {tokenAddress === zeroAddress
-                              ? "Token address not set in this file (allowance display disabled)."
+                              ? "Token address not set."
                               : hasEnoughAllowance
                               ? "✅ Sufficient"
                               : "⚠️ Needs approval"}
@@ -2318,9 +2137,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                         </button>
                       </div>
 
-                      <div className="mt-2 text-[11px] text-neutral-500">
-                        Token Mode settles on-chain at Cash Out. The hop animation is UX-only, but the pass/fail math is now EXACT.
-                      </div>
+                      <div className="mt-2 text-[11px] text-neutral-500">Token Mode settles on-chain at Cash Out.</div>
                     </div>
                   </>
                 ) : null}
@@ -2334,7 +2151,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 ) : null}
               </div>
 
-              {/* Run status */}
               <div className="mt-5 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold">Run status</div>
@@ -2380,9 +2196,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-300">Next hop success</span>
                     <span className="font-semibold">
-                      {nextHopSuccessExact === null
-                        ? "—"
-                        : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(6)}%)`}
+                      {nextHopSuccessExact === null ? "—" : `${ceilPercent(nextHopSuccessExact)} (exact ${nextHopSuccessExact.toFixed(6)}%)`}
                     </span>
                   </div>
 
@@ -2410,7 +2224,9 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                     <div className="flex items-center justify-between">
                       <span className="text-neutral-300">On-chain result</span>
                       <span className="font-semibold">
-                        {settledPayoutWei === null ? "—" : `${Number(formatUnits(settledPayoutWei, 18)).toLocaleString("en-US", { maximumFractionDigits: 6 })} DTC`}
+                        {settledPayoutWei === null
+                          ? "—"
+                          : `${Number(formatUnits(settledPayoutWei, 18)).toLocaleString("en-US", { maximumFractionDigits: 6 })} DTC`}
                         {settledWon !== null ? ` (won=${String(settledWon)})` : ""}
                       </span>
                     </div>
@@ -2439,9 +2255,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                       {commitExpanded ? commitHash : truncateHashFirstLast(commitHash)}
                     </div>
 
-                    <div className="mt-1 text-[11px] text-neutral-600">
-                      Demo placeholder. Token-mode fairness uses on-chain commit-reveal.
-                    </div>
+                    <div className="mt-1 text-[11px] text-neutral-600">Demo placeholder.</div>
                   </button>
 
                   <div className="mt-3 flex items-center justify-between">
@@ -2451,7 +2265,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </div>
               </div>
 
-              {/* Actions */}
               <div className="mt-5 grid gap-2">
                 {!hasStarted ? (
                   <button
@@ -2507,9 +2320,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
               </div>
             </div>
 
-            {/* Right side: Board + Table */}
             <div className="grid gap-6" ref={tableWrapRef}>
-              {/* Board */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
@@ -2522,11 +2333,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </div>
 
                 <div className="mt-4 overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900/30">
-                  <div
-                    ref={boardScrollRef}
-                    className={`relative w-full ${modeToneClass}`}
-                    style={{ paddingTop: "64%", minHeight: 420 }}
-                  >
+                  <div ref={boardScrollRef} className={`relative w-full ${modeToneClass}`} style={{ paddingTop: "64%", minHeight: 420 }}>
                     <div className="absolute inset-0">
                       <div className="absolute inset-0 bg-gradient-to-b from-neutral-950/20 via-neutral-950/10 to-neutral-950/30" />
                       <div
@@ -2538,7 +2345,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                         }}
                       />
 
-                      {/* Pad A (current) */}
                       <div className={`absolute left-[14%] bottom-[14%] h-[32%] w-[44%] ${padFxClass}`}>
                         <div
                           className="absolute inset-0 rounded-[999px] border border-emerald-300/10"
@@ -2552,21 +2358,18 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                         <div
                           className="absolute left-1/2 top-1/2 h-[68%] w-[68%] -translate-x-1/2 -translate-y-1/2 rounded-[999px] border border-neutral-50/10"
                           style={{
-                            background:
-                              "radial-gradient(circle at 35% 35%, rgba(255,255,255,0.10), rgba(255,255,255,0.02) 60%, rgba(0,0,0,0) 100%)",
+                            background: "radial-gradient(circle at 35% 35%, rgba(255,255,255,0.10), rgba(255,255,255,0.02) 60%, rgba(0,0,0,0) 100%)",
                           }}
                         />
                         <div
                           className="absolute left-1/2 top-1/2 h-[120%] w-[120%] rounded-[999px] border border-neutral-50/10"
                           style={{
                             transform: "translate(-50%, -50%)",
-                            animation:
-                              animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
+                            animation: animEvent === "hop_ok" || animEvent === "hop_fail" ? "padRipple 520ms ease-out" : "none",
                           }}
                         />
                       </div>
 
-                      {/* Pad B (next) */}
                       <div className={`absolute right-[12%] bottom-[22%] h-[24%] w-[34%] ${padFxClass}`}>
                         <div
                           className="absolute inset-0 rounded-[999px] border border-emerald-300/10"
@@ -2609,7 +2412,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </div>
               </div>
 
-              {/* PRIMARY CTA under Canvas */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-4">
                 {!ended ? (
                   <button
@@ -2649,7 +2451,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 <div className="mt-2 text-center text-[11px] text-neutral-500">{bottomHint}</div>
               </div>
 
-              {/* Outcome banner */}
               {outcome !== "idle" ? (
                 <div
                   className={[
@@ -2667,16 +2468,11 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </div>
               ) : null}
 
-              {/* Table */}
               <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-5">
                 <div className="flex items-start justify-between gap-6">
                   <div>
-                    <div className="text-sm font-semibold text-neutral-100">
-                      Steps, Win probability and Cash Out multiplier
-                    </div>
-                    <div className="mt-1 text-xs text-neutral-500">
-                      Token mode is now mathematically exact to the contract.
-                    </div>
+                    <div className="text-sm font-semibold text-neutral-100">Steps, Win probability and Cash Out multiplier</div>
+                    <div className="mt-1 text-xs text-neutral-500">Token mode is now mathematically exact to the contract.</div>
                   </div>
 
                   <div className="flex items-center gap-2">
@@ -2703,8 +2499,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                       if (!visibleHopSet.has(hopNo)) return null;
 
                       const isCompleted = hopNo <= hops && !isFailed;
-                      const isActive =
-                        hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
+                      const isActive = hopNo === hops + 1 && !isFailed && !isCashedOut && hasStarted && hops < MAX_HOPS;
 
                       const rowBase = "grid grid-cols-[90px_1fr_140px] px-4 py-3 text-sm";
                       const rowBg = isCompleted ? "bg-emerald-500/10" : isActive ? "bg-neutral-900/40" : "bg-neutral-950";
@@ -2755,7 +2550,6 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
 
                           <div className="text-center">
                             <span className="font-semibold text-neutral-100">{ceilPercent(stepSuccessPctExact)}</span>
-
                             {showRoll ? (
                               <span className="ml-2 text-xs text-neutral-400">
                                 (roll {formatRoll(lastRoll)} / need &lt; {lastRequiredPct!.toFixed(6)}%)
@@ -2771,8 +2565,7 @@ if (!DTC_BY_CHAIN[cid] || DTC_BY_CHAIN[cid] === zeroAddress) {
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4 text-sm text-neutral-300">
-                  <b>Important:</b> In TOKEN mode, the contract decides win/loss at settle. This UI now uses the exact same
-                  seed formula so “max hit” will match on-chain.
+                  <b>Important:</b> In TOKEN mode, the contract decides win/loss at settle. This UI uses the exact same seed formula.
                 </div>
               </div>
             </div>

@@ -1,21 +1,45 @@
 // app/lib/wagmi.ts
 import { createConfig, http } from "wagmi";
-import { injected } from "wagmi/connectors";
-import { base, linea } from "wagmi/chains";
+import { linea, base } from "wagmi/chains";
+import { fallback } from "viem";
 
-// Safe defaults (so the app works even if env vars are missing)
-const LINEA_RPC = process.env.NEXT_PUBLIC_LINEA_RPC_URL || "https://rpc.linea.build";
-const BASE_RPC = process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://1rpc.io/base";
+const BASE_RPCS = [
+  "https://base.publicnode.com",
+  "https://rpc.ankr.com/base",
+  "https://1rpc.io/base",
+];
+
+const LINEA_RPCS = [
+  "https://rpc.linea.build",
+  "https://linea.publicnode.com",
+  "https://1rpc.io/linea",
+];
 
 export const wagmiConfig = createConfig({
   chains: [linea, base],
-  connectors: [
-    injected({
-      shimDisconnect: true,
-    }),
-  ],
   transports: {
-    [linea.id]: http(LINEA_RPC),
-    [base.id]: http(BASE_RPC),
+    [base.id]: fallback(
+      BASE_RPCS.map((url) =>
+        http(url, {
+          timeout: 12_000,
+          retryCount: 0,
+        })
+      ),
+      {
+        rank: true,
+      }
+    ),
+
+    [linea.id]: fallback(
+      LINEA_RPCS.map((url) =>
+        http(url, {
+          timeout: 12_000,
+          retryCount: 0,
+        })
+      ),
+      {
+        rank: true,
+      }
+    ),
   },
 });
