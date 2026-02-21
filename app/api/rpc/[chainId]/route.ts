@@ -29,8 +29,8 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
   }
 }
 
-export async function POST(req: Request, { params }: { params: { chainId: string } }) {
-  const chainId = Number(params.chainId);
+export async function POST(req: Request, context: any) {
+  const chainId = Number(context?.params?.chainId);
   const upstreams = upstreamsFor(chainId);
 
   if (!upstreams.length) {
