@@ -227,7 +227,7 @@ async function findBlockByTimestamp(client: Client, targetSec: number, side: "lt
   return ans;
 }
 
-async function getLogsPaged(client: Client, args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint; topics?: any }) {
+async function getLogsPaged(client: Client, args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint; topics?: any[] }) {
   let span = 10_000n;
   const out: any[] = [];
   let from = args.fromBlock;
@@ -331,7 +331,7 @@ export async function GET(req: Request) {
         address: cfg.registry,
         fromBlock: startBlock,
         toBlock: endBlock,
-        topics: [[boundTopic0, claimedTopic0]],
+        topics: [boundTopic0, claimedTopic0],
       });
 
       let gameCount = 0;
