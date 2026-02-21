@@ -242,7 +242,7 @@ async function getLogsPaged(client: Client, args: { address: `0x${string}`; from
           address: args.address,
           fromBlock: from,
           toBlock: end,
-          topics: args.topics,  // Ensure this is passed correctly
+          topics: args.topics || undefined, // Ensure to pass `undefined` if not provided
         })
       );
       out.push(...logs);
