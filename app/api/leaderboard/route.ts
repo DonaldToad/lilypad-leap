@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { createPublicClient, decodeEventLog, http, type Abi } from "viem";
+import {
+  createPublicClient,
+  decodeEventLog,
+  http,
+  type Abi,
+  type PublicClient,
+} from "viem";
 
 export const runtime = "edge";
 
@@ -130,7 +136,9 @@ function toDtc2(n: bigint) {
 }
 
 function utcRange(tf: Timeframe, now = new Date()) {
-  if (tf === "all") return { startSec: 0, endSec: Math.floor(now.getTime() / 1000) + 1 };
+  if (tf === "all") {
+    return { startSec: 0, endSec: Math.floor(now.getTime() / 1000) + 1 };
+  }
 
   const y = now.getUTCFullYear();
   const m = now.getUTCMonth();
@@ -165,7 +173,7 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function withRetry<T>(fn: () => Promise<T>, tries = 3) {
+async function withRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
   let last: any;
   for (let i = 0; i < tries; i++) {
     try {
@@ -178,7 +186,11 @@ async function withRetry<T>(fn: () => Promise<T>, tries = 3) {
   throw last;
 }
 
-async function getBlockTimestamp(client: any, chainKey: ChainKey, blockNumber: bigint): Promise<number> {
+async function getBlockTimestamp(
+  client: PublicClient,
+  chainKey: ChainKey,
+  blockNumber: bigint
+): Promise<number> {
   const c = getBlockTsCache();
   if (!c.get(chainKey)) c.set(chainKey, new Map());
   const m = c.get(chainKey)!;
@@ -192,7 +204,7 @@ async function getBlockTimestamp(client: any, chainKey: ChainKey, blockNumber: b
 }
 
 async function findBlockByTimestamp(
-  client: any,
+  client: PublicClient,
   chainKey: ChainKey,
   targetSec: number,
   side: "lte" | "gte"
@@ -220,7 +232,10 @@ async function findBlockByTimestamp(
   return ans;
 }
 
-async function getLogsPaged(client: any, args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint }) {
+async function getLogsPaged(
+  client: PublicClient,
+  args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint }
+) {
   let span = 5000n;
   const out: any[] = [];
   let from = args.fromBlock;
@@ -252,6 +267,15 @@ function addChain(set: Set<ChainKey>, c: ChainKey) {
   set.add(c);
 }
 
+function stableOrigin(reqUrl: string) {
+  const url = new URL(reqUrl);
+  const host = url.host;
+  const protoHeader = (url.searchParams.get("__proto") || "").toLowerCase();
+
+  if (protoHeader === "http" || protoHeader === "https") return `${protoHeader}://${host}`;
+  return `${url.protocol}//${host}`;
+}
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -263,7 +287,7 @@ export async function GET(req: Request) {
       return NextResponse.json(cached, { headers: { "Cache-Control": "no-store" } });
     }
 
-    const origin = url.origin;
+    const origin = stableOrigin(req.url);
 
     const { startSec, endSec } = utcRange(tf, new Date());
     const start = Math.max(0, Math.floor(startSec));
@@ -290,11 +314,21 @@ export async function GET(req: Request) {
       const rpcProxy = `${origin}/api/rpc/${cfg.chainId}`;
       const client = createPublicClient({ transport: http(rpcProxy) });
 
-      const startBlock = tf === "all" ? 0n : await findBlockByTimestamp(client, chainKey, start, "gte");
+      const startBlock =
+        tf === "all" ? 0n : await findBlockByTimestamp(client, chainKey, start, "gte");
       const endBlock = await findBlockByTimestamp(client, chainKey, end, "lte");
 
-      const gameLogs = await getLogsPaged(client, { address: cfg.game, fromBlock: startBlock, toBlock: endBlock });
-      const regLogs = await getLogsPaged(client, { address: cfg.registry, fromBlock: startBlock, toBlock: endBlock });
+      const gameLogs = await getLogsPaged(client, {
+        address: cfg.game,
+        fromBlock: startBlock,
+        toBlock: endBlock,
+      });
+
+      const regLogs = await getLogsPaged(client, {
+        address: cfg.registry,
+        fromBlock: startBlock,
+        toBlock: endBlock,
+      });
 
       let gameCount = 0;
       let boundCount = 0;
@@ -438,6 +472,9 @@ export async function GET(req: Request) {
 
     return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? "Unknown error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? "Unknown error" },
+      { status: 500 }
+    );
   }
 }
