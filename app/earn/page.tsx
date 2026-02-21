@@ -19,25 +19,9 @@ import { base, linea } from "viem/chains";
 
 import { CHAIN_LIST } from "../lib/chains";
 
-export const DTC_BY_CHAIN: Record<number, `0x${string}`> = {
-  59144: "0xEb1fD1dBB8aDDA4fa2b5A5C4bcE34F6F20d125D2",
-  8453: "0xFbA669C72b588439B29F050b93500D8b645F9354",
-};
+import { DTC_BY_CHAIN, REF_REGISTRY_BY_CHAIN, LILYPAD_VAULT_BY_CHAIN, LILYPAD_GAME_BY_CHAIN } from "../lib/addresses";
 
-const REF_REGISTRY_BY_CHAIN: Record<number, `0x${string}`> = {
-  59144: "0xAbD4c0dF150025a1982FC8236e5880EcC9156BeE",
-  8453: "0x994a28Bb8d84AacB691bA8773e81dAFC1acEb39B",
-};
 
-const LILYPAD_GAME_BY_CHAIN: Record<number, `0x${string}`> = {
-  59144: "0x5Eb6920Af0163e749274619E8076666885Bf0B57",
-  8453: "0x05df07E37B8dF836549B28AA3195FD54D57DD845",
-};
-
-const LILYPAD_VAULT_BY_CHAIN: Record<number, `0x${string}`> = {
-  59144: "0xF4Bf262565e0Cc891857DF08Fe55de5316d0Db45",
-  8453: "0x2C853B5a06A1F6C3A0aF4c1627993150c6585eb3",
-};
 
 const REFERRAL_REGISTRY_ABI = [
   {

@@ -1,18 +1,10 @@
+import { DTC_BY_CHAIN, LILYPAD_VAULT_BY_CHAIN } from "./addresses";
+
 export type RefStat = { games: number; wagered: string; won: string };
 export type RefStats = Record<string, RefStat>;
 
 const API = (process.env.NEXT_PUBLIC_ETHERSCAN_V2_URL || "").trim();
 const KEY = (process.env.NEXT_PUBLIC_ETHERSCAN_V2_API_KEY || "").trim();
-
-const TOKEN_BY_CHAIN: Record<number, `0x${string}`> = {
-  8453: "0xFbA669C72b588439B29F050b93500D8b645F9354",
-  59144: "0xEb1fD1dBB8aDDA4fa2b5A5C4bcE34F6F20d125D2",
-};
-
-const VAULT_BY_CHAIN: Record<number, `0x${string}`> = {
-  8453: "0x2C853B5a06A1F6C3A0aF4c1627993150c6585eb3",
-  59144: "0xF4Bf262565e0Cc891857DF08Fe55de5316d0Db45",
-};
 
 function isHexAddress(x: string) {
   return /^0x[a-fA-F0-9]{40}$/.test((x || "").trim());
@@ -26,8 +18,9 @@ export async function fetchRefStatsFromEtherscan(args: {
   const { chainId, refs, signal } = args;
 
   if (!API || !KEY) return {};
-  const token = TOKEN_BY_CHAIN[chainId];
-  const vault = VAULT_BY_CHAIN[chainId];
+
+  const token = DTC_BY_CHAIN[chainId];
+  const vault = LILYPAD_VAULT_BY_CHAIN[chainId];
   if (!token || !vault) return {};
 
   const wanted = new Set(refs.map((r) => (r || "").toLowerCase()).filter((r) => isHexAddress(r)));

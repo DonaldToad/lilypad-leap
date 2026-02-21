@@ -10,13 +10,16 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@emotion/is-prop-valid": "^1.4.0",
     "@relayprotocol/relay-kit-ui": "^7.1.0",
     "@relayprotocol/relay-sdk": "^5.1.0",
-    "@tanstack/react-query": "^5.90.20",
+    "@tanstack/query-core": "^5.90.20",
+    "@tanstack/react-query": "^5.90.21",
     "dotenv": "^17.3.1",
     "next": "15.5.2",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "tslib": "^2.8.1",
     "viem": "^2.45.1",
     "wagmi": "^2.19.5",
     "zod": "^3.25.76"

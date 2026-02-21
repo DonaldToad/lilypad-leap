@@ -6,6 +6,10 @@ import TopNav from "../components/TopNav";
 import { CHAIN_LIST, PRIMARY_CHAIN } from "../lib/chains";
 import OutcomeBoard from "../components/OutcomeBoard";
 import ApprovalToggle from "../components/ApprovalToggle";
+import { DTC_BY_CHAIN } from "../lib/addresses";
+import { LILYPAD_VAULT_BY_CHAIN } from "../lib/addresses";
+import { LILYPAD_GAME_BY_CHAIN } from "../lib/addresses";
+import { REF_REGISTRY_BY_CHAIN } from "../lib/addresses";
 
 import {
   useAccount,
@@ -44,25 +48,6 @@ function isTokenChain(id: number | undefined): id is TokenChainId {
   return !!id && (TOKEN_CHAIN_IDS as readonly number[]).includes(id);
 }
 
-export const DTC_BY_CHAIN: Record<number, `0x${string}`> = {
-  59144: "0xEb1fD1dBB8aDDA4fa2b5A5C4bcE34F6F20d125D2",
-  8453: "0xFbA669C72b588439B29F050b93500D8b645F9354",
-};
-
-export const VAULT_BY_CHAIN: Record<number, `0x${string}`> = {
-  59144: "0xF4Bf262565e0Cc891857DF08Fe55de5316d0Db45",
-  8453: "0x2C853B5a06A1F6C3A0aF4c1627993150c6585eb3",
-};
-
-export const GAME_BY_CHAIN: Record<number, `0x${string}`> = {
-  59144: "0x5Eb6920Af0163e749274619E8076666885Bf0B57",
-  8453: "0x05df07E37B8dF836549B28AA3195FD54D57DD845",
-};
-
-export const REFERRAL_REGISTRY_BY_CHAIN: Record<number, `0x${string}`> = {
-  59144: "0xAbD4c0dF150025a1982FC8236e5880EcC9156BeE",
-  8453: "0x994a28Bb8d84AacB691bA8773e81dAFC1acEb39B",
-};
 
 const LILYPAD_LEAP_GAME_V2_ABI = [
   {
@@ -549,9 +534,9 @@ export default function PlayPage() {
     playMode === "token" && tokenChainOk ? (safeChainId as number) : selectedChain.chainId;
 
   const tokenAddress = (DTC_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
-  const vaultAddress = (VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
-  const gameAddress = (GAME_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
-  const registryAddress = (REFERRAL_REGISTRY_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const vaultAddress = (LILYPAD_VAULT_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const gameAddress = (LILYPAD_GAME_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
+  const registryAddress = (REF_REGISTRY_BY_CHAIN[effectiveChainId] ?? zeroAddress) as `0x${string}`;
 
   useEffect(() => {
     if (!safeIsConnected) setPlayMode("demo");
@@ -1442,12 +1427,12 @@ export default function PlayPage() {
 
     const cid = targetChainId;
 
-    if (!GAME_BY_CHAIN[cid] || GAME_BY_CHAIN[cid] === zeroAddress) {
+    if (!LILYPAD_GAME_BY_CHAIN[cid] || LILYPAD_GAME_BY_CHAIN[cid] === zeroAddress) {
       setTxError("TOKEN mode is not configured for this chain (missing GAME address).");
       setPlayMode("demo");
       return;
     }
-    if (!VAULT_BY_CHAIN[cid] || VAULT_BY_CHAIN[cid] === zeroAddress) {
+    if (!LILYPAD_VAULT_BY_CHAIN[cid] || LILYPAD_VAULT_BY_CHAIN[cid] === zeroAddress) {
       setTxError("TOKEN mode is not configured for this chain (missing VAULT address).");
       setPlayMode("demo");
       return;
@@ -1457,7 +1442,7 @@ export default function PlayPage() {
       setPlayMode("demo");
       return;
     }
-    if (!REFERRAL_REGISTRY_BY_CHAIN[cid] || REFERRAL_REGISTRY_BY_CHAIN[cid] === zeroAddress) {
+    if (!REF_REGISTRY_BY_CHAIN[cid] || REF_REGISTRY_BY_CHAIN[cid] === zeroAddress) {
       setTxError("TOKEN mode is not configured for this chain (missing REGISTRY address).");
       setPlayMode("demo");
       return;
@@ -2579,3 +2564,6 @@ export default function PlayPage() {
     </main>
   );
 }
+
+
+

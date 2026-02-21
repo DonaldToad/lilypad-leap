@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+/c/Users/carca/AppData/Roaming/npm/npx.cmd "$@"
