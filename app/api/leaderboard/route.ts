@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createPublicClient, decodeEventLog, http, type Abi } from "viem";
+import { decodeEventLog, keccak256, toHex, type Abi } from "viem";
 
 export const runtime = "edge";
 
@@ -21,7 +21,8 @@ type CacheEntry = { exp: number; payload: any };
 
 const DTC_DECIMALS = 18n;
 
-const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
+const ETHERSCAN_V2_URL = (process.env.NEXT_PUBLIC_ETHERSCAN_V2_URL || "https://api.etherscan.io/v2/api").trim();
+const ETHERSCAN_V2_API_KEY = (process.env.NEXT_PUBLIC_ETHERSCAN_V2_API_KEY || "").trim();
 
 const CHAIN: Record<ChainKey, { chainId: number; game: `0x${string}`; registry: `0x${string}` }> = {
   base: {
@@ -77,7 +78,15 @@ const REG_ABI = [
   },
 ] as const satisfies Abi;
 
-type Client = ReturnType<typeof createPublicClient>;
+type EsLog = {
+  address: string;
+  topics: string[];
+  data: string;
+  blockNumber: string;
+  timeStamp: string;
+  transactionHash?: string;
+  logIndex?: string;
+};
 
 function nowMs() {
   return Date.now();
@@ -156,89 +165,138 @@ function utcRange(tf: Timeframe, now = new Date()) {
   return { startSec: start, endSec: end };
 }
 
-function getBlockTsCache(): Map<string, Map<bigint, number>> {
-  const g = globalThis as any;
-  if (!g.__LB_BLOCK_TS__) g.__LB_BLOCK_TS__ = new Map<string, Map<bigint, number>>();
-  return g.__LB_BLOCK_TS__;
-}
-
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function withRetry<T>(fn: () => Promise<T>, tries = 3) {
-  let last: any;
+function isRetryableText(t: string) {
+  const s = t.toLowerCase();
+  return (
+    s.includes("rate limit") ||
+    s.includes("max rate") ||
+    s.includes("too many") ||
+    s.includes("temporarily") ||
+    s.includes("timeout") ||
+    s.includes("throttle") ||
+    s.includes("busy")
+  );
+}
+
+async function fetchJsonWithBackoff(url: string, tries = 6) {
+  let lastErr: any = null;
   for (let i = 0; i < tries; i++) {
     try {
-      return await fn();
+      const res = await fetch(url, { method: "GET", headers: { accept: "application/json" } });
+      const txt = await res.text();
+      if (!res.ok) {
+        if (i < tries - 1 && isRetryableText(txt)) {
+          const base = 250 * 2 ** i;
+          const jitter = Math.floor(Math.random() * 150);
+          await sleep(Math.min(8000, base + jitter));
+          continue;
+        }
+        throw new Error(`HTTP ${res.status}: ${txt}`);
+      }
+      try {
+        return JSON.parse(txt);
+      } catch {
+        throw new Error(`Invalid JSON: ${txt}`);
+      }
     } catch (e: any) {
-      last = e;
-      await sleep(200 * (i + 1));
+      lastErr = e;
+      if (i < tries - 1) {
+        const base = 250 * 2 ** i;
+        const jitter = Math.floor(Math.random() * 150);
+        await sleep(Math.min(8000, base + jitter));
+        continue;
+      }
+      throw lastErr;
     }
   }
-  throw last;
+  throw lastErr;
 }
 
-async function getBlockTimestamp(client: Client, chainKey: ChainKey, blockNumber: bigint): Promise<number> {
-  const c = getBlockTsCache();
-  if (!c.get(chainKey)) c.set(chainKey, new Map());
-  const m = c.get(chainKey)!;
-  const hit = m.get(blockNumber);
-  if (typeof hit === "number") return hit;
-
-  const blk = await withRetry(() => client.getBlock({ blockNumber }));
-  const ts = Number(blk.timestamp);
-  m.set(blockNumber, ts);
-  return ts;
+function qs(params: Record<string, string | number | undefined>) {
+  const u = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    u.set(k, String(v));
+  }
+  return u.toString();
 }
 
-async function findBlockByTimestamp(client: Client, chainKey: ChainKey, targetSec: number, side: "lte" | "gte") {
-  const latest = await withRetry(() => client.getBlockNumber());
-  let lo = 0n;
-  let hi = latest;
-  let ans = side === "lte" ? 0n : latest;
+async function getBlockByTime(chainId: number, timestampSec: number, closest: "before" | "after") {
+  const url =
+    `${ETHERSCAN_V2_URL}?` +
+    qs({
+      chainid: chainId,
+      module: "block",
+      action: "getblocknobytime",
+      timestamp: Math.max(0, Math.floor(timestampSec)),
+      closest,
+      apikey: ETHERSCAN_V2_API_KEY,
+    });
 
-  while (lo <= hi) {
-    const mid = (lo + hi) / 2n;
-    const ts = await getBlockTimestamp(client, chainKey, mid);
-    if (ts === targetSec) return mid;
+  const j = await fetchJsonWithBackoff(url);
+  const status = String(j?.status ?? "");
+  const msg = String(j?.message ?? "");
+  const result = j?.result;
 
-    if (ts < targetSec) {
-      if (side === "lte") ans = mid;
-      lo = mid + 1n;
-    } else {
-      if (side === "gte") ans = mid;
-      if (mid === 0n) break;
-      hi = mid - 1n;
-    }
+  if (status !== "1") {
+    if (String(msg).toLowerCase().includes("no records")) return null;
+    throw new Error(`getblocknobytime failed: ${JSON.stringify(j)}`);
   }
 
-  return ans;
+  const bn = Number(result);
+  if (!Number.isFinite(bn) || bn < 0) throw new Error(`Invalid block from getblocknobytime: ${JSON.stringify(j)}`);
+  return BigInt(bn);
 }
 
-async function getLogsPaged(client: Client, args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint }) {
-  let span = 5000n;
-  const out: any[] = [];
-  let from = args.fromBlock;
-  const to = args.toBlock;
+async function getLogsByAddressAndTopic0(args: {
+  chainId: number;
+  address: `0x${string}`;
+  fromBlock: bigint;
+  toBlock: bigint;
+  topic0: `0x${string}`;
+}) {
+  const out: EsLog[] = [];
+  const offset = 1000;
+  let page = 1;
 
-  while (from <= to) {
-    const end = from + span > to ? to : from + span;
+  while (true) {
+    const url =
+      `${ETHERSCAN_V2_URL}?` +
+      qs({
+        chainid: args.chainId,
+        module: "logs",
+        action: "getLogs",
+        address: args.address,
+        fromBlock: args.fromBlock.toString(),
+        toBlock: args.toBlock.toString(),
+        topic0: args.topic0,
+        page,
+        offset,
+        apikey: ETHERSCAN_V2_API_KEY,
+      });
 
-    try {
-      const logs = await withRetry(() =>
-        client.getLogs({
-          address: args.address,
-          fromBlock: from,
-          toBlock: end,
-        })
-      );
-      out.push(...logs);
-      from = end + 1n;
-    } catch {
-      if (span <= 500n) throw new Error("RPC getLogs failed even at small span");
-      span = span / 2n;
+    const j = await fetchJsonWithBackoff(url);
+    const status = String(j?.status ?? "");
+    const msg = String(j?.message ?? "");
+    const result = j?.result;
+
+    if (status !== "1") {
+      if (msg.toLowerCase().includes("no records")) break;
+      throw new Error(`getLogs failed: ${JSON.stringify(j)}`);
     }
+
+    if (!Array.isArray(result) || result.length === 0) break;
+
+    out.push(...(result as EsLog[]));
+    if (result.length < offset) break;
+
+    page += 1;
+    if (page > 50) break;
+    await sleep(120);
   }
 
   return out;
@@ -248,24 +306,44 @@ function addChain(set: Set<ChainKey>, c: ChainKey) {
   set.add(c);
 }
 
-async function getProviderClient() {
-  const rpcUrl = `https://api.etherscan.io/api?module=logs&action=getLogs&apikey=${ETHERSCAN_API_KEY}`;
-  const client = createPublicClient({ transport: http(rpcUrl) });
-  return client;
+function hexToBigIntSafe(h: string) {
+  try {
+    return BigInt(h);
+  } catch {
+    try {
+      if (h.startsWith("0x") || h.startsWith("0X")) return BigInt(h);
+      return BigInt("0x" + h);
+    } catch {
+      return 0n;
+    }
+  }
 }
+
+function hexToNumberSafe(h: string) {
+  const b = hexToBigIntSafe(h);
+  const n = Number(b);
+  return Number.isFinite(n) ? n : 0;
+}
+
+const SIG_GAME = keccak256(
+  toHex("GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)")
+) as `0x${string}`;
+
+const SIG_BOUND = keccak256(toHex("Bound(address,address,bytes32)")) as `0x${string}`;
+const SIG_CLAIMED = keccak256(toHex("Claimed(uint256,address,uint256)")) as `0x${string}`;
 
 export async function GET(req: Request) {
   try {
+    if (!ETHERSCAN_V2_API_KEY) {
+      return NextResponse.json({ ok: false, error: "Missing NEXT_PUBLIC_ETHERSCAN_V2_API_KEY" }, { status: 500 });
+    }
+
     const url = new URL(req.url);
     const tf = parseTf(url.searchParams.get("tf"));
     const key = getKey(tf);
 
     const cached = readCache(key);
-    if (cached) {
-      return NextResponse.json(cached, { headers: { "Cache-Control": "no-store" } });
-    }
-
-    const origin = url.origin;
+    if (cached) return NextResponse.json(cached, { headers: { "Cache-Control": "no-store" } });
 
     const { startSec, endSec } = utcRange(tf, new Date());
     const start = Math.max(0, Math.floor(startSec));
@@ -285,16 +363,207 @@ export async function GET(req: Request) {
     >();
 
     const perChainMeta: any = {};
-    const client = await getProviderClient();
 
-    const rows: ApiRow[] = []; // Initialize rows
+    for (const chainKey of Object.keys(CHAIN) as ChainKey[]) {
+      const cfg = CHAIN[chainKey];
+
+      const startBlock = tf === "all" ? 0n : await getBlockByTime(cfg.chainId, start, "after");
+      const endBlock = await getBlockByTime(cfg.chainId, end, "before");
+
+      const sb = startBlock ?? 0n;
+      const eb = endBlock ?? 0n;
+
+      if (eb < sb) {
+        perChainMeta[chainKey] = { startBlock: sb.toString(), endBlock: eb.toString(), logs: { game: 0, bound: 0, claimed: 0 } };
+        continue;
+      }
+
+      const gameLogs = await getLogsByAddressAndTopic0({
+        chainId: cfg.chainId,
+        address: cfg.game,
+        fromBlock: sb,
+        toBlock: eb,
+        topic0: SIG_GAME,
+      });
+
+      const boundLogs = await getLogsByAddressAndTopic0({
+        chainId: cfg.chainId,
+        address: cfg.registry,
+        fromBlock: sb,
+        toBlock: eb,
+        topic0: SIG_BOUND,
+      });
+
+      const claimedLogs = await getLogsByAddressAndTopic0({
+        chainId: cfg.chainId,
+        address: cfg.registry,
+        fromBlock: sb,
+        toBlock: eb,
+        topic0: SIG_CLAIMED,
+      });
+
+      let gameCount = 0;
+      let boundCount = 0;
+      let claimedCount = 0;
+
+      for (const log of gameLogs) {
+        const ts = hexToNumberSafe(log.timeStamp);
+        if (ts < start || ts >= end) continue;
+
+        let decoded: any;
+        try {
+          decoded = decodeEventLog({
+            abi: GAME_ABI,
+            data: log.data as `0x${string}`,
+            topics: log.topics as readonly `0x${string}`[],
+          });
+        } catch {
+          continue;
+        }
+
+        if (decoded?.eventName !== "GameSettled") continue;
+
+        const player = String(decoded.args.player || "").toLowerCase();
+        if (!player || !player.startsWith("0x")) continue;
+
+        const amountReceived = BigInt(decoded.args.amountReceived as bigint);
+        const playerNetWin = BigInt(decoded.args.playerNetWin as bigint);
+
+        if (!agg.has(player)) {
+          agg.set(player, {
+            chains: new Set<ChainKey>(),
+            games: 0,
+            volume: 0n,
+            topWin: 0n,
+            profit: 0n,
+            referrals: new Set<string>(),
+            claimed: 0n,
+          });
+        }
+
+        const a = agg.get(player)!;
+        addChain(a.chains, chainKey);
+        a.games += 1;
+        a.volume += amountReceived;
+        if (playerNetWin > a.topWin) a.topWin = playerNetWin;
+        a.profit += playerNetWin;
+
+        gameCount += 1;
+      }
+
+      for (const log of boundLogs) {
+        const ts = hexToNumberSafe(log.timeStamp);
+        if (ts < start || ts >= end) continue;
+
+        let decoded: any;
+        try {
+          decoded = decodeEventLog({
+            abi: REG_ABI,
+            data: log.data as `0x${string}`,
+            topics: log.topics as readonly `0x${string}`[],
+          });
+        } catch {
+          continue;
+        }
+
+        if (decoded?.eventName !== "Bound") continue;
+
+        const player = String(decoded.args.player || "").toLowerCase();
+        const referrer = String(decoded.args.referrer || "").toLowerCase();
+        if (!referrer || !referrer.startsWith("0x")) continue;
+        if (!player || !player.startsWith("0x")) continue;
+
+        if (!agg.has(referrer)) {
+          agg.set(referrer, {
+            chains: new Set<ChainKey>(),
+            games: 0,
+            volume: 0n,
+            topWin: 0n,
+            profit: 0n,
+            referrals: new Set<string>(),
+            claimed: 0n,
+          });
+        }
+
+        const a = agg.get(referrer)!;
+        addChain(a.chains, chainKey);
+        a.referrals.add(player);
+
+        boundCount += 1;
+      }
+
+      for (const log of claimedLogs) {
+        const ts = hexToNumberSafe(log.timeStamp);
+        if (ts < start || ts >= end) continue;
+
+        let decoded: any;
+        try {
+          decoded = decodeEventLog({
+            abi: REG_ABI,
+            data: log.data as `0x${string}`,
+            topics: log.topics as readonly `0x${string}`[],
+          });
+        } catch {
+          continue;
+        }
+
+        if (decoded?.eventName !== "Claimed") continue;
+
+        const referrer = String(decoded.args.referrer || "").toLowerCase();
+        if (!referrer || !referrer.startsWith("0x")) continue;
+
+        const amount = BigInt(decoded.args.amount as bigint);
+
+        if (!agg.has(referrer)) {
+          agg.set(referrer, {
+            chains: new Set<ChainKey>(),
+            games: 0,
+            volume: 0n,
+            topWin: 0n,
+            profit: 0n,
+            referrals: new Set<string>(),
+            claimed: 0n,
+          });
+        }
+
+        const a = agg.get(referrer)!;
+        addChain(a.chains, chainKey);
+        a.claimed += amount;
+
+        claimedCount += 1;
+      }
+
+      perChainMeta[chainKey] = {
+        chainId: cfg.chainId,
+        startBlock: sb.toString(),
+        endBlock: eb.toString(),
+        logs: { game: gameCount, bound: boundCount, claimed: claimedCount },
+      };
+    }
+
+    const rows: ApiRow[] = [];
+    for (const [address, a] of agg.entries()) {
+      const chains = Array.from(a.chains);
+      if (chains.length === 0) continue;
+
+      rows.push({
+        chains,
+        address: address as `0x${string}`,
+        games: a.games,
+        volumeDtc: toDtc2(a.volume),
+        topWinDtc: toDtc2(a.topWin),
+        profitDtc: toDtc2(a.profit),
+        referrals: a.referrals.size,
+        claimedDtc: toDtc2(a.claimed),
+      });
+    }
 
     const payload = {
       ok: true,
       tf,
       rows,
       meta: {
-        source: "rpc-logs",
+        source: "etherscan-v2-logs",
         cached: false,
         asOfMs: nowMs(),
         utc: { startSec: start, endSec: end },
@@ -303,7 +572,6 @@ export async function GET(req: Request) {
     };
 
     writeCache(key, payload, ttlMs(tf));
-
     return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? "Unknown error" }, { status: 500 });
