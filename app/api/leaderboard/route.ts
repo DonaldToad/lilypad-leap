@@ -212,21 +212,65 @@ async function blockscoutGetBlockByTime(apiBase: string, timestampSec: number, c
   return bn;
 }
 
+function looksHex(s: string) {
+  return /^0x[0-9a-fA-F]+$/.test(s);
+}
+
+function looksInt(s: string) {
+  return /^-?\d+$/.test(s);
+}
+
+function extractNumberish(x: any, depth = 0): string | null {
+  if (x == null) return null;
+  if (typeof x === "bigint") return x.toString();
+  if (typeof x === "number") return String(x);
+  if (typeof x === "string") return looksHex(x) || looksInt(x) ? x : null;
+
+  if (typeof x !== "object") return null;
+  if (depth > 3) return null;
+
+  const h1 = (x as any).hex;
+  if (typeof h1 === "string" && looksHex(h1)) return h1;
+
+  const h2 = (x as any)._hex;
+  if (typeof h2 === "string" && looksHex(h2)) return h2;
+
+  const v1 = (x as any).value;
+  const ev1 = extractNumberish(v1, depth + 1);
+  if (ev1) return ev1;
+
+  const v2 = (x as any)._value;
+  const ev2 = extractNumberish(v2, depth + 1);
+  if (ev2) return ev2;
+
+  const v3 = (x as any).bigint;
+  const ev3 = extractNumberish(v3, depth + 1);
+  if (ev3) return ev3;
+
+  const v4 = (x as any).result;
+  const ev4 = extractNumberish(v4, depth + 1);
+  if (ev4) return ev4;
+
+  for (const k of Object.keys(x)) {
+    const ev = extractNumberish((x as any)[k], depth + 1);
+    if (ev) return ev;
+  }
+
+  try {
+    const s = (x as any).toString?.();
+    if (typeof s === "string" && s && s !== "[object Object]" && (looksHex(s) || looksInt(s))) return s;
+  } catch {}
+
+  return null;
+}
+
 function asBigInt(x: any): bigint {
   if (typeof x === "bigint") return x;
   if (typeof x === "number") return BigInt(x);
   if (typeof x === "string") return BigInt(x);
-  if (x && typeof x === "object") {
-    const hx = (x as any).hex;
-    if (typeof hx === "string") return BigInt(hx);
-    const _hx = (x as any)._hex;
-    if (typeof _hx === "string") return BigInt(_hx);
-    const v = (x as any).value;
-    if (v != null) return asBigInt(v);
-    const s = (x as any).toString?.();
-    if (typeof s === "string" && s && s !== "[object Object]") return BigInt(s);
-  }
-  throw new Error(`Cannot convert ${Object.prototype.toString.call(x)} to a BigInt`);
+  const s = extractNumberish(x);
+  if (!s) throw new Error(`Cannot convert ${Object.prototype.toString.call(x)} to a BigInt`);
+  return BigInt(s);
 }
 
 async function getLogsPaged(
@@ -348,8 +392,8 @@ export async function GET(req: Request) {
         if (decoded?.eventName !== "GameSettled") continue;
 
         const player = (decoded.args.player as string).toLowerCase();
-        const amountReceived = asBigInt(decoded.args.amountReceived);
-        const playerNetWin = asBigInt(decoded.args.playerNetWin);
+        const amountReceived = asBigInt((decoded.args as any).amountReceived);
+        const playerNetWin = asBigInt((decoded.args as any).playerNetWin);
 
         if (!agg.has(player)) {
           agg.set(player, {
@@ -422,7 +466,7 @@ export async function GET(req: Request) {
         if (decoded?.eventName !== "Claimed") continue;
 
         const referrer = (decoded.args.referrer as string).toLowerCase();
-        const amount = asBigInt(decoded.args.amount);
+        const amount = asBigInt((decoded.args as any).amount);
 
         if (!agg.has(referrer)) {
           agg.set(referrer, {
