@@ -39,42 +39,45 @@ const CHAIN: Record<ChainKey, { chainId: number; game: `0x${string}`; registry: 
 
 const GAME_ABI = [
   {
-    type: "event",
-    name: "GameSettled",
+    anonymous: false,
     inputs: [
-      { indexed: true, name: "gameId", type: "bytes32" },
-      { indexed: true, name: "player", type: "address" },
-      { indexed: false, name: "won", type: "bool" },
-      { indexed: false, name: "cashoutHop", type: "uint8" },
-      { indexed: false, name: "amountReceived", type: "uint256" },
-      { indexed: false, name: "payout", type: "uint256" },
-      { indexed: false, name: "houseProfit", type: "uint256" },
-      { indexed: false, name: "playerNetWin", type: "uint256" },
-      { indexed: false, name: "userCommitHash", type: "bytes32" },
-      { indexed: false, name: "randAnchor", type: "bytes32" },
-      { indexed: false, name: "settledAt", type: "uint256" },
+      { indexed: true, internalType: "bytes32", name: "gameId", type: "bytes32" },
+      { indexed: true, internalType: "address", name: "player", type: "address" },
+      { indexed: false, internalType: "bool", name: "won", type: "bool" },
+      { indexed: false, internalType: "uint8", name: "cashoutHop", type: "uint8" },
+      { indexed: false, internalType: "uint256", name: "amountReceived", type: "uint256" },
+      { indexed: false, internalType: "uint256", name: "payout", type: "uint256" },
+      { indexed: false, internalType: "uint256", name: "houseProfit", type: "uint256" },
+      { indexed: false, internalType: "uint256", name: "playerNetWin", type: "uint256" },
+      { indexed: false, internalType: "bytes32", name: "userCommitHash", type: "bytes32" },
+      { indexed: false, internalType: "bytes32", name: "randAnchor", type: "bytes32" },
+      { indexed: false, internalType: "uint256", name: "settledAt", type: "uint256" },
     ],
+    name: "GameSettled",
+    type: "event",
   },
 ] as const satisfies Abi;
 
 const REG_ABI = [
   {
-    type: "event",
-    name: "Bound",
+    anonymous: false,
     inputs: [
-      { indexed: true, name: "player", type: "address" },
-      { indexed: true, name: "referrer", type: "address" },
-      { indexed: true, name: "code", type: "bytes32" },
+      { indexed: true, internalType: "address", name: "player", type: "address" },
+      { indexed: true, internalType: "address", name: "referrer", type: "address" },
+      { indexed: true, internalType: "bytes32", name: "code", type: "bytes32" },
     ],
+    name: "Bound",
+    type: "event",
   },
   {
-    type: "event",
-    name: "Claimed",
+    anonymous: false,
     inputs: [
-      { indexed: true, name: "epochId", type: "uint256" },
-      { indexed: true, name: "referrer", type: "address" },
-      { indexed: false, name: "amount", type: "uint256" },
+      { indexed: true, internalType: "uint256", name: "epochId", type: "uint256" },
+      { indexed: true, internalType: "address", name: "referrer", type: "address" },
+      { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
     ],
+    name: "Claimed",
+    type: "event",
   },
 ] as const satisfies Abi;
 
@@ -171,19 +174,11 @@ function sleep(ms: number) {
 
 function isRetryableText(t: string) {
   const s = t.toLowerCase();
-  return (
-    s.includes("rate limit") ||
-    s.includes("max rate") ||
-    s.includes("too many") ||
-    s.includes("temporarily") ||
-    s.includes("timeout") ||
-    s.includes("throttle") ||
-    s.includes("busy")
-  );
+  return s.includes("rate limit") || s.includes("max rate") || s.includes("too many") || s.includes("temporarily") || s.includes("timeout") || s.includes("throttle") || s.includes("busy");
 }
 
 async function fetchJsonWithBackoff(url: string, tries = 6) {
-  let lastErr: any = null;
+  let last: any = null;
   for (let i = 0; i < tries; i++) {
     try {
       const res = await fetch(url, { method: "GET", headers: { accept: "application/json" } });
@@ -203,17 +198,17 @@ async function fetchJsonWithBackoff(url: string, tries = 6) {
         throw new Error(`Invalid JSON: ${txt}`);
       }
     } catch (e: any) {
-      lastErr = e;
+      last = e;
       if (i < tries - 1) {
         const base = 250 * 2 ** i;
         const jitter = Math.floor(Math.random() * 150);
         await sleep(Math.min(8000, base + jitter));
         continue;
       }
-      throw lastErr;
+      throw last;
     }
   }
-  throw lastErr;
+  throw last;
 }
 
 function qs(params: Record<string, string | number | undefined>) {
@@ -243,7 +238,7 @@ async function getBlockByTime(chainId: number, timestampSec: number, closest: "b
   const result = j?.result;
 
   if (status !== "1") {
-    if (String(msg).toLowerCase().includes("no records")) return null;
+    if (msg.toLowerCase().includes("no records")) return null;
     throw new Error(`getblocknobytime failed: ${JSON.stringify(j)}`);
   }
 
@@ -252,13 +247,7 @@ async function getBlockByTime(chainId: number, timestampSec: number, closest: "b
   return BigInt(bn);
 }
 
-async function getLogsByAddressAndTopic0(args: {
-  chainId: number;
-  address: `0x${string}`;
-  fromBlock: bigint;
-  toBlock: bigint;
-  topic0: `0x${string}`;
-}) {
+async function getLogsByAddressAndTopic0(args: { chainId: number; address: `0x${string}`; fromBlock: bigint; toBlock: bigint; topic0: `0x${string}` }) {
   const out: EsLog[] = [];
   const offset = 1000;
   let page = 1;
@@ -295,7 +284,7 @@ async function getLogsByAddressAndTopic0(args: {
     if (result.length < offset) break;
 
     page += 1;
-    if (page > 50) break;
+    if (page > 80) break;
     await sleep(120);
   }
 
@@ -306,37 +295,29 @@ function addChain(set: Set<ChainKey>, c: ChainKey) {
   set.add(c);
 }
 
-function hexToBigIntSafe(h: string) {
+function hexToNumberSafe(h: string) {
   try {
-    return BigInt(h);
+    const b = BigInt(h);
+    const n = Number(b);
+    return Number.isFinite(n) ? n : 0;
   } catch {
     try {
-      if (h.startsWith("0x") || h.startsWith("0X")) return BigInt(h);
-      return BigInt("0x" + h);
+      const b = BigInt(h.startsWith("0x") ? h : `0x${h}`);
+      const n = Number(b);
+      return Number.isFinite(n) ? n : 0;
     } catch {
-      return 0n;
+      return 0;
     }
   }
 }
 
-function hexToNumberSafe(h: string) {
-  const b = hexToBigIntSafe(h);
-  const n = Number(b);
-  return Number.isFinite(n) ? n : 0;
-}
-
-const SIG_GAME = keccak256(
-  toHex("GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)")
-) as `0x${string}`;
-
+const SIG_GAME = keccak256(toHex("GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)")) as `0x${string}`;
 const SIG_BOUND = keccak256(toHex("Bound(address,address,bytes32)")) as `0x${string}`;
 const SIG_CLAIMED = keccak256(toHex("Claimed(uint256,address,uint256)")) as `0x${string}`;
 
 export async function GET(req: Request) {
   try {
-    if (!ETHERSCAN_V2_API_KEY) {
-      return NextResponse.json({ ok: false, error: "Missing NEXT_PUBLIC_ETHERSCAN_V2_API_KEY" }, { status: 500 });
-    }
+    if (!ETHERSCAN_V2_API_KEY) return NextResponse.json({ ok: false, error: "Missing NEXT_PUBLIC_ETHERSCAN_V2_API_KEY" }, { status: 500 });
 
     const url = new URL(req.url);
     const tf = parseTf(url.searchParams.get("tf"));
@@ -374,33 +355,13 @@ export async function GET(req: Request) {
       const eb = endBlock ?? 0n;
 
       if (eb < sb) {
-        perChainMeta[chainKey] = { startBlock: sb.toString(), endBlock: eb.toString(), logs: { game: 0, bound: 0, claimed: 0 } };
+        perChainMeta[chainKey] = { chainId: cfg.chainId, startBlock: sb.toString(), endBlock: eb.toString(), logs: { game: 0, bound: 0, claimed: 0 } };
         continue;
       }
 
-      const gameLogs = await getLogsByAddressAndTopic0({
-        chainId: cfg.chainId,
-        address: cfg.game,
-        fromBlock: sb,
-        toBlock: eb,
-        topic0: SIG_GAME,
-      });
-
-      const boundLogs = await getLogsByAddressAndTopic0({
-        chainId: cfg.chainId,
-        address: cfg.registry,
-        fromBlock: sb,
-        toBlock: eb,
-        topic0: SIG_BOUND,
-      });
-
-      const claimedLogs = await getLogsByAddressAndTopic0({
-        chainId: cfg.chainId,
-        address: cfg.registry,
-        fromBlock: sb,
-        toBlock: eb,
-        topic0: SIG_CLAIMED,
-      });
+      const gameLogs = await getLogsByAddressAndTopic0({ chainId: cfg.chainId, address: cfg.game, fromBlock: sb, toBlock: eb, topic0: SIG_GAME });
+      const boundLogs = await getLogsByAddressAndTopic0({ chainId: cfg.chainId, address: cfg.registry, fromBlock: sb, toBlock: eb, topic0: SIG_BOUND });
+      const claimedLogs = await getLogsByAddressAndTopic0({ chainId: cfg.chainId, address: cfg.registry, fromBlock: sb, toBlock: eb, topic0: SIG_CLAIMED });
 
       let gameCount = 0;
       let boundCount = 0;
@@ -424,21 +385,13 @@ export async function GET(req: Request) {
         if (decoded?.eventName !== "GameSettled") continue;
 
         const player = String(decoded.args.player || "").toLowerCase();
-        if (!player || !player.startsWith("0x")) continue;
+        if (!player.startsWith("0x")) continue;
 
         const amountReceived = BigInt(decoded.args.amountReceived as bigint);
         const playerNetWin = BigInt(decoded.args.playerNetWin as bigint);
 
         if (!agg.has(player)) {
-          agg.set(player, {
-            chains: new Set<ChainKey>(),
-            games: 0,
-            volume: 0n,
-            topWin: 0n,
-            profit: 0n,
-            referrals: new Set<string>(),
-            claimed: 0n,
-          });
+          agg.set(player, { chains: new Set<ChainKey>(), games: 0, volume: 0n, topWin: 0n, profit: 0n, referrals: new Set<string>(), claimed: 0n });
         }
 
         const a = agg.get(player)!;
@@ -470,19 +423,11 @@ export async function GET(req: Request) {
 
         const player = String(decoded.args.player || "").toLowerCase();
         const referrer = String(decoded.args.referrer || "").toLowerCase();
-        if (!referrer || !referrer.startsWith("0x")) continue;
-        if (!player || !player.startsWith("0x")) continue;
+        if (!player.startsWith("0x")) continue;
+        if (!referrer.startsWith("0x")) continue;
 
         if (!agg.has(referrer)) {
-          agg.set(referrer, {
-            chains: new Set<ChainKey>(),
-            games: 0,
-            volume: 0n,
-            topWin: 0n,
-            profit: 0n,
-            referrals: new Set<string>(),
-            claimed: 0n,
-          });
+          agg.set(referrer, { chains: new Set<ChainKey>(), games: 0, volume: 0n, topWin: 0n, profit: 0n, referrals: new Set<string>(), claimed: 0n });
         }
 
         const a = agg.get(referrer)!;
@@ -510,20 +455,12 @@ export async function GET(req: Request) {
         if (decoded?.eventName !== "Claimed") continue;
 
         const referrer = String(decoded.args.referrer || "").toLowerCase();
-        if (!referrer || !referrer.startsWith("0x")) continue;
+        if (!referrer.startsWith("0x")) continue;
 
         const amount = BigInt(decoded.args.amount as bigint);
 
         if (!agg.has(referrer)) {
-          agg.set(referrer, {
-            chains: new Set<ChainKey>(),
-            games: 0,
-            volume: 0n,
-            topWin: 0n,
-            profit: 0n,
-            referrals: new Set<string>(),
-            claimed: 0n,
-          });
+          agg.set(referrer, { chains: new Set<ChainKey>(), games: 0, volume: 0n, topWin: 0n, profit: 0n, referrals: new Set<string>(), claimed: 0n });
         }
 
         const a = agg.get(referrer)!;
