@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { decodeEventLog, keccak256, toHex, type Abi } from "viem";
+import { createPublicClient, decodeEventLog, http, keccak256, toHex, type Abi } from "viem";
 
 export const runtime = "edge";
 
@@ -21,73 +21,74 @@ type CacheEntry = { exp: number; payload: any };
 
 const DTC_DECIMALS = 18n;
 
-const ETHERSCAN_V2_URL = (process.env.NEXT_PUBLIC_ETHERSCAN_V2_URL || "https://api.etherscan.io/v2/api").trim();
-const ETHERSCAN_V2_API_KEY = (process.env.NEXT_PUBLIC_ETHERSCAN_V2_API_KEY || "").trim();
-
-const CHAIN: Record<ChainKey, { chainId: number; game: `0x${string}`; registry: `0x${string}` }> = {
+const CHAIN: Record<
+  ChainKey,
+  {
+    chainId: number;
+    game: `0x${string}`;
+    registry: `0x${string}`;
+    blockscoutApi: string;
+    rpc: string;
+  }
+> = {
   base: {
     chainId: 8453,
     game: "0x05df07E37B8dF836549B28AA3195FD54D57DD845",
     registry: "0x994a28Bb8d84AacB691bA8773e81dAFC1acEb39B",
+    blockscoutApi: "https://base.blockscout.com/api",
+    rpc: "https://base-rpc.publicnode.com",
   },
   linea: {
     chainId: 59144,
     game: "0x5Eb6920Af0163e749274619E8076666885Bf0B57",
     registry: "0xAbD4c0dF150025a1982FC8236e5880EcC9156BeE",
+    blockscoutApi: "https://explorer.linea.build/api",
+    rpc: "https://rpc.linea.build",
   },
 };
 
 const GAME_ABI = [
   {
-    anonymous: false,
-    inputs: [
-      { indexed: true, internalType: "bytes32", name: "gameId", type: "bytes32" },
-      { indexed: true, internalType: "address", name: "player", type: "address" },
-      { indexed: false, internalType: "bool", name: "won", type: "bool" },
-      { indexed: false, internalType: "uint8", name: "cashoutHop", type: "uint8" },
-      { indexed: false, internalType: "uint256", name: "amountReceived", type: "uint256" },
-      { indexed: false, internalType: "uint256", name: "payout", type: "uint256" },
-      { indexed: false, internalType: "uint256", name: "houseProfit", type: "uint256" },
-      { indexed: false, internalType: "uint256", name: "playerNetWin", type: "uint256" },
-      { indexed: false, internalType: "bytes32", name: "userCommitHash", type: "bytes32" },
-      { indexed: false, internalType: "bytes32", name: "randAnchor", type: "bytes32" },
-      { indexed: false, internalType: "uint256", name: "settledAt", type: "uint256" },
-    ],
-    name: "GameSettled",
     type: "event",
+    name: "GameSettled",
+    inputs: [
+      { indexed: true, name: "gameId", type: "bytes32" },
+      { indexed: true, name: "player", type: "address" },
+      { indexed: false, name: "won", type: "bool" },
+      { indexed: false, name: "cashoutHop", type: "uint8" },
+      { indexed: false, name: "amountReceived", type: "uint256" },
+      { indexed: false, name: "payout", type: "uint256" },
+      { indexed: false, name: "houseProfit", type: "uint256" },
+      { indexed: false, name: "playerNetWin", type: "uint256" },
+      { indexed: false, name: "userCommitHash", type: "bytes32" },
+      { indexed: false, name: "randAnchor", type: "bytes32" },
+      { indexed: false, name: "settledAt", type: "uint256" },
+    ],
   },
 ] as const satisfies Abi;
 
 const REG_ABI = [
   {
-    anonymous: false,
-    inputs: [
-      { indexed: true, internalType: "address", name: "player", type: "address" },
-      { indexed: true, internalType: "address", name: "referrer", type: "address" },
-      { indexed: true, internalType: "bytes32", name: "code", type: "bytes32" },
-    ],
-    name: "Bound",
     type: "event",
+    name: "Bound",
+    inputs: [
+      { indexed: true, name: "player", type: "address" },
+      { indexed: true, name: "referrer", type: "address" },
+      { indexed: true, name: "code", type: "bytes32" },
+    ],
   },
   {
-    anonymous: false,
-    inputs: [
-      { indexed: true, internalType: "uint256", name: "epochId", type: "uint256" },
-      { indexed: true, internalType: "address", name: "referrer", type: "address" },
-      { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
-    ],
-    name: "Claimed",
     type: "event",
+    name: "Claimed",
+    inputs: [
+      { indexed: true, name: "epochId", type: "uint256" },
+      { indexed: true, name: "referrer", type: "address" },
+      { indexed: false, name: "amount", type: "uint256" },
+    ],
   },
 ] as const satisfies Abi;
 
-type EsLog = {
-  address: string;
-  topics: string[];
-  data: string;
-  blockNumber: string;
-  timeStamp: string;
-};
+type Client = ReturnType<typeof createPublicClient>;
 
 function nowMs() {
   return Date.now();
@@ -170,138 +171,80 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function isRetryableText(t: string) {
-  const s = (t || "").toLowerCase();
-  return (
-    s.includes("rate limit") ||
-    s.includes("max rate") ||
-    s.includes("too many") ||
-    s.includes("temporarily") ||
-    s.includes("timeout") ||
-    s.includes("throttle") ||
-    s.includes("busy") ||
-    s.includes("cloudflare") ||
-    s.includes("502") ||
-    s.includes("503") ||
-    s.includes("504")
-  );
+function jitter(ms: number) {
+  const j = Math.floor(Math.random() * 120);
+  return ms + j;
 }
 
-async function fetchJsonWithBackoff(url: string, tries = 6) {
-  let last: any = null;
+async function fetchJsonWithBackoff(url: string, init?: RequestInit, tries = 6) {
+  let lastText = "";
   for (let i = 0; i < tries; i++) {
-    try {
-      const res = await fetch(url, { method: "GET", headers: { accept: "application/json" } });
-      const txt = await res.text();
-      if (!res.ok) {
-        if (i < tries - 1 && isRetryableText(txt)) {
-          const base = 250 * 2 ** i;
-          const jitter = Math.floor(Math.random() * 150);
-          await sleep(Math.min(8000, base + jitter));
-          continue;
-        }
-        throw new Error(`HTTP ${res.status}: ${txt}`);
-      }
+    const res = await fetch(url, init);
+    const text = await res.text();
+    lastText = text;
+    if (res.ok) {
       try {
-        return JSON.parse(txt);
+        return JSON.parse(text);
       } catch {
-        throw new Error(`Invalid JSON: ${txt}`);
+        return text;
       }
-    } catch (e: any) {
-      last = e;
-      if (i < tries - 1) {
-        const base = 250 * 2 ** i;
-        const jitter = Math.floor(Math.random() * 150);
-        await sleep(Math.min(8000, base + jitter));
-        continue;
-      }
-      throw last;
     }
+    const retryable = res.status === 429 || res.status >= 500;
+    if (!retryable) throw new Error(`HTTP ${res.status}: ${text}`);
+    const wait = jitter(Math.min(3000, 250 * 2 ** i));
+    await sleep(wait);
   }
-  throw last;
+  throw new Error(`HTTP request failed: ${lastText}`);
 }
 
-function qs(params: Record<string, string | number | undefined>) {
-  const u = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v === undefined || v === null) continue;
-    u.set(k, String(v));
-  }
-  return u.toString();
-}
-
-async function getBlockByTime(chainId: number, timestampSec: number, closest: "before" | "after") {
-  const url =
-    `${ETHERSCAN_V2_URL}?` +
-    qs({
-      chainid: chainId,
-      module: "block",
-      action: "getblocknobytime",
-      timestamp: Math.max(0, Math.floor(timestampSec)),
-      closest,
-      apikey: ETHERSCAN_V2_API_KEY,
-    });
-
-  const j = await fetchJsonWithBackoff(url);
-  const status = String(j?.status ?? "");
-  const msg = String(j?.message ?? "");
-  const result = j?.result;
-
+async function blockscoutGetBlockByTime(apiBase: string, timestampSec: number, closest: "before" | "after") {
+  const u = new URL(apiBase);
+  u.searchParams.set("module", "block");
+  u.searchParams.set("action", "getblocknobytime");
+  u.searchParams.set("timestamp", String(timestampSec));
+  u.searchParams.set("closest", closest);
+  const j = await fetchJsonWithBackoff(u.toString(), undefined, 6);
+  const status = String((j as any)?.status ?? "");
+  const result = (j as any)?.result;
   if (status !== "1") {
-    if (msg.toLowerCase().includes("no records")) return null;
     throw new Error(`getblocknobytime failed: ${JSON.stringify(j)}`);
   }
-
-  const bn = Number(result);
-  if (!Number.isFinite(bn) || bn < 0) throw new Error(`Invalid block from getblocknobytime: ${JSON.stringify(j)}`);
-  return BigInt(bn);
+  const bn = BigInt(String(result));
+  if (bn < 0n) return 0n;
+  return bn;
 }
 
-async function getLogsByAddressAndTopic0(args: {
-  chainId: number;
-  address: `0x${string}`;
-  fromBlock: bigint;
-  toBlock: bigint;
-  topic0: `0x${string}`;
-}) {
-  const out: EsLog[] = [];
-  const offset = 1000;
-  let page = 1;
+async function getLogsPaged(
+  client: Client,
+  args: {
+    address: `0x${string}`;
+    fromBlock: bigint;
+    toBlock: bigint;
+    topics?: any;
+  },
+) {
+  let span = 20_000n;
+  const out: any[] = [];
+  let from = args.fromBlock;
+  const to = args.toBlock;
 
-  while (true) {
-    const url =
-      `${ETHERSCAN_V2_URL}?` +
-      qs({
-        chainid: args.chainId,
-        module: "logs",
-        action: "getLogs",
+  while (from <= to) {
+    const end = from + span > to ? to : from + span;
+    try {
+      const logs = await client.getLogs({
         address: args.address,
-        fromBlock: args.fromBlock.toString(),
-        toBlock: args.toBlock.toString(),
-        topic0: args.topic0,
-        page,
-        offset,
-        apikey: ETHERSCAN_V2_API_KEY,
-      });
-
-    const j = await fetchJsonWithBackoff(url);
-    const status = String(j?.status ?? "");
-    const msg = String(j?.message ?? "");
-    const result = j?.result;
-
-    if (status !== "1") {
-      if (msg.toLowerCase().includes("no records")) break;
-      throw new Error(`getLogs failed: ${JSON.stringify(j)}`);
+        fromBlock: from,
+        toBlock: end,
+        topics: args.topics,
+      } as any);
+      out.push(...logs);
+      from = end + 1n;
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (span <= 1000n) throw new Error(`RPC getLogs failed: ${msg}`);
+      span = span / 2n;
+      await sleep(jitter(120));
     }
-
-    if (!Array.isArray(result) || result.length === 0) break;
-
-    out.push(...(result as EsLog[]));
-    if (result.length < offset) break;
-
-    page += 1;
-    if (page > 80) break;
-    await sleep(120);
   }
 
   return out;
@@ -311,39 +254,17 @@ function addChain(set: Set<ChainKey>, c: ChainKey) {
   set.add(c);
 }
 
-function hexToNumberSafe(h: string) {
-  try {
-    const b = BigInt(h);
-    const n = Number(b);
-    return Number.isFinite(n) ? n : 0;
-  } catch {
-    try {
-      const b = BigInt(h.startsWith("0x") ? h : `0x${h}`);
-      const n = Number(b);
-      return Number.isFinite(n) ? n : 0;
-    } catch {
-      return 0;
-    }
-  }
-}
+const TOPIC_GAME_SETTLED = keccak256(
+  toHex(
+    "GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)",
+  ),
+);
 
-function toMutableTopics(t: string[]) {
-  const arr = Array.isArray(t) ? [...t] : [];
-  return arr as unknown as [] | [`0x${string}`, ...`0x${string}`[]];
-}
-
-const SIG_GAME = keccak256(
-  toHex("GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)")
-) as `0x${string}`;
-const SIG_BOUND = keccak256(toHex("Bound(address,address,bytes32)")) as `0x${string}`;
-const SIG_CLAIMED = keccak256(toHex("Claimed(uint256,address,uint256)")) as `0x${string}`;
+const TOPIC_BOUND = keccak256(toHex("Bound(address,address,bytes32)"));
+const TOPIC_CLAIMED = keccak256(toHex("Claimed(uint256,address,uint256)"));
 
 export async function GET(req: Request) {
   try {
-    if (!ETHERSCAN_V2_API_KEY) {
-      return NextResponse.json({ ok: false, error: "Missing NEXT_PUBLIC_ETHERSCAN_V2_API_KEY" }, { status: 500 });
-    }
-
     const url = new URL(req.url);
     const tf = parseTf(url.searchParams.get("tf"));
     const key = getKey(tf);
@@ -373,44 +294,34 @@ export async function GET(req: Request) {
     for (const chainKey of Object.keys(CHAIN) as ChainKey[]) {
       const cfg = CHAIN[chainKey];
 
-      const startBlock = tf === "all" ? 0n : await getBlockByTime(cfg.chainId, start, "after");
-      const endBlock = await getBlockByTime(cfg.chainId, end, "before");
+      const client = createPublicClient({ transport: http(cfg.rpc) });
 
-      const sb = startBlock ?? 0n;
-      const eb = endBlock ?? 0n;
+      const startBlock =
+        tf === "all" ? 0n : await blockscoutGetBlockByTime(cfg.blockscoutApi, start, "after");
+      const endBlock = await blockscoutGetBlockByTime(cfg.blockscoutApi, end, "before");
 
-      if (eb < sb) {
-        perChainMeta[chainKey] = {
-          chainId: cfg.chainId,
-          startBlock: sb.toString(),
-          endBlock: eb.toString(),
-          logs: { game: 0, bound: 0, claimed: 0 },
-        };
-        continue;
-      }
+      const fromBlock = startBlock;
+      const toBlock = endBlock >= fromBlock ? endBlock : fromBlock;
 
-      const gameLogs = await getLogsByAddressAndTopic0({
-        chainId: cfg.chainId,
+      const gameLogs = await getLogsPaged(client, {
         address: cfg.game,
-        fromBlock: sb,
-        toBlock: eb,
-        topic0: SIG_GAME,
+        fromBlock,
+        toBlock,
+        topics: [TOPIC_GAME_SETTLED],
       });
 
-      const boundLogs = await getLogsByAddressAndTopic0({
-        chainId: cfg.chainId,
+      const boundLogs = await getLogsPaged(client, {
         address: cfg.registry,
-        fromBlock: sb,
-        toBlock: eb,
-        topic0: SIG_BOUND,
+        fromBlock,
+        toBlock,
+        topics: [TOPIC_BOUND],
       });
 
-      const claimedLogs = await getLogsByAddressAndTopic0({
-        chainId: cfg.chainId,
+      const claimedLogs = await getLogsPaged(client, {
         address: cfg.registry,
-        fromBlock: sb,
-        toBlock: eb,
-        topic0: SIG_CLAIMED,
+        fromBlock,
+        toBlock,
+        topics: [TOPIC_CLAIMED],
       });
 
       let gameCount = 0;
@@ -418,27 +329,21 @@ export async function GET(req: Request) {
       let claimedCount = 0;
 
       for (const log of gameLogs) {
-        const ts = hexToNumberSafe(log.timeStamp);
-        if (ts < start || ts >= end) continue;
-
         let decoded: any;
         try {
           decoded = decodeEventLog({
             abi: GAME_ABI,
             data: log.data as `0x${string}`,
-            topics: toMutableTopics(log.topics),
+            topics: log.topics as any,
           });
         } catch {
           continue;
         }
-
         if (decoded?.eventName !== "GameSettled") continue;
 
-        const player = String(decoded.args.player || "").toLowerCase();
-        if (!player.startsWith("0x")) continue;
-
-        const amountReceived = BigInt(decoded.args.amountReceived as bigint);
-        const playerNetWin = BigInt(decoded.args.playerNetWin as bigint);
+        const player = (decoded.args.player as string).toLowerCase();
+        const amountReceived = BigInt(decoded.args.amountReceived as any);
+        const playerNetWin = BigInt(decoded.args.playerNetWin as any);
 
         if (!agg.has(player)) {
           agg.set(player, {
@@ -463,26 +368,20 @@ export async function GET(req: Request) {
       }
 
       for (const log of boundLogs) {
-        const ts = hexToNumberSafe(log.timeStamp);
-        if (ts < start || ts >= end) continue;
-
         let decoded: any;
         try {
           decoded = decodeEventLog({
             abi: REG_ABI,
             data: log.data as `0x${string}`,
-            topics: toMutableTopics(log.topics),
+            topics: log.topics as any,
           });
         } catch {
           continue;
         }
-
         if (decoded?.eventName !== "Bound") continue;
 
-        const player = String(decoded.args.player || "").toLowerCase();
-        const referrer = String(decoded.args.referrer || "").toLowerCase();
-        if (!player.startsWith("0x")) continue;
-        if (!referrer.startsWith("0x")) continue;
+        const player = (decoded.args.player as string).toLowerCase();
+        const referrer = (decoded.args.referrer as string).toLowerCase();
 
         if (!agg.has(referrer)) {
           agg.set(referrer, {
@@ -504,26 +403,20 @@ export async function GET(req: Request) {
       }
 
       for (const log of claimedLogs) {
-        const ts = hexToNumberSafe(log.timeStamp);
-        if (ts < start || ts >= end) continue;
-
         let decoded: any;
         try {
           decoded = decodeEventLog({
             abi: REG_ABI,
             data: log.data as `0x${string}`,
-            topics: toMutableTopics(log.topics),
+            topics: log.topics as any,
           });
         } catch {
           continue;
         }
-
         if (decoded?.eventName !== "Claimed") continue;
 
-        const referrer = String(decoded.args.referrer || "").toLowerCase();
-        if (!referrer.startsWith("0x")) continue;
-
-        const amount = BigInt(decoded.args.amount as bigint);
+        const referrer = (decoded.args.referrer as string).toLowerCase();
+        const amount = BigInt(decoded.args.amount as any);
 
         if (!agg.has(referrer)) {
           agg.set(referrer, {
@@ -545,9 +438,10 @@ export async function GET(req: Request) {
       }
 
       perChainMeta[chainKey] = {
-        chainId: cfg.chainId,
-        startBlock: sb.toString(),
-        endBlock: eb.toString(),
+        rpc: cfg.rpc,
+        blockscout: cfg.blockscoutApi,
+        startBlock: fromBlock.toString(),
+        endBlock: toBlock.toString(),
         logs: { game: gameCount, bound: boundCount, claimed: claimedCount },
       };
     }
@@ -574,7 +468,7 @@ export async function GET(req: Request) {
       tf,
       rows,
       meta: {
-        source: "etherscan-v2-logs",
+        source: "blockscout+rpc-logs",
         cached: false,
         asOfMs: nowMs(),
         utc: { startSec: start, endSec: end },
