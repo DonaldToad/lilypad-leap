@@ -287,7 +287,7 @@ export async function GET(req: Request) {
     const perChainMeta: any = {};
     const client = await getProviderClient();
 
-    // Fetch data from client and aggregate logs here...
+    const rows: ApiRow[] = []; // Initialize rows
 
     const payload = {
       ok: true,
