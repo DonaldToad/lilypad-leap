@@ -227,6 +227,7 @@ async function findBlockByTimestamp(client: Client, targetSec: number, side: "lt
   return ans;
 }
 
+// Updated the getLogsPaged function with the correct types and logic for `topics`
 async function getLogsPaged(client: Client, args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint; topics?: Hex[] }) {
   let span = 10_000n;
   const out: any[] = [];
@@ -242,7 +243,7 @@ async function getLogsPaged(client: Client, args: { address: `0x${string}`; from
           address: args.address,
           fromBlock: from,
           toBlock: end,
-          topics: args.topics || undefined, // Ensure to pass `undefined` if not provided
+          topics: args.topics || undefined, // Pass undefined if no topics provided
         })
       );
       out.push(...logs);
