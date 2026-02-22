@@ -1,4 +1,3 @@
-// app/api/leaderboard/route.ts
 import { NextResponse } from "next/server";
 import { decodeEventLog, keccak256, toHex, type Abi } from "viem";
 
@@ -28,7 +27,7 @@ const CHAIN: Record<
     chainId: number;
     game: `0x${string}`;
     registry: `0x${string}`;
-    blockscoutApi?: string | null;
+    blockscoutApi?: string;
     rpcs: string[];
   }
 > = {
@@ -43,7 +42,6 @@ const CHAIN: Record<
     chainId: 59144,
     game: "0x5Eb6920Af0163e749274619E8076666885Bf0B57",
     registry: "0xAbD4c0dF150025a1982FC8236e5880EcC9156BeE",
-    blockscoutApi: null,
     rpcs: ["https://linea-rpc.publicnode.com", "https://rpc.linea.build", "https://1rpc.io/linea"],
   },
 };
@@ -181,25 +179,26 @@ function jitter(ms: number) {
   return ms + j;
 }
 
-async function fetchJsonWithBackoff(url: string, init?: RequestInit, tries = 6) {
-  let lastText = "";
+async function fetchTextWithBackoff(url: string, init?: RequestInit, tries = 4) {
+  let last = "";
   for (let i = 0; i < tries; i++) {
     const res = await fetch(url, init);
-    const text = await res.text();
-    lastText = text;
-    if (res.ok) {
-      try {
-        return JSON.parse(text);
-      } catch {
-        return text;
-      }
-    }
+    last = await res.text();
+    if (res.ok) return last;
     const retryable = res.status === 429 || res.status >= 500;
-    if (!retryable) throw new Error(`HTTP ${res.status}: ${text}`);
-    const wait = jitter(Math.min(3000, 250 * 2 ** i));
-    await sleep(wait);
+    if (!retryable) throw new Error(`HTTP ${res.status}: ${last}`);
+    await sleep(jitter(Math.min(1200, 200 * 2 ** i)));
   }
-  throw new Error(`HTTP request failed: ${lastText}`);
+  throw new Error(`HTTP request failed: ${last}`);
+}
+
+async function fetchJsonWithBackoff(url: string, init?: RequestInit, tries = 4) {
+  const t = await fetchTextWithBackoff(url, init, tries);
+  try {
+    return JSON.parse(t);
+  } catch {
+    return t;
+  }
 }
 
 async function blockscoutGetBlockByTime(apiBase: string, timestampSec: number, closest: "before" | "after") {
@@ -209,7 +208,7 @@ async function blockscoutGetBlockByTime(apiBase: string, timestampSec: number, c
   u.searchParams.set("timestamp", String(timestampSec));
   u.searchParams.set("closest", closest);
 
-  const j = await fetchJsonWithBackoff(u.toString(), undefined, 6);
+  const j = await fetchJsonWithBackoff(u.toString(), undefined, 4);
 
   const status = String((j as any)?.status ?? "");
   const result = (j as any)?.result;
@@ -231,6 +230,38 @@ async function blockscoutGetBlockByTime(apiBase: string, timestampSec: number, c
 
   const bn = BigInt(s);
   return bn < 0n ? 0n : bn;
+}
+
+async function blockscoutGetLogsOnce(args: {
+  apiBase: string;
+  address: `0x${string}`;
+  fromBlock: bigint;
+  toBlock: bigint;
+  topic0: `0x${string}`;
+}) {
+  const u = new URL(args.apiBase);
+  u.searchParams.set("module", "logs");
+  u.searchParams.set("action", "getLogs");
+  u.searchParams.set("fromBlock", args.fromBlock.toString());
+  u.searchParams.set("toBlock", args.toBlock.toString());
+  u.searchParams.set("address", args.address);
+  u.searchParams.set("topic0", args.topic0);
+  u.searchParams.set("page", "1");
+  u.searchParams.set("offset", "1000");
+
+  const j = await fetchJsonWithBackoff(u.toString(), undefined, 4);
+  const status = String((j as any)?.status ?? "");
+  const result = (j as any)?.result;
+
+  if (status !== "1") {
+    const msg = String((j as any)?.message ?? "");
+    if (msg.toLowerCase().includes("no records") || msg.toLowerCase().includes("no result")) return [];
+    if (Array.isArray(result) && result.length === 0) return [];
+    throw new Error(`getLogs failed: ${JSON.stringify(j)}`);
+  }
+
+  if (!Array.isArray(result)) return [];
+  return result;
 }
 
 function normalizeTopics(x: any): `0x${string}`[] {
@@ -261,223 +292,122 @@ function asBigInt(x: any): bigint {
   throw new Error(`Cannot convert [object Object] to a BigInt`);
 }
 
-async function blockscoutGetLogsPaged(args: {
-  apiBase: string;
-  address: `0x${string}`;
-  fromBlock: bigint;
-  toBlock: bigint;
-  topic0: `0x${string}`;
-  pageLimit?: number;
-}) {
-  const offset = 1000;
-  const maxPages = args.pageLimit ?? 50;
-  const out: any[] = [];
-
-  for (let page = 1; page <= maxPages; page++) {
-    const u = new URL(args.apiBase);
-    u.searchParams.set("module", "logs");
-    u.searchParams.set("action", "getLogs");
-    u.searchParams.set("fromBlock", args.fromBlock.toString());
-    u.searchParams.set("toBlock", args.toBlock.toString());
-    u.searchParams.set("address", args.address);
-    u.searchParams.set("topic0", args.topic0);
-    u.searchParams.set("page", String(page));
-    u.searchParams.set("offset", String(offset));
-
-    const j = await fetchJsonWithBackoff(u.toString(), undefined, 6);
-    const status = String((j as any)?.status ?? "");
-    const result = (j as any)?.result;
-
-    if (status !== "1") {
-      const msg = String((j as any)?.message ?? "");
-      if (msg.toLowerCase().includes("no records") || msg.toLowerCase().includes("no result")) break;
-      if (Array.isArray(result) && result.length === 0) break;
-      throw new Error(`getLogs failed: ${JSON.stringify(j)}`);
-    }
-
-    if (!Array.isArray(result)) break;
-
-    out.push(...result);
-
-    if (result.length < offset) break;
-    await sleep(jitter(80));
-  }
-
-  return out;
-}
-
-function isRetryableRpcErrorMessage(s: string) {
-  const t = s.toLowerCase();
-  return (
-    t.includes("too many") ||
-    t.includes("rate") ||
-    t.includes("timeout") ||
-    t.includes("temporar") ||
-    t.includes("overloaded") ||
-    t.includes("server error") ||
-    t.includes("subrequest") ||
-    t.includes("gateway") ||
-    t.includes("network")
-  );
-}
-
-async function rpcCall(url: string, method: string, params: any[]) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
+async function rpcCall(rpc: string, method: string, params: any[]) {
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method, params });
+  const res = await fetch(rpc, { method: "POST", headers: { "content-type": "application/json" }, body });
   const text = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
+  if (!res.ok) throw new Error(`RPC HTTP ${res.status}: ${text}`);
   let j: any;
   try {
     j = JSON.parse(text);
   } catch {
-    throw new Error(`Bad JSON: ${text}`);
+    throw new Error(`RPC non-JSON: ${text}`);
   }
   if (j?.error) throw new Error(j.error?.message ? String(j.error.message) : JSON.stringify(j.error));
   return j?.result;
 }
 
-async function rpcCallWithFallback(rpcs: string[], method: string, params: any[], triesPerRpc = 2) {
+async function rpcTry<T>(rpcs: string[], fn: (rpc: string) => Promise<T>) {
   let lastErr: any = null;
   for (const rpc of rpcs) {
-    for (let t = 0; t < triesPerRpc; t++) {
-      try {
-        return await rpcCall(rpc, method, params);
-      } catch (e: any) {
-        lastErr = e;
-        const msg = String(e?.message ?? e);
-        if (!isRetryableRpcErrorMessage(msg)) break;
-        await sleep(jitter(Math.min(1500, 150 * 2 ** t)));
-      }
-    }
-  }
-  throw lastErr ?? new Error("RPC failed");
-}
-
-function hexBlock(n: bigint) {
-  return "0x" + n.toString(16);
-}
-
-function hexToBigInt(x: any) {
-  if (typeof x === "bigint") return x;
-  if (typeof x === "number") return BigInt(x);
-  if (typeof x === "string") {
-    if (x.startsWith("0x")) return BigInt(x);
-    return BigInt(x);
-  }
-  if (x && typeof x === "object") {
-    const h = (x as any).hex;
-    if (typeof h === "string") return BigInt(h);
-  }
-  throw new Error(`Bad bigint: ${String(x)}`);
-}
-
-function hexToNumber(x: any) {
-  const b = hexToBigInt(x);
-  if (b > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Number overflow");
-  return Number(b);
-}
-
-async function rpcGetLatestBlockNumber(rpcs: string[]) {
-  const bnHex = await rpcCallWithFallback(rpcs, "eth_blockNumber", []);
-  return hexToBigInt(bnHex);
-}
-
-async function rpcGetBlockTimestamp(rpcs: string[], blockNumber: bigint, cache: Map<string, number>) {
-  const k = blockNumber.toString();
-  const hit = cache.get(k);
-  if (hit != null) return hit;
-  const b = await rpcCallWithFallback(rpcs, "eth_getBlockByNumber", [hexBlock(blockNumber), false]);
-  const ts = hexToNumber(b?.timestamp);
-  cache.set(k, ts);
-  return ts;
-}
-
-async function rpcFindBlockByTime(
-  rpcs: string[],
-  targetSec: number,
-  mode: "after" | "before",
-  latestBlock: bigint,
-  tsCache: Map<string, number>,
-) {
-  let lo = 0n;
-  let hi = latestBlock;
-  let ans = mode === "after" ? latestBlock : 0n;
-
-  for (let i = 0; i < 40; i++) {
-    if (lo > hi) break;
-    const mid = (lo + hi) / 2n;
-    const ts = await rpcGetBlockTimestamp(rpcs, mid, tsCache);
-
-    if (ts === targetSec) {
-      ans = mid;
-      if (mode === "after") hi = mid - 1n;
-      else lo = mid + 1n;
-      continue;
-    }
-
-    if (ts < targetSec) {
-      lo = mid + 1n;
-      if (mode === "before") ans = mid;
-    } else {
-      hi = mid - 1n;
-      if (mode === "after") ans = mid;
-    }
-  }
-
-  if (ans < 0n) ans = 0n;
-  if (ans > latestBlock) ans = latestBlock;
-  return ans;
-}
-
-async function rpcGetLogsChunked(args: {
-  rpcs: string[];
-  address: `0x${string}`;
-  fromBlock: bigint;
-  toBlock: bigint;
-  topic0: `0x${string}`;
-}) {
-  const out: any[] = [];
-  if (args.toBlock < args.fromBlock) return out;
-
-  let cursor = args.fromBlock;
-  let step = 2000n;
-  const minStep = 50n;
-  const maxStep = 5000n;
-
-  while (cursor <= args.toBlock) {
-    const end = cursor + step - 1n > args.toBlock ? args.toBlock : cursor + step - 1n;
-
     try {
-      const logs = await rpcCallWithFallback(args.rpcs, "eth_getLogs", [
-        {
-          address: args.address,
-          fromBlock: hexBlock(cursor),
-          toBlock: hexBlock(end),
-          topics: [args.topic0],
-        },
-      ]);
+      return await fn(rpc);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr ?? new Error("All RPCs failed");
+}
 
-      if (Array.isArray(logs)) out.push(...logs);
+function hexToBigInt(h: any): bigint {
+  if (typeof h !== "string" || !h.startsWith("0x")) throw new Error("bad hex");
+  return BigInt(h);
+}
 
-      cursor = end + 1n;
-      if (step < maxStep) step = step + step / 2n;
-      await sleep(jitter(30));
-    } catch (e: any) {
-      const msg = String(e?.message ?? e);
-      if (isRetryableRpcErrorMessage(msg) && step > minStep) {
-        step = step / 2n;
-        if (step < minStep) step = minStep;
-        await sleep(jitter(120));
-        continue;
-      }
-      throw new Error(msg);
+async function rpcLatestBlockNumber(rpcs: string[]) {
+  const hex = await rpcTry(rpcs, (rpc) => rpcCall(rpc, "eth_blockNumber", []));
+  return hexToBigInt(hex);
+}
+
+async function rpcBlockTimestamp(rpcs: string[], block: bigint) {
+  const hexBlock = "0x" + block.toString(16);
+  const b = await rpcTry(rpcs, (rpc) => rpcCall(rpc, "eth_getBlockByNumber", [hexBlock, false]));
+  const tsHex = (b as any)?.timestamp;
+  if (typeof tsHex !== "string" || !tsHex.startsWith("0x")) throw new Error("bad block timestamp");
+  return Number(BigInt(tsHex));
+}
+
+async function rpcFindBlockByTime(rpcs: string[], tsSec: number, closest: "before" | "after") {
+  const latest = await rpcLatestBlockNumber(rpcs);
+  let lo = 0n;
+  let hi = latest;
+  let best: bigint | null = null;
+
+  for (let i = 0; i < 40 && lo <= hi; i++) {
+    const mid = (lo + hi) / 2n;
+    const midTs = await rpcBlockTimestamp(rpcs, mid);
+
+    if (midTs === tsSec) {
+      best = mid;
+      break;
+    }
+
+    if (midTs < tsSec) {
+      if (closest === "before") best = mid;
+      lo = mid + 1n;
+    } else {
+      if (closest === "after") best = mid;
+      if (mid === 0n) break;
+      hi = mid - 1n;
     }
   }
 
-  return out;
+  if (best === null) return closest === "after" ? 0n : latest;
+  return best < 0n ? 0n : best;
+}
+
+async function rpcGetLogsRange(rpcs: string[], filter: any) {
+  const res = await rpcTry(rpcs, (rpc) => rpcCall(rpc, "eth_getLogs", [filter]));
+  if (!Array.isArray(res)) return [];
+  return res;
+}
+
+function isTooManyResultsError(msg: string) {
+  const m = msg.toLowerCase();
+  return (
+    m.includes("query returned more than") ||
+    m.includes("more than") ||
+    m.includes("response size exceeded") ||
+    m.includes("exceeds limit") ||
+    m.includes("too large") ||
+    m.includes("log response size exceeded")
+  );
+}
+
+async function rpcGetLogsSplit(
+  rpcs: string[],
+  baseFilter: { address: string; topics: string[]; fromBlock: string; toBlock: string },
+  depth = 0,
+): Promise<any[]> {
+  try {
+    return await rpcGetLogsRange(rpcs, baseFilter);
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (!isTooManyResultsError(msg) || depth >= 16) throw e;
+
+    const from = BigInt(baseFilter.fromBlock);
+    const to = BigInt(baseFilter.toBlock);
+    if (to <= from) return [];
+
+    const mid = (from + to) / 2n;
+    const left = { ...baseFilter, toBlock: "0x" + mid.toString(16) };
+    const right = { ...baseFilter, fromBlock: "0x" + (mid + 1n).toString(16) };
+
+    const a = await rpcGetLogsSplit(rpcs, left, depth + 1);
+    await sleep(jitter(40));
+    const b = await rpcGetLogsSplit(rpcs, right, depth + 1);
+    return a.concat(b);
+  }
 }
 
 function addChain(set: Set<ChainKey>, c: ChainKey) {
@@ -520,86 +450,61 @@ export async function GET(req: Request) {
       try {
         let fromBlock = 0n;
         let toBlock = 0n;
+        let method: "blockscout" | "rpc" = "rpc";
 
-        const usingBlockscout = !!cfg.blockscoutApi;
-
-        if (tf === "all") {
-          if (usingBlockscout) {
-            fromBlock = 0n;
-            toBlock = 99_999_999n;
-          } else {
-            const latest = await rpcGetLatestBlockNumber(cfg.rpcs);
-            fromBlock = 0n;
-            toBlock = latest;
-          }
-        } else if (usingBlockscout) {
-          fromBlock = await blockscoutGetBlockByTime(cfg.blockscoutApi!, start, "after");
-          toBlock = await blockscoutGetBlockByTime(cfg.blockscoutApi!, end, "before");
+        if (chainKey === "base" && cfg.blockscoutApi) {
+          method = "blockscout";
+          fromBlock = tf === "all" ? 0n : await blockscoutGetBlockByTime(cfg.blockscoutApi, start, "after");
+          toBlock = tf === "all" ? 99_999_999n : await blockscoutGetBlockByTime(cfg.blockscoutApi, end, "before");
         } else {
-          const latest = await rpcGetLatestBlockNumber(cfg.rpcs);
-          const tsCache = new Map<string, number>();
-          fromBlock = await rpcFindBlockByTime(cfg.rpcs, start, "after", latest, tsCache);
-          toBlock = await rpcFindBlockByTime(cfg.rpcs, end, "before", latest, tsCache);
+          method = "rpc";
+          fromBlock = tf === "all" ? 0n : await rpcFindBlockByTime(cfg.rpcs, start, "after");
+          toBlock = tf === "all" ? await rpcLatestBlockNumber(cfg.rpcs) : await rpcFindBlockByTime(cfg.rpcs, end, "before");
+        }
+
+        if (toBlock < fromBlock) {
+          const tmp = fromBlock;
+          fromBlock = toBlock;
+          toBlock = tmp;
         }
 
         let gameLogs: any[] = [];
         let boundLogs: any[] = [];
         let claimedLogs: any[] = [];
-        let method: "blockscout" | "rpc" = "rpc";
 
-        if (usingBlockscout) {
-          method = "blockscout";
-          gameLogs = await blockscoutGetLogsPaged({
-            apiBase: cfg.blockscoutApi!,
+        if (method === "blockscout" && cfg.blockscoutApi) {
+          gameLogs = await blockscoutGetLogsOnce({
+            apiBase: cfg.blockscoutApi,
             address: cfg.game,
             fromBlock,
             toBlock,
             topic0: TOPIC_GAME_SETTLED as `0x${string}`,
-            pageLimit: tf === "all" ? 120 : 25,
           });
 
-          boundLogs = await blockscoutGetLogsPaged({
-            apiBase: cfg.blockscoutApi!,
+          boundLogs = await blockscoutGetLogsOnce({
+            apiBase: cfg.blockscoutApi,
             address: cfg.registry,
             fromBlock,
             toBlock,
             topic0: TOPIC_BOUND as `0x${string}`,
-            pageLimit: tf === "all" ? 120 : 25,
           });
 
-          claimedLogs = await blockscoutGetLogsPaged({
-            apiBase: cfg.blockscoutApi!,
+          claimedLogs = await blockscoutGetLogsOnce({
+            apiBase: cfg.blockscoutApi,
             address: cfg.registry,
             fromBlock,
             toBlock,
             topic0: TOPIC_CLAIMED as `0x${string}`,
-            pageLimit: tf === "all" ? 120 : 25,
           });
         } else {
-          method = "rpc";
-          gameLogs = await rpcGetLogsChunked({
-            rpcs: cfg.rpcs,
-            address: cfg.game,
-            fromBlock,
-            toBlock,
-            topic0: TOPIC_GAME_SETTLED as `0x${string}`,
-          });
+          const fromHex = "0x" + fromBlock.toString(16);
+          const toHex = "0x" + toBlock.toString(16);
 
-          boundLogs = await rpcGetLogsChunked({
-            rpcs: cfg.rpcs,
-            address: cfg.registry,
-            fromBlock,
-            toBlock,
-            topic0: TOPIC_BOUND as `0x${string}`,
-          });
-
-          claimedLogs = await rpcGetLogsChunked({
-            rpcs: cfg.rpcs,
-            address: cfg.registry,
-            fromBlock,
-            toBlock,
-            topic0: TOPIC_CLAIMED as `0x${string}`,
-          });
+          gameLogs = await rpcGetLogsSplit(cfg.rpcs, { address: cfg.game, topics: [TOPIC_GAME_SETTLED], fromBlock: fromHex, toBlock: toHex });
+          await sleep(jitter(60));
+          boundLogs = await rpcGetLogsSplit(cfg.rpcs, { address: cfg.registry, topics: [TOPIC_BOUND], fromBlock: fromHex, toBlock: toHex });
+          await sleep(jitter(60));
+          claimedLogs = await rpcGetLogsSplit(cfg.rpcs, { address: cfg.registry, topics: [TOPIC_CLAIMED], fromBlock: fromHex, toBlock: toHex });
         }
 
         let gameCount = 0;
@@ -721,7 +626,7 @@ export async function GET(req: Request) {
         perChainMeta[chainKey] = {
           method,
           rpcs: cfg.rpcs,
-          blockscout: cfg.blockscoutApi ?? undefined,
+          blockscout: cfg.blockscoutApi,
           startBlock: fromBlock.toString(),
           endBlock: toBlock.toString(),
           logs: { game: gameCount, bound: boundCount, claimed: claimedCount },
@@ -730,10 +635,7 @@ export async function GET(req: Request) {
         okChains += 1;
       } catch (e: any) {
         perChainErrors[chainKey] = String(e?.message ?? e);
-        perChainMeta[chainKey] = {
-          rpcs: cfg.rpcs,
-          blockscout: cfg.blockscoutApi ?? undefined,
-        };
+        perChainMeta[chainKey] = { rpcs: cfg.rpcs, blockscout: cfg.blockscoutApi };
       }
     }
 
@@ -744,7 +646,7 @@ export async function GET(req: Request) {
           error: "All chains failed",
           tf,
           meta: {
-            source: "blockscout+rpc-logs",
+            source: "blockscout+rpc",
             asOfMs: nowMs(),
             utc: { startSec: start, endSec: end },
             perChain: perChainMeta,
@@ -777,7 +679,7 @@ export async function GET(req: Request) {
       tf,
       rows,
       meta: {
-        source: "blockscout+rpc-logs",
+        source: "blockscout+rpc",
         cached: false,
         asOfMs: nowMs(),
         utc: { startSec: start, endSec: end },
