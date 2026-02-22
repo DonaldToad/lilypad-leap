@@ -1,12 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  createPublicClient,
-  decodeEventLog,
-  encodeEventTopics,
-  http,
-  type Abi,
-  type Hex,
-} from "viem";
+import { createPublicClient, decodeEventLog, http, type Abi } from "viem";
 
 export const runtime = "edge";
 
@@ -161,47 +154,43 @@ function utcRange(tf: Timeframe, now = new Date()) {
   return { startSec: start, endSec: end };
 }
 
+function getBlockTsCache(): Map<string, Map<bigint, number>> {
+  const g = globalThis as any;
+  if (!g.__LB_BLOCK_TS__) g.__LB_BLOCK_TS__ = new Map<string, Map<bigint, number>>();
+  return g.__LB_BLOCK_TS__;
+}
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function errStr(e: any) {
-  return String(e?.shortMessage || e?.message || e);
-}
-
-function looksLikeRateLimit(msg: string) {
-  const s = msg.toLowerCase();
-  return s.includes("429") || s.includes("rate") || s.includes("too many requests") || s.includes("over rate limit");
-}
-
-function looksLikeRangeTooBig(msg: string) {
-  const s = msg.toLowerCase();
-  return (
-    s.includes("query returned more than") ||
-    s.includes("more than") && s.includes("results") ||
-    s.includes("block range") ||
-    s.includes("range too") ||
-    s.includes("response size") ||
-    s.includes("limit exceeded")
-  );
-}
-
-async function withRetry<T>(fn: () => Promise<T>, tries = 5) {
+async function withRetry<T>(fn: () => Promise<T>, tries = 3) {
   let last: any;
   for (let i = 0; i < tries; i++) {
     try {
       return await fn();
     } catch (e: any) {
       last = e;
-      const msg = errStr(e);
-      const base = looksLikeRateLimit(msg) ? 600 : 250;
-      await sleep(base * (i + 1));
+      await sleep(200 * (i + 1));
     }
   }
   throw last;
 }
 
-async function findBlockByTimestamp(client: Client, targetSec: number, side: "lte" | "gte") {
+async function getBlockTimestamp(client: Client, chainKey: ChainKey, blockNumber: bigint): Promise<number> {
+  const c = getBlockTsCache();
+  if (!c.get(chainKey)) c.set(chainKey, new Map());
+  const m = c.get(chainKey)!;
+  const hit = m.get(blockNumber);
+  if (typeof hit === "number") return hit;
+
+  const blk = await withRetry(() => client.getBlock({ blockNumber }));
+  const ts = Number(blk.timestamp);
+  m.set(blockNumber, ts);
+  return ts;
+}
+
+async function findBlockByTimestamp(client: Client, chainKey: ChainKey, targetSec: number, side: "lte" | "gte") {
   const latest = await withRetry(() => client.getBlockNumber());
   let lo = 0n;
   let hi = latest;
@@ -209,9 +198,7 @@ async function findBlockByTimestamp(client: Client, targetSec: number, side: "lt
 
   while (lo <= hi) {
     const mid = (lo + hi) / 2n;
-    const blk = await withRetry(() => client.getBlock({ blockNumber: mid }));
-    const ts = Number(blk.timestamp);
-
+    const ts = await getBlockTimestamp(client, chainKey, mid);
     if (ts === targetSec) return mid;
 
     if (ts < targetSec) {
@@ -227,9 +214,8 @@ async function findBlockByTimestamp(client: Client, targetSec: number, side: "lt
   return ans;
 }
 
-// Updated the getLogsPaged function with the correct types and logic for `topics`
-async function getLogsPaged(client: Client, args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint; topics?: Hex[] }) {
-  let span = 10_000n;
+async function getLogsPaged(client: Client, args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint }) {
+  let span = 5000n;
   const out: any[] = [];
   let from = args.fromBlock;
   const to = args.toBlock;
@@ -243,28 +229,13 @@ async function getLogsPaged(client: Client, args: { address: `0x${string}`; from
           address: args.address,
           fromBlock: from,
           toBlock: end,
-          topics: args.topics as any || undefined,  // Type assertion here to bypass TypeScript error
         })
       );
       out.push(...logs);
       from = end + 1n;
-      if (span < 10_000n) span = span + span / 2n;
-      if (span > 10_000n) span = 10_000n;
-    } catch (e: any) {
-      const msg = errStr(e);
-
-      if (looksLikeRateLimit(msg)) {
-        await sleep(900);
-        continue;
-      }
-
-      if (looksLikeRangeTooBig(msg) || span > 500n) {
-        span = span / 2n;
-        if (span < 250n) span = 250n;
-        continue;
-      }
-
-      throw new Error(msg);
+    } catch {
+      if (span <= 500n) throw new Error("RPC getLogs failed even at small span");
+      span = span / 2n;
     }
   }
 
@@ -291,8 +262,6 @@ export async function GET(req: Request) {
     const { startSec, endSec } = utcRange(tf, new Date());
     const start = Math.max(0, Math.floor(startSec));
     const end = Math.max(start + 1, Math.floor(endSec));
-    const startBI = BigInt(start);
-    const endBI = BigInt(end);
 
     const agg = new Map<
       string,
@@ -309,31 +278,17 @@ export async function GET(req: Request) {
 
     const perChainMeta: any = {};
 
-    const gameTopic0 = encodeEventTopics({ abi: GAME_ABI, eventName: "GameSettled" })[0] as Hex;
-    const boundTopic0 = encodeEventTopics({ abi: REG_ABI, eventName: "Bound" })[0] as Hex;
-    const claimedTopic0 = encodeEventTopics({ abi: REG_ABI, eventName: "Claimed" })[0] as Hex;
-
     for (const chainKey of Object.keys(CHAIN) as ChainKey[]) {
       const cfg = CHAIN[chainKey];
+
       const rpcProxy = `${origin}/api/rpc/${cfg.chainId}`;
       const client = createPublicClient({ transport: http(rpcProxy) });
 
-      const startBlock = tf === "all" ? 0n : await findBlockByTimestamp(client, start, "gte");
-      const endBlock = await findBlockByTimestamp(client, end, "lte");
+      const startBlock = tf === "all" ? 0n : await findBlockByTimestamp(client, chainKey, start, "gte");
+      const endBlock = await findBlockByTimestamp(client, chainKey, end, "lte");
 
-      const gameLogs = await getLogsPaged(client, {
-        address: cfg.game,
-        fromBlock: startBlock,
-        toBlock: endBlock,
-        topics: [gameTopic0],
-      });
-
-      const regLogs = await getLogsPaged(client, {
-        address: cfg.registry,
-        fromBlock: startBlock,
-        toBlock: endBlock,
-        topics: [boundTopic0, claimedTopic0],
-      });
+      const gameLogs = await getLogsPaged(client, { address: cfg.game, fromBlock: startBlock, toBlock: endBlock });
+      const regLogs = await getLogsPaged(client, { address: cfg.registry, fromBlock: startBlock, toBlock: endBlock });
 
       let gameCount = 0;
       let boundCount = 0;
@@ -348,8 +303,8 @@ export async function GET(req: Request) {
         }
         if (decoded?.eventName !== "GameSettled") continue;
 
-        const settledAt = BigInt(decoded.args.settledAt as bigint);
-        if (settledAt < startBI || settledAt >= endBI) continue;
+        const ts = await getBlockTimestamp(client, chainKey, BigInt(log.blockNumber));
+        if (ts < start || ts >= end) continue;
 
         const player = (decoded.args.player as string).toLowerCase();
         const amountReceived = BigInt(decoded.args.amountReceived as bigint);
@@ -385,6 +340,9 @@ export async function GET(req: Request) {
           continue;
         }
 
+        const ts = await getBlockTimestamp(client, chainKey, BigInt(log.blockNumber));
+        if (ts < start || ts >= end) continue;
+
         if (decoded?.eventName === "Bound") {
           const player = (decoded.args.player as string).toLowerCase();
           const referrer = (decoded.args.referrer as string).toLowerCase();
@@ -404,6 +362,7 @@ export async function GET(req: Request) {
           const a = agg.get(referrer)!;
           addChain(a.chains, chainKey);
           a.referrals.add(player);
+
           boundCount += 1;
         }
 
@@ -426,6 +385,7 @@ export async function GET(req: Request) {
           const a = agg.get(referrer)!;
           addChain(a.chains, chainKey);
           a.claimed += amount;
+
           claimedCount += 1;
         }
       }
