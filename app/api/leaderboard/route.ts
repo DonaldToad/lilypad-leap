@@ -207,7 +207,7 @@ async function findBlockByTimestamp(client: Client, chainKey: ChainKey, targetSe
     } else {
       if (side === "gte") ans = mid;
       if (mid === 0n) break;
-      hi = mid - 1;
+      hi = mid - 1n;
     }
   }
 
@@ -276,7 +276,144 @@ export async function GET(req: Request) {
       }
     >();
 
-    // Your data aggregation logic here...
+    const perChainMeta: any = {};
+
+    for (const chainKey of Object.keys(CHAIN) as ChainKey[]) {
+      const cfg = CHAIN[chainKey];
+
+      const rpcProxy = `${origin}/api/rpc/${cfg.chainId}`;
+      const client = createPublicClient({ transport: http(rpcProxy) });
+
+      const startBlock = tf === "all" ? 0n : await findBlockByTimestamp(client, chainKey, start, "gte");
+      const endBlock = await findBlockByTimestamp(client, chainKey, end, "lte");
+
+      const gameLogs = await getLogsPaged(client, { address: cfg.game, fromBlock: startBlock, toBlock: endBlock });
+      const regLogs = await getLogsPaged(client, { address: cfg.registry, fromBlock: startBlock, toBlock: endBlock });
+
+      let gameCount = 0;
+      let boundCount = 0;
+      let claimedCount = 0;
+
+      for (const log of gameLogs) {
+        let decoded: any;
+        try {
+          decoded = decodeEventLog({ abi: GAME_ABI, data: log.data, topics: log.topics });
+        } catch {
+          continue;
+        }
+        if (decoded?.eventName !== "GameSettled") continue;
+
+        const ts = await getBlockTimestamp(client, chainKey, BigInt(log.blockNumber));
+        if (ts < start || ts >= end) continue;
+
+        const player = (decoded.args.player as string).toLowerCase();
+        const amountReceived = BigInt(decoded.args.amountReceived as bigint);
+        const playerNetWin = BigInt(decoded.args.playerNetWin as bigint);
+
+        if (!agg.has(player)) {
+          agg.set(player, {
+            chains: new Set<ChainKey>(),
+            games: 0,
+            volume: 0n,
+            topWin: 0n,
+            profit: 0n,
+            referrals: new Set<string>(),
+            claimed: 0n,
+          });
+        }
+
+        const a = agg.get(player)!;
+        addChain(a.chains, chainKey);
+        a.games += 1;
+        a.volume += amountReceived;
+        if (playerNetWin > a.topWin) a.topWin = playerNetWin;
+        a.profit += playerNetWin;
+
+        gameCount += 1;
+      }
+
+      for (const log of regLogs) {
+        let decoded: any;
+        try {
+          decoded = decodeEventLog({ abi: REG_ABI, data: log.data, topics: log.topics });
+        } catch {
+          continue;
+        }
+
+        const ts = await getBlockTimestamp(client, chainKey, BigInt(log.blockNumber));
+        if (ts < start || ts >= end) continue;
+
+        if (decoded?.eventName === "Bound") {
+          const player = (decoded.args.player as string).toLowerCase();
+          const referrer = (decoded.args.referrer as string).toLowerCase();
+
+          if (!agg.has(referrer)) {
+            agg.set(referrer, {
+              chains: new Set<ChainKey>(),
+              games: 0,
+              volume: 0n,
+              topWin: 0n,
+              profit: 0n,
+              referrals: new Set<string>(),
+              claimed: 0n,
+            });
+          }
+
+          const a = agg.get(referrer)!;
+          addChain(a.chains, chainKey);
+          a.referrals.add(player);
+
+          boundCount += 1;
+        }
+
+        if (decoded?.eventName === "Claimed") {
+          const referrer = (decoded.args.referrer as string).toLowerCase();
+          const amount = BigInt(decoded.args.amount as bigint);
+
+          if (!agg.has(referrer)) {
+            agg.set(referrer, {
+              chains: new Set<ChainKey>(),
+              games: 0,
+              volume: 0n,
+              topWin: 0n,
+              profit: 0n,
+              referrals: new Set<string>(),
+              claimed: 0n,
+            });
+          }
+
+          const a = agg.get(referrer)!;
+          addChain(a.chains, chainKey);
+          a.claimed += amount;
+
+          claimedCount += 1;
+        }
+      }
+
+      perChainMeta[chainKey] = {
+        rpc: rpcProxy,
+        startBlock: startBlock.toString(),
+        endBlock: endBlock.toString(),
+        logs: { game: gameCount, bound: boundCount, claimed: claimedCount },
+      };
+    }
+
+    const rows: ApiRow[] = [];
+    for (const [address, a] of agg.entries()) {
+      const chains = Array.from(a.chains);
+      if (chains.length === 0) continue;
+
+      rows.push({
+        chains,
+        address: address as `0x${string}`,
+        games: a.games,
+        volumeDtc: toDtc2(a.volume),
+        topWinDtc: toDtc2(a.topWin),
+        profitDtc: toDtc2(a.profit),
+        referrals: a.referrals.size,
+        claimedDtc: toDtc2(a.claimed),
+      });
+    }
 
     const payload = {
       ok: true,
