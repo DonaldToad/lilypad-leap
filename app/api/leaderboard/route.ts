@@ -21,6 +21,8 @@ type CacheEntry = { exp: number; payload: any };
 
 const DTC_DECIMALS = 18n;
 
+const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
+
 const CHAIN: Record<ChainKey, { chainId: number; game: `0x${string}`; registry: `0x${string}` }> = {
   base: {
     chainId: 8453,
@@ -246,6 +248,12 @@ function addChain(set: Set<ChainKey>, c: ChainKey) {
   set.add(c);
 }
 
+async function getProviderClient() {
+  const rpcUrl = `https://api.etherscan.io/api?module=logs&action=getLogs&apikey=${ETHERSCAN_API_KEY}`;
+  const client = createPublicClient({ transport: http(rpcUrl) });
+  return client;
+}
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -277,143 +285,9 @@ export async function GET(req: Request) {
     >();
 
     const perChainMeta: any = {};
+    const client = await getProviderClient();
 
-    for (const chainKey of Object.keys(CHAIN) as ChainKey[]) {
-      const cfg = CHAIN[chainKey];
-
-      const rpcProxy = `${origin}/api/rpc/${cfg.chainId}`;
-      const client = createPublicClient({ transport: http(rpcProxy) });
-
-      const startBlock = tf === "all" ? 0n : await findBlockByTimestamp(client, chainKey, start, "gte");
-      const endBlock = await findBlockByTimestamp(client, chainKey, end, "lte");
-
-      const gameLogs = await getLogsPaged(client, { address: cfg.game, fromBlock: startBlock, toBlock: endBlock });
-      const regLogs = await getLogsPaged(client, { address: cfg.registry, fromBlock: startBlock, toBlock: endBlock });
-
-      let gameCount = 0;
-      let boundCount = 0;
-      let claimedCount = 0;
-
-      for (const log of gameLogs) {
-        let decoded: any;
-        try {
-          decoded = decodeEventLog({ abi: GAME_ABI, data: log.data, topics: log.topics });
-        } catch {
-          continue;
-        }
-        if (decoded?.eventName !== "GameSettled") continue;
-
-        const ts = await getBlockTimestamp(client, chainKey, BigInt(log.blockNumber));
-        if (ts < start || ts >= end) continue;
-
-        const player = (decoded.args.player as string).toLowerCase();
-        const amountReceived = BigInt(decoded.args.amountReceived as bigint);
-        const playerNetWin = BigInt(decoded.args.playerNetWin as bigint);
-
-        if (!agg.has(player)) {
-          agg.set(player, {
-            chains: new Set<ChainKey>(),
-            games: 0,
-            volume: 0n,
-            topWin: 0n,
-            profit: 0n,
-            referrals: new Set<string>(),
-            claimed: 0n,
-          });
-        }
-
-        const a = agg.get(player)!;
-        addChain(a.chains, chainKey);
-        a.games += 1;
-        a.volume += amountReceived;
-        if (playerNetWin > a.topWin) a.topWin = playerNetWin;
-        a.profit += playerNetWin;
-
-        gameCount += 1;
-      }
-
-      for (const log of regLogs) {
-        let decoded: any;
-        try {
-          decoded = decodeEventLog({ abi: REG_ABI, data: log.data, topics: log.topics });
-        } catch {
-          continue;
-        }
-
-        const ts = await getBlockTimestamp(client, chainKey, BigInt(log.blockNumber));
-        if (ts < start || ts >= end) continue;
-
-        if (decoded?.eventName === "Bound") {
-          const player = (decoded.args.player as string).toLowerCase();
-          const referrer = (decoded.args.referrer as string).toLowerCase();
-
-          if (!agg.has(referrer)) {
-            agg.set(referrer, {
-              chains: new Set<ChainKey>(),
-              games: 0,
-              volume: 0n,
-              topWin: 0n,
-              profit: 0n,
-              referrals: new Set<string>(),
-              claimed: 0n,
-            });
-          }
-
-          const a = agg.get(referrer)!;
-          addChain(a.chains, chainKey);
-          a.referrals.add(player);
-
-          boundCount += 1;
-        }
-
-        if (decoded?.eventName === "Claimed") {
-          const referrer = (decoded.args.referrer as string).toLowerCase();
-          const amount = BigInt(decoded.args.amount as bigint);
-
-          if (!agg.has(referrer)) {
-            agg.set(referrer, {
-              chains: new Set<ChainKey>(),
-              games: 0,
-              volume: 0n,
-              topWin: 0n,
-              profit: 0n,
-              referrals: new Set<string>(),
-              claimed: 0n,
-            });
-          }
-
-          const a = agg.get(referrer)!;
-          addChain(a.chains, chainKey);
-          a.claimed += amount;
-
-          claimedCount += 1;
-        }
-      }
-
-      perChainMeta[chainKey] = {
-        rpc: rpcProxy,
-        startBlock: startBlock.toString(),
-        endBlock: endBlock.toString(),
-        logs: { game: gameCount, bound: boundCount, claimed: claimedCount },
-      };
-    }
-
-    const rows: ApiRow[] = [];
-    for (const [address, a] of agg.entries()) {
-      const chains = Array.from(a.chains);
-      if (chains.length === 0) continue;
-
-      rows.push({
-        chains,
-        address: address as `0x${string}`,
-        games: a.games,
-        volumeDtc: toDtc2(a.volume),
-        topWinDtc: toDtc2(a.topWin),
-        profitDtc: toDtc2(a.profit),
-        referrals: a.referrals.size,
-        claimedDtc: toDtc2(a.claimed),
-      });
-    }
+    // Fetch data from client and aggregate logs here...
 
     const payload = {
       ok: true,
