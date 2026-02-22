@@ -206,22 +206,32 @@ async function blockscoutGetBlockByTime(apiBase: string, timestampSec: number, c
   const j = await fetchJsonWithBackoff(u.toString(), undefined, 6);
   const status = String((j as any)?.status ?? "");
   const result = (j as any)?.result;
-  if (status !== "1") {
-    throw new Error(`getblocknobytime failed: ${JSON.stringify(j)}`);
-  }
+  if (status !== "1") throw new Error(`getblocknobytime failed: ${JSON.stringify(j)}`);
   const bn = BigInt(String(result));
   if (bn < 0n) return 0n;
   return bn;
 }
 
+function asBigInt(x: any): bigint {
+  if (typeof x === "bigint") return x;
+  if (typeof x === "number") return BigInt(x);
+  if (typeof x === "string") return BigInt(x);
+  if (x && typeof x === "object") {
+    const hx = (x as any).hex;
+    if (typeof hx === "string") return BigInt(hx);
+    const _hx = (x as any)._hex;
+    if (typeof _hx === "string") return BigInt(_hx);
+    const v = (x as any).value;
+    if (v != null) return asBigInt(v);
+    const s = (x as any).toString?.();
+    if (typeof s === "string" && s && s !== "[object Object]") return BigInt(s);
+  }
+  throw new Error(`Cannot convert ${Object.prototype.toString.call(x)} to a BigInt`);
+}
+
 async function getLogsPaged(
   client: Client,
-  args: {
-    address: `0x${string}`;
-    fromBlock: bigint;
-    toBlock: bigint;
-    topics?: any;
-  },
+  args: { address: `0x${string}`; fromBlock: bigint; toBlock: bigint; topics?: any },
 ) {
   let span = 20_000n;
   const out: any[] = [];
@@ -255,11 +265,8 @@ function addChain(set: Set<ChainKey>, c: ChainKey) {
 }
 
 const TOPIC_GAME_SETTLED = keccak256(
-  toHex(
-    "GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)",
-  ),
+  toHex("GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)"),
 );
-
 const TOPIC_BOUND = keccak256(toHex("Bound(address,address,bytes32)"));
 const TOPIC_CLAIMED = keccak256(toHex("Claimed(uint256,address,uint256)"));
 
@@ -296,8 +303,7 @@ export async function GET(req: Request) {
 
       const client = createPublicClient({ transport: http(cfg.rpc) });
 
-      const startBlock =
-        tf === "all" ? 0n : await blockscoutGetBlockByTime(cfg.blockscoutApi, start, "after");
+      const startBlock = tf === "all" ? 0n : await blockscoutGetBlockByTime(cfg.blockscoutApi, start, "after");
       const endBlock = await blockscoutGetBlockByTime(cfg.blockscoutApi, end, "before");
 
       const fromBlock = startBlock;
@@ -342,8 +348,8 @@ export async function GET(req: Request) {
         if (decoded?.eventName !== "GameSettled") continue;
 
         const player = (decoded.args.player as string).toLowerCase();
-        const amountReceived = BigInt(decoded.args.amountReceived as any);
-        const playerNetWin = BigInt(decoded.args.playerNetWin as any);
+        const amountReceived = asBigInt(decoded.args.amountReceived);
+        const playerNetWin = asBigInt(decoded.args.playerNetWin);
 
         if (!agg.has(player)) {
           agg.set(player, {
@@ -416,7 +422,7 @@ export async function GET(req: Request) {
         if (decoded?.eventName !== "Claimed") continue;
 
         const referrer = (decoded.args.referrer as string).toLowerCase();
-        const amount = BigInt(decoded.args.amount as any);
+        const amount = asBigInt(decoded.args.amount);
 
         if (!agg.has(referrer)) {
           agg.set(referrer, {
