@@ -87,8 +87,6 @@ type EsLog = {
   data: string;
   blockNumber: string;
   timeStamp: string;
-  transactionHash?: string;
-  logIndex?: string;
 };
 
 function nowMs() {
@@ -173,8 +171,20 @@ function sleep(ms: number) {
 }
 
 function isRetryableText(t: string) {
-  const s = t.toLowerCase();
-  return s.includes("rate limit") || s.includes("max rate") || s.includes("too many") || s.includes("temporarily") || s.includes("timeout") || s.includes("throttle") || s.includes("busy");
+  const s = (t || "").toLowerCase();
+  return (
+    s.includes("rate limit") ||
+    s.includes("max rate") ||
+    s.includes("too many") ||
+    s.includes("temporarily") ||
+    s.includes("timeout") ||
+    s.includes("throttle") ||
+    s.includes("busy") ||
+    s.includes("cloudflare") ||
+    s.includes("502") ||
+    s.includes("503") ||
+    s.includes("504")
+  );
 }
 
 async function fetchJsonWithBackoff(url: string, tries = 6) {
@@ -247,7 +257,13 @@ async function getBlockByTime(chainId: number, timestampSec: number, closest: "b
   return BigInt(bn);
 }
 
-async function getLogsByAddressAndTopic0(args: { chainId: number; address: `0x${string}`; fromBlock: bigint; toBlock: bigint; topic0: `0x${string}` }) {
+async function getLogsByAddressAndTopic0(args: {
+  chainId: number;
+  address: `0x${string}`;
+  fromBlock: bigint;
+  toBlock: bigint;
+  topic0: `0x${string}`;
+}) {
   const out: EsLog[] = [];
   const offset = 1000;
   let page = 1;
@@ -311,13 +327,22 @@ function hexToNumberSafe(h: string) {
   }
 }
 
-const SIG_GAME = keccak256(toHex("GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)")) as `0x${string}`;
+function toMutableTopics(t: string[]) {
+  const arr = Array.isArray(t) ? [...t] : [];
+  return arr as unknown as [] | [`0x${string}`, ...`0x${string}`[]];
+}
+
+const SIG_GAME = keccak256(
+  toHex("GameSettled(bytes32,address,bool,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32,uint256)")
+) as `0x${string}`;
 const SIG_BOUND = keccak256(toHex("Bound(address,address,bytes32)")) as `0x${string}`;
 const SIG_CLAIMED = keccak256(toHex("Claimed(uint256,address,uint256)")) as `0x${string}`;
 
 export async function GET(req: Request) {
   try {
-    if (!ETHERSCAN_V2_API_KEY) return NextResponse.json({ ok: false, error: "Missing NEXT_PUBLIC_ETHERSCAN_V2_API_KEY" }, { status: 500 });
+    if (!ETHERSCAN_V2_API_KEY) {
+      return NextResponse.json({ ok: false, error: "Missing NEXT_PUBLIC_ETHERSCAN_V2_API_KEY" }, { status: 500 });
+    }
 
     const url = new URL(req.url);
     const tf = parseTf(url.searchParams.get("tf"));
@@ -355,13 +380,38 @@ export async function GET(req: Request) {
       const eb = endBlock ?? 0n;
 
       if (eb < sb) {
-        perChainMeta[chainKey] = { chainId: cfg.chainId, startBlock: sb.toString(), endBlock: eb.toString(), logs: { game: 0, bound: 0, claimed: 0 } };
+        perChainMeta[chainKey] = {
+          chainId: cfg.chainId,
+          startBlock: sb.toString(),
+          endBlock: eb.toString(),
+          logs: { game: 0, bound: 0, claimed: 0 },
+        };
         continue;
       }
 
-      const gameLogs = await getLogsByAddressAndTopic0({ chainId: cfg.chainId, address: cfg.game, fromBlock: sb, toBlock: eb, topic0: SIG_GAME });
-      const boundLogs = await getLogsByAddressAndTopic0({ chainId: cfg.chainId, address: cfg.registry, fromBlock: sb, toBlock: eb, topic0: SIG_BOUND });
-      const claimedLogs = await getLogsByAddressAndTopic0({ chainId: cfg.chainId, address: cfg.registry, fromBlock: sb, toBlock: eb, topic0: SIG_CLAIMED });
+      const gameLogs = await getLogsByAddressAndTopic0({
+        chainId: cfg.chainId,
+        address: cfg.game,
+        fromBlock: sb,
+        toBlock: eb,
+        topic0: SIG_GAME,
+      });
+
+      const boundLogs = await getLogsByAddressAndTopic0({
+        chainId: cfg.chainId,
+        address: cfg.registry,
+        fromBlock: sb,
+        toBlock: eb,
+        topic0: SIG_BOUND,
+      });
+
+      const claimedLogs = await getLogsByAddressAndTopic0({
+        chainId: cfg.chainId,
+        address: cfg.registry,
+        fromBlock: sb,
+        toBlock: eb,
+        topic0: SIG_CLAIMED,
+      });
 
       let gameCount = 0;
       let boundCount = 0;
@@ -376,7 +426,7 @@ export async function GET(req: Request) {
           decoded = decodeEventLog({
             abi: GAME_ABI,
             data: log.data as `0x${string}`,
-            topics: log.topics as readonly `0x${string}`[],
+            topics: toMutableTopics(log.topics),
           });
         } catch {
           continue;
@@ -391,7 +441,15 @@ export async function GET(req: Request) {
         const playerNetWin = BigInt(decoded.args.playerNetWin as bigint);
 
         if (!agg.has(player)) {
-          agg.set(player, { chains: new Set<ChainKey>(), games: 0, volume: 0n, topWin: 0n, profit: 0n, referrals: new Set<string>(), claimed: 0n });
+          agg.set(player, {
+            chains: new Set<ChainKey>(),
+            games: 0,
+            volume: 0n,
+            topWin: 0n,
+            profit: 0n,
+            referrals: new Set<string>(),
+            claimed: 0n,
+          });
         }
 
         const a = agg.get(player)!;
@@ -413,7 +471,7 @@ export async function GET(req: Request) {
           decoded = decodeEventLog({
             abi: REG_ABI,
             data: log.data as `0x${string}`,
-            topics: log.topics as readonly `0x${string}`[],
+            topics: toMutableTopics(log.topics),
           });
         } catch {
           continue;
@@ -427,7 +485,15 @@ export async function GET(req: Request) {
         if (!referrer.startsWith("0x")) continue;
 
         if (!agg.has(referrer)) {
-          agg.set(referrer, { chains: new Set<ChainKey>(), games: 0, volume: 0n, topWin: 0n, profit: 0n, referrals: new Set<string>(), claimed: 0n });
+          agg.set(referrer, {
+            chains: new Set<ChainKey>(),
+            games: 0,
+            volume: 0n,
+            topWin: 0n,
+            profit: 0n,
+            referrals: new Set<string>(),
+            claimed: 0n,
+          });
         }
 
         const a = agg.get(referrer)!;
@@ -446,7 +512,7 @@ export async function GET(req: Request) {
           decoded = decodeEventLog({
             abi: REG_ABI,
             data: log.data as `0x${string}`,
-            topics: log.topics as readonly `0x${string}`[],
+            topics: toMutableTopics(log.topics),
           });
         } catch {
           continue;
@@ -460,7 +526,15 @@ export async function GET(req: Request) {
         const amount = BigInt(decoded.args.amount as bigint);
 
         if (!agg.has(referrer)) {
-          agg.set(referrer, { chains: new Set<ChainKey>(), games: 0, volume: 0n, topWin: 0n, profit: 0n, referrals: new Set<string>(), claimed: 0n });
+          agg.set(referrer, {
+            chains: new Set<ChainKey>(),
+            games: 0,
+            volume: 0n,
+            topWin: 0n,
+            profit: 0n,
+            referrals: new Set<string>(),
+            claimed: 0n,
+          });
         }
 
         const a = agg.get(referrer)!;
