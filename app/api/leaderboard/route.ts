@@ -243,7 +243,7 @@ async function getLogsPaged(client: Client, args: { address: `0x${string}`; from
           address: args.address,
           fromBlock: from,
           toBlock: end,
-          topics: args.topics || undefined,  // Ensuring topics is passed as undefined if not provided
+          topics: args.topics as any || undefined,  // Type assertion here to bypass TypeScript error
         })
       );
       out.push(...logs);
